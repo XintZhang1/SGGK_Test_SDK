@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SGGK API Test Request Form",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "owner",
+    "target_api",
+    "test_goal",
+    "risk_summary",
+    "geometry",
+    "oracles",
+    "run_profile"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "target_api": {
+      "type": "string",
+      "enum": [
+        "api_boolean",
+        "check_sgt",
+        "step_import",
+        "iges_import",
+        "step_roundtrip",
+        "iges_roundtrip",
+        "needs_harness_extension"
+      ]
+    },
+    "sdk_source_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "test_goal": {
+      "type": "string"
+    },
+    "risk_summary": {
+      "type": "string"
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "family"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "primitive",
+            "generated_extrude",
+            "generated_thicken",
+            "generated_sweep",
+            "support_sweep_bspline",
+            "generated_revolve",
+            "pre_boolean",
+            "loaded_sgt",
+            "exchange_file",
+            "corpus"
+          ]
+        },
+        "target_builder": {
+          "type": "string"
+        },
+        "tool_builder": {
+          "type": "string"
+        },
+        "input_asset": {
+          "type": "string"
+        },
+        "parameter_notes": {
+          "type": "string"
+        }
+      }
+    },
+    "tolerance_focus": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "exact_contact",
+          "geom_tol",
+          "topo_tol",
+          "large_coordinate",
+          "seam_periodic",
+          "generated_topology",
+          "roundtrip_drift",
+          "import_topology"
+        ]
+      },
+      "default": []
+    },
+    "oracles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "result_bodies",
+          "properties",
+          "boolean_volume_relation",
+          "point_relation",
+          "face_point_relation",
+          "clash",
+          "distance",
+          "plane_extreme",
+          "roundtrip_comparison",
+          "topocheck"
+        ]
+      }
+    },
+    "expected_behavior": {
+      "type": "string",
+      "default": ""
+    },
+    "case_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 3
+    },
+    "run_profile": {
+      "type": "string",
+      "enum": [
+        "single_case",
+        "smoke",
+        "matrix",
+        "corpus",
+        "known_bug_regression"
+      ]
+    },
+    "input_assets": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "source_file": {
+          "type": "string"
+        },
+        "dataset_root": {
+          "type": "string"
+        },
+        "dataset_index": {
+          "type": "string"
+        }
+      },
+      "default": {}
+    },
+    "notes": {
+      "type": "string",
+      "default": ""
+    }
+  }
+}

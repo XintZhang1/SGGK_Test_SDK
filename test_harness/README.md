@@ -239,6 +239,33 @@ Small-model generated attacks should use the JSON DSL first. The runner can exec
   --out .\artifacts\native_chain_run
 ```
 
+## API Form Workflow
+
+For intranet small-model handoff, use `test_harness/skills/sggk-api-form-workflow`.
+Developers fill `test_harness/forms/api_test_form.schema.json`, then deterministic code converts the form into a constrained model task:
+
+```powershell
+python .\test_harness\tools\build_api_test_task.py `
+  .\test_harness\forms\api_test_form.example.json `
+  --out .\artifacts\model_tasks\boolean_thicken_generated_sheet_001.json
+```
+
+After reviewing model output, run the current API capability smoke suite sequentially:
+
+```powershell
+python .\test_harness\tools\run_recipes.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --recipe-list .\test_harness\suites\api_smoke_suite.txt `
+  --out .\artifacts\api_smoke_suite `
+  --jobs 1 `
+  --timeout 120 `
+  --triage-out .\artifacts\api_smoke_suite_triage `
+  --preview-out .\artifacts\api_smoke_suite_preview `
+  --contact-sheet .\artifacts\api_smoke_suite_preview\contact.png
+```
+
+The suite covers `api_boolean`, generated body builders, validation oracles, `check_sgt`, `step_roundtrip`, and `iges_roundtrip`. `step_import` and `iges_import` require external corpus files, so they belong in corpus lanes rather than the self-contained smoke list.
+
 For debugging or compatibility, the same DSL can still be compiled to flat runner recipes:
 
 ```powershell
@@ -307,6 +334,7 @@ Additional smoke recipes:
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_support_sweep_bspline_surface_smoke.json --out .\artifacts\builder_smoke
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_bbox_diagnostic_smoke.json --out .\artifacts\builder_smoke
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\plane_extreme_sphere_smoke.json --out .\artifacts\builder_smoke
+.\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_thicken_rect_sheet_smoke.json --out .\artifacts\builder_smoke
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_revolve_line_smoke.json --out .\artifacts\builder_smoke
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_revolve_rect_smoke.json --out .\artifacts\builder_smoke
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\test_harness\recipes\boolean_preboolean_smoke.json --out .\artifacts\builder_smoke

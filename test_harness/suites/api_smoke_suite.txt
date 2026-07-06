@@ -1,0 +1,19 @@
+# Sequential smoke coverage for currently supported sggk_case_runner APIs.
+# Run with --jobs 1 because check_sgt and roundtrip recipes consume the
+# artifacts/boolean_smoke/output/result_1.sgt file produced by boolean_smoke.
+../recipes/boolean_smoke.json
+../recipes/boolean_extrude_rect_smoke.json
+../recipes/boolean_thicken_rect_sheet_smoke.json
+../recipes/boolean_sweep_smoke.json
+../recipes/boolean_support_sweep_bspline_surface_smoke.json
+../recipes/boolean_revolve_line_smoke.json
+../recipes/boolean_revolve_rect_smoke.json
+../recipes/boolean_preboolean_smoke.json
+../recipes/point_relation_smoke.json
+../recipes/face_point_relation_smoke.json
+../recipes/clash_check_smoke.json
+../recipes/distance_check_smoke.json
+../recipes/plane_extreme_sphere_smoke.json
+../recipes/check_sgt_sample.json
+../recipes/step_roundtrip_smoke.json
+../recipes/iges_roundtrip_smoke.json
