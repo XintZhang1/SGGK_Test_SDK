@@ -1,0 +1,5 @@
+{
+  "case_id": "check_sgt_sample",
+  "api": "check_sgt",
+  "source_file": "artifacts/boolean_smoke/output/result_1.sgt"
+}

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "registry_id": "reduced_revolve_validation",
+  "description": "Stable reduced revolve boolean validation bugs captured as parameter recipes for version regression. Bbox-only records are intentionally excluded because SDK bboxes are conservative diagnostics, not exact modeling-result oracles.",
+  "defaults": {
+    "api": "api_boolean",
+    "replay_status": "stable_failure",
+    "reasons": ["validation_failed"],
+    "modeling_failure_required": true,
+    "topo_track_policy": "diagnostic_when_modeling_fails"
+  },
+  "records": [
+    {
+      "bug_id": "sggk_bool_revolve_rect_subtraction_empty_001",
+      "fingerprint": "a1188acb2bad29be",
+      "title": "Closed-profile revolve subtraction reports SDK success but returns zero result bodies.",
+      "representative_case_id": "revolve_rect_chain_side_cutter_sub_overlap_topo_reduced",
+      "validation_failures": [
+        "result_body_count_below_min actual=0 min=1"
+      ],
+      "expected": {
+        "returncode": 2,
+        "result_must_fail_validation": true
+      },
+      "notes": "Topo tracking is diagnostic only for this record. The modeling oracle is non-empty result body count.",
+      "replay": {
+        "recipe": {
+          "api": "api_boolean",
+          "boolean_type": "SUBTRACTION",
+          "modeling_tol": 0.01,
+          "check_valid": true,
+          "topo_track": false,
+          "non_destructive": true,
+          "expectations": {
+            "result_bodies": {"min": 1},
+            "require_property_calculations": true,
+            "require_finite_properties": true,
+            "require_nonnegative_length_area": true,
+            "require_nonnegative_volume": false,
+            "volume_relation_abs_tol": 0.01,
+            "volume_relation_rel_tol": 1e-8
+          },
+          "case_id": "record_a1188acb2bad29be",
+          "target_kind": "revolve_rect",
+          "target_inner_radius": 1.3333333333333333,
+          "target_outer_radius": 2.0,
+          "target_height": 2.0,
+          "target_angle": 6.283185307179586,
+          "target_operations": ["target_solid_revolve", "target_revolve_rect_origin"],
+          "target_operation_tol": 0.01,
+          "target_translate_x": 0.0,
+          "target_translate_y": 0.0,
+          "target_translate_z": 0.0,
+          "tool_translate_x": 3.989999999999995,
+          "tool_translate_y": 0.0,
+          "tool_translate_z": -21.0,
+          "tool_kind": "solid_cylinder",
+          "tool_radius": 2.0,
+          "tool_height": 42.0,
+          "tool_angle": 6.283185307179586,
+          "dsl_source": "test_harness/dsl/revolve_rect_chain_smoke.json",
+          "dsl_case_id": "revolve_rect_chain_side_cutter",
+          "dsl_variant": "sub_overlap_topo",
+          "hypothesis": "A closed-profile revolved solid is attacked by a cylindrical cutter across topology and geometry tolerance offsets."
+        }
+      }
+    }
+  ]
+}

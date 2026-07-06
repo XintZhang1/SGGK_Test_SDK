@@ -1,0 +1,66 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {"min": 1},
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_length_area": true,
+      "require_nonnegative_volume": false,
+      "sample_input_properties": true,
+      "boolean_volume_relation": true,
+      "boolean_bbox_relation": false,
+      "volume_relation_abs_tol": "topo_tol",
+      "volume_relation_rel_tol": 0.00000001
+    }
+  },
+  "cases": [
+    {
+      "case_id": "revolve_rect_chain_side_cutter",
+      "hypothesis": "A closed-profile revolved solid is attacked by a cylindrical cutter across topology and geometry tolerance offsets.",
+      "options": {
+        "boolean_type": "SUBTRACTION"
+      },
+      "expectations": {
+        "result_bodies": {"min": 1}
+      },
+      "target": {
+        "chain": [
+          {"id": "target_radial_rect_profile", "op": "radial_rect_profile", "inner_radius": 60.0, "outer_radius": 90.0, "height": 120.0, "operation_tol": "topo_tol"},
+          {"id": "target_solid_revolve", "op": "revolve", "angle": "tau", "operation_tol": "topo_tol"},
+          {"id": "target_revolve_rect_origin", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "kind": "solid_cylinder",
+        "radius": 15.0,
+        "height": 160.0,
+        "angle": "tau",
+        "translate": [105.0, 0.0, -80.0]
+      },
+      "variants": [
+        {"suffix": "sub_overlap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.translate_x": "105.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_overlap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.translate_x": "105.0 - geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_exact", "set": {"options.boolean_type": "SUBTRACTION", "tool.translate_x": 105.0, "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.translate_x": "105.0 + geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.translate_x": "105.0 + topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.translate_x": "105.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.translate_x": "105.0 - geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_exact", "set": {"options.boolean_type": "INTERSECTION", "tool.translate_x": 105.0, "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.translate_x": "105.0 + geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.translate_x": "105.0 + topo_tol", "expectations.result_bodies.min": 0}}
+      ]
+    }
+  ]
+}

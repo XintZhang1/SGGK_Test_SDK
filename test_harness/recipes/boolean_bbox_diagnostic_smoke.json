@@ -1,0 +1,33 @@
+{
+  "case_id": "boolean_bbox_diagnostic_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "support_sweep_bspline_surface",
+  "target_path_radius": 150.0,
+  "target_profile_radius": 18.0,
+  "target_height": 90.0,
+  "target_operation_tol": 0.01,
+  "target_g1_tol": 0.1,
+  "target_operations": ["target_bspline_support_sweep"],
+  "tool_kind": "solid_cylinder",
+  "tool_radius": 70.0,
+  "tool_height": 140.0,
+  "tool_angle": 6.283185307179586,
+  "tool_translate_y": 20.0,
+  "tool_translate_z": -20.0,
+  "tool_operations": ["tool_cross_cylinder"],
+  "expectations": {
+    "sample_input_properties": true,
+    "require_nonnegative_volume": true,
+    "boolean_bbox_relation": true,
+    "volume_relation_abs_tol": 0.01,
+    "volume_relation_rel_tol": 1e-8,
+    "total_abs_volume": {
+      "min": 1.0
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "case_id": "boolean_revolve_line_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "revolve_line",
+  "target_bottom_radius": 90.0,
+  "target_top_radius": 70.0,
+  "target_height": 260.0,
+  "target_angle": 6.283185307179586,
+  "target_operation_tol": 0.01,
+  "target_operations": ["target_line_profile", "target_revolve"],
+  "tool_kind": "solid_cylinder",
+  "tool_radius": 20.0,
+  "tool_height": 320.0,
+  "tool_angle": 6.283185307179586,
+  "tool_translate_x": 110.0,
+  "tool_translate_y": 0.0,
+  "tool_translate_z": -160.0,
+  "expectations": {
+    "result_bodies": {"min": 1},
+    "require_property_calculations": true,
+    "require_finite_properties": true,
+    "require_nonnegative_length_area": true,
+    "require_nonnegative_volume": false,
+    "boolean_bbox_relation": false
+  }
+}

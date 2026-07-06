@@ -1,0 +1,32 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "roundtrip_abs_tol": 0.01,
+    "roundtrip_rel_tol": 1e-5
+  },
+  "defaults": {
+    "source_body_index": 0,
+    "roundtrip_abs_tol": "roundtrip_abs_tol",
+    "roundtrip_rel_tol": "roundtrip_rel_tol"
+  },
+  "cases": [
+    {
+      "case_id": "dsl_step_roundtrip_bspline_smoke",
+      "api": "step_roundtrip",
+      "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+      "step_app_protocol": "AP203",
+      "step_surface_to_bspline": true,
+      "step_curve_to_bspline": true,
+      "step_spcurve_in_wire_to_bspline": true,
+      "hypothesis": "Forced STEP BSpline export should preserve source/result roundtrip properties within tolerance."
+    },
+    {
+      "case_id": "dsl_iges_roundtrip_smoke",
+      "api": "iges_roundtrip",
+      "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+      "iges_face_only_mode": false,
+      "iges_write_sgk_specified_data": false,
+      "hypothesis": "IGES export/import should preserve source/result roundtrip properties within tolerance."
+    }
+  ]
+}

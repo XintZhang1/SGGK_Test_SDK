@@ -1,0 +1,21 @@
+{
+  "case_id": "boolean_sweep_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": true,
+  "non_destructive": true,
+  "target_kind": "solid_wedge",
+  "target_length": 260.0,
+  "target_width": 180.0,
+  "target_height": 240.0,
+  "tool_kind": "sweep_circle_line",
+  "tool_profile_radius": 35.0,
+  "tool_height": 300.0,
+  "tool_operation_tol": 0.01,
+  "tool_g1_tol": 0.1,
+  "tool_translate_x": 40.0,
+  "tool_translate_y": 20.0,
+  "tool_translate_z": -30.0
+}

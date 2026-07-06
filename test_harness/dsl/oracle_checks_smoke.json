@@ -1,0 +1,98 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "target_radius": 10.0,
+    "tool_radius": 2.0,
+    "tool_x": 50.0,
+    "clearance": "tool_x - target_radius - tool_radius"
+  },
+  "key_points": {
+    "target_center": [0.0, 0.0, 0.0]
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {"min": 1, "max": 1},
+      "boolean_bbox_relation": false,
+      "boolean_volume_relation": false
+    }
+  },
+  "cases": [
+    {
+      "case_id": "dsl_oracle_checks_smoke",
+      "hypothesis": "A distant sphere subtraction should preserve the target, keep key points inside/outside, report no body clash, and keep analytic target/tool clearance.",
+      "target": {
+        "kind": "solid_sphere",
+        "radius": "target_radius"
+      },
+      "tool": {
+        "kind": "solid_sphere",
+        "radius": "tool_radius",
+        "translate_x": "tool_x"
+      },
+      "expectations": {
+        "point_relations": [
+          {
+            "id": "result_center_inside",
+            "role": "result",
+            "body_index": 0,
+            "point_ref": "target_center",
+            "expected": "Inside",
+            "tolerance": "topo_tol",
+            "check_boundary": true
+          }
+        ],
+        "face_point_relations": [
+          {
+            "id": "target_face_center_inside",
+            "role": "target",
+            "body_index": 0,
+            "face_index": 0,
+            "uv_fraction": [0.5, 0.5],
+            "expected": "Inside",
+            "tolerance": "topo_tol",
+            "check_boundary": true
+          }
+        ],
+        "clash_checks": [
+          {
+            "id": "target_tool_no_clash",
+            "role_a": "target",
+            "role_b": "tool",
+            "expected": "NoClash",
+            "mode": "ClashExistenceOnly",
+            "tolerance": "topo_tol"
+          }
+        ],
+        "distance_checks": [
+          {
+            "id": "target_tool_clearance",
+            "role_a": "target",
+            "role_b": "tool",
+            "kind": "minimum",
+            "threshold": 100.0,
+            "distance": {"expected": "clearance", "abs_tol": "geom_tol"}
+          }
+        ],
+        "plane_extreme_checks": [
+          {
+            "id": "result_x_max",
+            "role": "result",
+            "body_index": 0,
+            "axis": "x",
+            "side": "max",
+            "expected": "target_radius",
+            "tolerance": "2 * topo_tol"
+          }
+        ]
+      }
+    }
+  ]
+}

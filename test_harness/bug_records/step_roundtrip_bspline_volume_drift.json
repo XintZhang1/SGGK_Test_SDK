@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "registry_id": "step_roundtrip_bspline_volume_drift",
+  "description": "STEP roundtrip with forced BSpline export can preserve API success and TopoCheck while drifting source/result volume beyond the roundtrip oracle tolerance.",
+  "defaults": {
+    "api": "step_roundtrip",
+    "replay_status": "stable_failure",
+    "reasons": ["roundtrip_comparison_failed"],
+    "modeling_failure_required": true,
+    "topo_track_policy": "diagnostic_when_modeling_fails"
+  },
+  "records": [
+    {
+      "bug_id": "sggk_step_roundtrip_bspline_volume_drift_001",
+      "fingerprint": "b80e6fd3ba17f79f",
+      "title": "STEP forced-BSpline roundtrip succeeds but changes absolute volume beyond tolerance.",
+      "representative_case_id": "res_1_step_roundtrip_edb79c9d56",
+      "roundtrip_failures": [
+        "roundtrip_abs_volume_mismatch"
+      ],
+      "roundtrip_oracle_details": [
+        {
+          "oracle_kind": "roundtrip_metric",
+          "id": "roundtrip_abs_volume",
+          "metric": "abs_volume",
+          "source": 28546092.103426374,
+          "result": 28547168.038854435,
+          "delta": 1075.9354280605912,
+          "tolerance": 285.48168038854436,
+          "ok": false
+        }
+      ],
+      "expected": {
+        "returncode": 2,
+        "result_must_fail_roundtrip_comparison": true
+      },
+      "notes": "api_step_export and api_step_import both report success with no failed items or invalid topologies; TopoCheck and generic validation pass. The failure is only visible by comparing the imported body against the source SGT using length/area/volume/bbox roundtrip oracles.",
+      "replay": {
+        "recipe": {
+          "case_id": "record_b80e6fd3ba17f79f",
+          "api": "step_roundtrip",
+          "source_file": "SGK1.4.10/samples/Release/Output/boolean/bool/res_1.sgt",
+          "source_body_index": 0,
+          "step_app_protocol": "AP203",
+          "step_surface_to_bspline": true,
+          "step_curve_to_bspline": true,
+          "step_spcurve_in_wire_to_bspline": true,
+          "roundtrip_abs_tol": 0.01,
+          "roundtrip_rel_tol": 1e-5
+        }
+      }
+    }
+  ]
+}

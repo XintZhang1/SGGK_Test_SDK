@@ -1,0 +1,126 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "tau": "2 * pi",
+    "target_x": 140.0,
+    "target_y": 90.0,
+    "target_z_min": -12.0,
+    "target_z_max": 18.0,
+    "tool_radius": 28.0
+  },
+  "key_points": {
+    "left_solid_sample": [-120.0, 0.0, 0.0]
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "max_model_size": 500000.0,
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "chain_thicken_rect_sheet_cylinder_cut",
+      "hypothesis": "A rectangular sheet is thickened into a solid and then cut by a cylinder, exercising offset/thicken-generated side and cap topology before boolean validation.",
+      "target": {
+        "chain": [
+          {"id": "target_sheet_profile", "op": "rect_profile", "length": "2 * target_x", "width": "2 * target_y"},
+          {
+            "id": "target_thicken_sheet",
+            "op": "thicken",
+            "min_dist": "target_z_min",
+            "max_dist": "target_z_max",
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1,
+            "allow_partial_success": false
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": "tool_radius", "height": 90.0, "angle": "tau"},
+          {"id": "tool_place", "op": "transform", "translate": [58.0, 0.0, 3.0]}
+        ]
+      },
+      "expectations": {
+        "result_bodies": {"min": 1},
+        "sample_input_properties": true,
+        "boolean_volume_relation": true,
+        "total_abs_volume": {"min": 1000000.0, "max": 1512000.0, "abs_tol": "topo_tol"},
+        "point_relations": [
+          {
+            "id": "left_solid_sample_inside",
+            "role": "result",
+            "body_index": 0,
+            "point_ref": "left_solid_sample",
+            "expected": "Inside",
+            "tolerance": "topo_tol",
+            "check_boundary": true
+          }
+        ],
+        "distance_checks": [
+          {
+            "id": "target_tool_overlap_distance",
+            "role_a": "target",
+            "role_b": "tool",
+            "kind": "minimum",
+            "distance": {"expected": 0.0, "abs_tol": "geom_tol"}
+          }
+        ],
+        "plane_extreme_checks": [
+          {
+            "id": "result_x_min",
+            "role": "result",
+            "axis": "x",
+            "side": "min",
+            "expected": "-target_x",
+            "tolerance": "2 * topo_tol"
+          },
+          {
+            "id": "result_x_max",
+            "role": "result",
+            "axis": "x",
+            "side": "max",
+            "expected": "target_x",
+            "tolerance": "2 * topo_tol"
+          },
+          {
+            "id": "result_z_min",
+            "role": "result",
+            "axis": "z",
+            "side": "min",
+            "expected": "target_z_min",
+            "tolerance": "2 * topo_tol"
+          },
+          {
+            "id": "result_z_max",
+            "role": "result",
+            "axis": "z",
+            "side": "max",
+            "expected": "target_z_max",
+            "tolerance": "2 * topo_tol"
+          }
+        ]
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "tool.chain.1.translate.0",
+            "expectations.distance_checks.0.distance.expected"
+          ],
+          "values": [
+            {"suffix": "center_cut", "values": [58.0, 0.0]},
+            {"suffix": "side_overlap_topo", "values": ["target_x + tool_radius - topo_tol", 0.0]},
+            {"suffix": "side_tangent", "values": ["target_x + tool_radius", 0.0]},
+            {"suffix": "side_gap_geom", "values": ["target_x + tool_radius + geom_tol", "geom_tol"]},
+            {"suffix": "side_gap_topo", "values": ["target_x + tool_radius + topo_tol", "topo_tol"]}
+          ]
+        }
+      ]
+    }
+  ]
+}

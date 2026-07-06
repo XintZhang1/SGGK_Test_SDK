@@ -1,0 +1,149 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "max_model_size": 500000.0,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {"min": 1},
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_length_area": true,
+      "require_nonnegative_volume": false,
+      "boolean_volume_relation": true,
+      "volume_relation_abs_tol": "topo_tol",
+      "volume_relation_rel_tol": 0.00000001
+    }
+  },
+  "cases": [
+    {
+      "case_id": "real_chain_extrude_sweep_side",
+      "hypothesis": "A generated extrusion side face is attacked by a generated sweep body, with subtraction and intersection oracles across topology and geometry tolerance offsets.",
+      "target": {
+        "chain": [
+          {"id": "target_rect_profile", "op": "rect_profile", "length": 500.0, "width": 260.0},
+          {"id": "target_rect_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_origin", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_circle_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_line_sweep", "op": "sweep_line", "height": 300.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_side_tolerance_place", "op": "transform", "translate_x": 290.0, "translate_y": 0.0, "translate_z": -40.0}
+        ]
+      },
+      "variants": [
+        {"suffix": "sub_overlap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "290.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_overlap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "290.0 - geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_exact", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": 290.0, "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "290.0 + geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "290.0 + topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "290.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "290.0 - geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_exact", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": 290.0, "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "290.0 + geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "290.0 + topo_tol", "expectations.result_bodies.min": 0}}
+      ]
+    },
+    {
+      "case_id": "real_chain_sweep_extrude_side",
+      "hypothesis": "A swept circular body is clipped by an extruded rectangular cutter at side tangency, stressing generated sweep side topology against generated extrusion topology.",
+      "target": {
+        "chain": [
+          {"id": "target_sweep_profile", "op": "circle_profile", "radius": 90.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "target_sweep_line", "op": "sweep_line", "height": 280.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "target_sweep_origin", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_rect_profile", "op": "rect_profile", "length": 80.0, "width": 240.0},
+          {"id": "tool_rect_extrude", "op": "extrude", "height": 320.0, "operation_tol": "topo_tol"},
+          {"id": "tool_side_tolerance_place", "op": "transform", "translate_x": 130.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "variants": [
+        {"suffix": "sub_overlap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "130.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_overlap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "130.0 - geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_exact", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": 130.0, "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_geom", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "130.0 + geom_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "sub_gap_topo", "set": {"options.boolean_type": "SUBTRACTION", "tool.chain.2.translate_x": "130.0 + topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "130.0 - topo_tol", "expectations.result_bodies.min": 1}},
+        {"suffix": "int_overlap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "130.0 - geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_exact", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": 130.0, "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_geom", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "130.0 + geom_tol", "expectations.result_bodies.min": 0}},
+        {"suffix": "int_gap_topo", "set": {"options.boolean_type": "INTERSECTION", "tool.chain.2.translate_x": "130.0 + topo_tol", "expectations.result_bodies.min": 0}}
+      ]
+    },
+    {
+      "case_id": "real_chain_preboolean_sweep_recut",
+      "hypothesis": "A cylinder-minus-wedge body created by an earlier boolean is recut by a swept circular body near the generated split region.",
+      "target": {
+        "chain": [
+          {"id": "pre_base_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 180.0, "height": 360.0, "angle": "tau"},
+          {
+            "id": "pre_cut_boolean",
+            "op": "boolean",
+            "boolean_type": "SUBTRACTION",
+            "operation_tol": "topo_tol",
+            "tool": {
+              "chain": [
+                {"id": "pre_tool_wedge", "op": "primitive", "kind": "solid_wedge", "length": 140.0, "width": 240.0, "height": 200.0},
+                {"id": "pre_tool_place", "op": "transform", "translate": [40.0, 0.0, 0.0]}
+              ]
+            }
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "recut_circle_profile", "op": "circle_profile", "radius": 45.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "recut_line_sweep", "op": "sweep_line", "height": 420.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "recut_tolerance_place", "op": "transform", "translate_x": 225.0, "translate_y": 0.0, "translate_z": -30.0}
+        ]
+      },
+      "variants": [
+        {"suffix": "sub_overlap_topo", "set": {"tool.chain.2.translate_x": "225.0 - topo_tol"}},
+        {"suffix": "sub_overlap_geom", "set": {"tool.chain.2.translate_x": "225.0 - geom_tol"}},
+        {"suffix": "sub_exact", "set": {"tool.chain.2.translate_x": 225.0}},
+        {"suffix": "sub_gap_geom", "set": {"tool.chain.2.translate_x": "225.0 + geom_tol"}},
+        {"suffix": "sub_gap_topo", "set": {"tool.chain.2.translate_x": "225.0 + topo_tol"}}
+      ]
+    },
+    {
+      "case_id": "real_chain_large_extrude_sweep_side",
+      "hypothesis": "Large-coordinate generated extrusion and generated sweep remain below max_model_size while their side contact oscillates across 1e-5 and 1e-2 offsets.",
+      "target": {
+        "chain": [
+          {"id": "large_rect_profile", "op": "rect_profile", "length": 80000.0, "width": 60000.0},
+          {"id": "large_rect_extrude", "op": "extrude", "height": 50000.0, "operation_tol": "topo_tol"},
+          {"id": "large_target_place", "op": "transform", "translate": [300000.0, -75000.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "large_tool_profile", "op": "circle_profile", "radius": 5000.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "large_tool_sweep", "op": "sweep_line", "height": 60000.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "large_tool_tolerance_place", "op": "transform", "translate_x": 345000.0, "translate_y": -75000.0, "translate_z": -5000.0}
+        ]
+      },
+      "variants": [
+        {"suffix": "sub_overlap_topo", "set": {"tool.chain.2.translate_x": "345000.0 - topo_tol"}},
+        {"suffix": "sub_overlap_geom", "set": {"tool.chain.2.translate_x": "345000.0 - geom_tol"}},
+        {"suffix": "sub_exact", "set": {"tool.chain.2.translate_x": 345000.0}},
+        {"suffix": "sub_gap_geom", "set": {"tool.chain.2.translate_x": "345000.0 + geom_tol"}},
+        {"suffix": "sub_gap_topo", "set": {"tool.chain.2.translate_x": "345000.0 + topo_tol"}}
+      ]
+    }
+  ]
+}

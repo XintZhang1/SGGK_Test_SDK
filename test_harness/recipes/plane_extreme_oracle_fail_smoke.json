@@ -1,0 +1,29 @@
+{
+  "case_id": "plane_extreme_oracle_fail_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 2.0,
+  "tool_translate_x": 50.0,
+  "expectations": {
+    "result_bodies": {"min": 1, "max": 1},
+    "boolean_bbox_relation": false,
+    "boolean_volume_relation": false,
+    "plane_extreme_checks": [
+      {
+        "id": "x_max_should_fail",
+        "role": "result",
+        "axis": "x",
+        "side": "max",
+        "expected": 9.5,
+        "tolerance": 0.02
+      }
+    ]
+  }
+}

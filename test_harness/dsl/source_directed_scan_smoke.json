@@ -1,0 +1,147 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {"min": 1},
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_length_area": true,
+      "sample_input_properties": true
+    }
+  },
+  "cases": [
+    {
+      "case_id": "src_toler_uppercoord_large_near_tangent",
+      "source_ref": "SGK1.4.10/SGGK/include/GeomBase/Toler.h:45-57",
+      "hypothesis": "Toler exposes geometry distance tolerance 1e-5 and upperCoord 5e5; generated topology near large coordinates should behave consistently across exact, geom_tol, and topo_tol contact bands.",
+      "target": {
+        "chain": [
+          {"id": "target_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_large_place", "op": "transform", "translate": [399800.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_circle_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_line_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_large_side_place", "op": "transform", "translate_x": 399970.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {"suffix": "sub_overlap_topo", "values": ["SUBTRACTION", "399970.0 - topo_tol", 1]},
+            {"suffix": "sub_overlap_geom", "values": ["SUBTRACTION", "399970.0 - geom_tol", 1]},
+            {"suffix": "sub_exact", "values": ["SUBTRACTION", 399970.0, 1]},
+            {"suffix": "int_overlap_topo", "values": ["INTERSECTION", "399970.0 - topo_tol", 1]},
+            {"suffix": "int_overlap_geom", "values": ["INTERSECTION", "399970.0 - geom_tol", 0]},
+            {"suffix": "int_exact", "values": ["INTERSECTION", 399970.0, 0]},
+            {"suffix": "int_gap_geom", "values": ["INTERSECTION", "399970.0 + geom_tol", 0]},
+            {"suffix": "int_gap_topo", "values": ["INTERSECTION", "399970.0 + topo_tol", 0]}
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "src_extrema_fuzzy_exact_overlap_band",
+      "source_ref": "SGK1.4.10/SGGK/include/GeomInt/Extrema/ExtremaOptions.h:31-42; SGK1.4.10/SGGK/include/GeomInt/Extrema/CrvCrvExtremaOpts.h:42-47",
+      "hypothesis": "Extrema overlap options distinguish fuzzy 1e-2 and exact 1e-5 thresholds; generated sweep/extrude topology should not silently flip boolean intersection semantics inside those bands.",
+      "target": {
+        "chain": [
+          {"id": "target_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_circle_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_line_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_side_place", "op": "transform", "translate_x": 170.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {"suffix": "sub_overlap_topo", "values": ["SUBTRACTION", "170.0 - topo_tol", 1]},
+            {"suffix": "sub_overlap_geom", "values": ["SUBTRACTION", "170.0 - geom_tol", 1]},
+            {"suffix": "sub_exact", "values": ["SUBTRACTION", 170.0, 1]},
+            {"suffix": "int_overlap_topo", "values": ["INTERSECTION", "170.0 - topo_tol", 1]},
+            {"suffix": "int_overlap_geom", "values": ["INTERSECTION", "170.0 - geom_tol", 0]},
+            {"suffix": "int_exact", "values": ["INTERSECTION", 170.0, 0]},
+            {"suffix": "int_gap_geom", "values": ["INTERSECTION", "170.0 + geom_tol", 0]},
+            {"suffix": "int_gap_topo", "values": ["INTERSECTION", "170.0 + topo_tol", 0]}
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "src_ptface_relation_generated_face_midpoint",
+      "source_ref": "SGK1.4.10/SGGK/include/Topology/Tools/PtFaceRelation.h:24-50",
+      "hypothesis": "FacePtRelation requires a point already on the face surface; generated extrude faces should classify UV-midpoint probes consistently with boundary checking enabled.",
+      "options": {
+        "topo_track": true
+      },
+      "target": {
+        "chain": [
+          {"id": "target_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "far_tool_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 20.0, "height": 260.0, "angle": "tau"},
+          {"id": "far_tool_place", "op": "transform", "translate": [500.0, 0.0, -20.0]}
+        ]
+      },
+      "expectations": {
+        "face_point_relations": [
+          {
+            "id": "target_face0_uv_mid_inside",
+            "role": "target",
+            "body_index": 0,
+            "face_index": 0,
+            "uv_fraction": [0.5, 0.5],
+            "expected": "Inside",
+            "tolerance": "topo_tol",
+            "check_boundary": true
+          }
+        ],
+        "point_relations": [
+          {
+            "id": "result_center_inside",
+            "role": "result",
+            "body_index": 0,
+            "point": [0.0, 0.0, 110.0],
+            "expected": "Inside",
+            "tolerance": "topo_tol",
+            "check_boundary": true
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "registry_id": "dsl_replay_materialize_smoke",
+  "description": "Examples showing how bug-record replay can be authored from DSL and materialized into flat replay recipes.",
+  "defaults": {
+    "replay_status": "recorded",
+    "modeling_failure_required": false,
+    "topo_track_policy": "diagnostic_when_modeling_fails"
+  },
+  "records": [
+    {
+      "bug_id": "example_dsl_path_oracle_smoke",
+      "title": "Example materialized from an existing DSL file",
+      "representative_case_id": "dsl_oracle_checks_smoke",
+      "api": "api_boolean",
+      "observations": [
+        "Materializer compiles ../dsl/oracle_checks_smoke.json and selects one final case by replay.case_id."
+      ],
+      "replay": {
+        "dsl_path": "../dsl/oracle_checks_smoke.json",
+        "case_id": "dsl_oracle_checks_smoke"
+      }
+    },
+    {
+      "bug_id": "example_inline_dsl_key_point_smoke",
+      "title": "Example materialized from inline DSL with key_points",
+      "representative_case_id": "inline_dsl_key_point_smoke",
+      "api": "api_boolean",
+      "observations": [
+        "Materializer writes the inline DSL under the output registry, compiles it, and emits one flat replay recipe."
+      ],
+      "replay": {
+        "case_id": "inline_dsl_key_point_smoke",
+        "dsl": {
+          "dsl_version": 1,
+          "constants": {
+            "topo_tol": 0.01,
+            "geom_tol": 0.00001,
+            "target_radius": 8.0,
+            "tool_radius": 1.0,
+            "tool_x": 40.0
+          },
+          "key_points": {
+            "target_center": [0.0, 0.0, 0.0]
+          },
+          "defaults": {
+            "api": "api_boolean",
+            "boolean_type": "SUBTRACTION",
+            "modeling_tol": "topo_tol",
+            "check_valid": true,
+            "topo_track": false,
+            "non_destructive": true,
+            "expectations": {
+              "result_bodies": {"min": 1, "max": 1},
+              "boolean_bbox_relation": false,
+              "boolean_volume_relation": false
+            }
+          },
+          "cases": [
+            {
+              "case_id": "inline_dsl_key_point_smoke",
+              "hypothesis": "A distant tool should preserve the target and keep the named center point inside the result.",
+              "target": {
+                "kind": "solid_sphere",
+                "radius": "target_radius"
+              },
+              "tool": {
+                "kind": "solid_sphere",
+                "radius": "tool_radius",
+                "translate_x": "tool_x"
+              },
+              "expectations": {
+                "point_relations": [
+                  {
+                    "id": "result_center_inside",
+                    "role": "result",
+                    "body_index": 0,
+                    "point_ref": "target_center",
+                    "expected": "Inside",
+                    "tolerance": "topo_tol",
+                    "check_boundary": true
+                  }
+                ],
+                "distance_checks": [
+                  {
+                    "id": "target_tool_clearance",
+                    "role_a": "target",
+                    "role_b": "tool",
+                    "kind": "minimum",
+                    "distance": {
+                      "expected": "tool_x - target_radius - tool_radius",
+                      "abs_tol": "geom_tol"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

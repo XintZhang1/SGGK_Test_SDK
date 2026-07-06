@@ -1,0 +1,128 @@
+{
+  "registry_id": "paired_sweep_exact_tangency_crash",
+  "description": "A generated sweep/extrude exact side tangency subtraction can crash the runner/kernel after SDK status has been written as success.",
+  "defaults": {
+    "api": "api_boolean",
+    "replay_status": "stable_failure",
+    "topo_track_policy": "diagnostic_when_modeling_fails",
+    "modeling_failure_required": true
+  },
+  "records": [
+    {
+      "bug_id": "paired_sweep_exact_tangency_crash_001",
+      "fingerprint": "f025fa524d11674e",
+      "title": "Generated sweep/extrude exact side tangency subtraction exits with access-violation code.",
+      "representative_case_id": "paired_sweep_exact_crash_repro_sub_exact",
+      "reasons": ["runner_nonzero_exit"],
+      "expected": {
+        "returncode": 3221225477,
+        "result_must_fail": true
+      },
+      "runner": {
+        "returncode": 3221225477,
+        "timed_out": false
+      },
+      "topo_track_diagnostic": {
+        "status": "empty",
+        "reason": "topo-track produced no items",
+        "item_count": 0,
+        "ancestor_count": 0,
+        "resolved_ancestor_count": 0,
+        "unresolved_ancestor_count": 0,
+        "ambiguous_ancestor_count": 0,
+        "ancestor_input_role_counts": {}
+      },
+      "primary_contact": {
+        "target": {
+          "role": "target",
+          "type": "Face",
+          "id": 3,
+          "local_index": 0,
+          "terminal_operation": "target_place",
+          "operation_chain": ["target_extrude", "target_place"]
+        },
+        "tool": {
+          "role": "tool",
+          "type": "Face",
+          "id": 3,
+          "local_index": 0,
+          "terminal_operation": "tool_side_place",
+          "operation_chain": ["tool_line_sweep", "tool_side_place"]
+        },
+        "bbox_distance": 0.0,
+        "axis_gaps": [0.0, 0.0, 0.0],
+        "axis_overlaps": [0.0, 80.0, 0.0],
+        "target_locator": {
+          "bbox": {
+            "empty": false,
+            "min": [-130.0, -90.0, 0.0],
+            "max": [130.0, 90.0, 0.0],
+            "center": [0.0, 0.0, 0.0],
+            "diagonal": 316.22776601683796
+          },
+          "sense": false,
+          "area": 46800.0
+        },
+        "tool_locator": {
+          "bbox": {
+            "empty": false,
+            "min": [130.0, -40.0, -20.0],
+            "max": [210.0, 40.0, 240.0],
+            "center": [170.0, 0.0, 110.0],
+            "diagonal": 283.5489375751565
+          },
+          "sense": true,
+          "area": 65345.12719466769
+        }
+      },
+      "dsl": {
+        "source": "test_harness/dsl/paired_sweep_exact_crash_repro.json",
+        "case_id": "paired_sweep_exact_crash_repro",
+        "variant": "sub_exact",
+        "hypothesis": "A paired sweep mutates boolean type, cutter offset, and result-body oracle together so tolerance-band variants stay semantically aligned."
+      },
+      "notes": "Discovered by compiling test_harness/dsl/paired_sweep_exact_crash_repro.json and running the sub_exact variant. The sibling +0.01 gap and -0.01 overlap variants passed; geometry audit reported signed_clearance 0.0 for this exact case.",
+      "replay": {
+        "recipe": {
+          "api": "api_boolean",
+          "boolean_type": "SUBTRACTION",
+          "modeling_tol": 0.01,
+          "check_valid": true,
+          "topo_track": true,
+          "non_destructive": true,
+          "expectations": {
+            "result_bodies": {
+              "min": 1
+            },
+            "require_property_calculations": true,
+            "require_finite_properties": true,
+            "require_nonnegative_length_area": true
+          },
+          "case_id": "paired_sweep_exact_crash_repro_sub_exact",
+          "target_kind": "extrude_rect",
+          "target_length": 260.0,
+          "target_width": 180.0,
+          "target_height": 220.0,
+          "target_operations": ["target_extrude", "target_place"],
+          "target_operation_tol": 0.01,
+          "target_translate_x": 0.0,
+          "target_translate_y": 0.0,
+          "target_translate_z": 0.0,
+          "tool_kind": "sweep_circle_line",
+          "tool_profile_radius": 40.0,
+          "tool_height": 260.0,
+          "tool_operations": ["tool_line_sweep", "tool_side_place"],
+          "tool_operation_tol": 0.01,
+          "tool_g1_tol": 0.1,
+          "tool_translate_x": 170.0,
+          "tool_translate_y": 0.0,
+          "tool_translate_z": -20.0,
+          "dsl_source": "test_harness\\dsl\\paired_sweep_exact_crash_repro.json",
+          "dsl_case_id": "paired_sweep_exact_crash_repro",
+          "dsl_variant": "sub_exact",
+          "hypothesis": "A paired sweep mutates boolean type, cutter offset, and result-body oracle together so tolerance-band variants stay semantically aligned."
+        }
+      }
+    }
+  ]
+}

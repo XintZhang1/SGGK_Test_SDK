@@ -1,0 +1,18 @@
+{
+  "case_id": "boolean_extrude_rect_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": true,
+  "non_destructive": true,
+  "target_kind": "extrude_rect",
+  "target_length": 260.0,
+  "target_width": 180.0,
+  "target_height": 220.0,
+  "tool_kind": "solid_cylinder",
+  "tool_radius": 55.0,
+  "tool_height": 280.0,
+  "tool_angle": 6.283185307179586,
+  "tool_translate_z": -30.0
+}

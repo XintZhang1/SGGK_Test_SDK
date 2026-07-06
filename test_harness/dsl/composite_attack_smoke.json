@@ -1,0 +1,85 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "tol": 0.01,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "dsl_extrude_cap_cut",
+      "hypothesis": "Outer boolean cuts a generated extrusion cap and side edge near the modeling tolerance.",
+      "target": {
+        "kind": "extrude_rect",
+        "length": 260.0,
+        "width": 180.0,
+        "height": 220.0
+      },
+      "tool": {
+        "kind": "solid_cylinder",
+        "radius": 55.0,
+        "height": 280.0,
+        "angle": "tau",
+        "translate": [0.0, 0.0, -30.0]
+      },
+      "sweeps": [
+        {
+          "path": "tool.translate_z",
+          "values": [
+            {"suffix": "below_tol", "value": "-30.0 - tol"},
+            {"suffix": "flush", "value": "-30.0"},
+            {"suffix": "above_tol", "value": "-30.0 + tol"}
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "dsl_sweep_tool_cut",
+      "hypothesis": "A swept circular profile participates in the outer boolean, exercising generated sweep side topology.",
+      "target": {
+        "kind": "solid_wedge",
+        "length": 260.0,
+        "width": 180.0,
+        "height": 240.0
+      },
+      "tool": {
+        "kind": "sweep_circle_line",
+        "profile_radius": 35.0,
+        "height": 300.0,
+        "operation_tol": "tol",
+        "g1_tol": 0.1,
+        "translate": [40.0, 20.0, -30.0]
+      }
+    },
+    {
+      "case_id": "dsl_preboolean_outer_cut",
+      "hypothesis": "A body that already contains boolean-generated faces is used as the target of a second boolean.",
+      "target": {
+        "kind": "pre_boolean_cylinder_wedge",
+        "boolean_type": "SUBTRACTION",
+        "radius": 180.0,
+        "height": 360.0,
+        "angle": "tau",
+        "length": 140.0,
+        "width": 240.0,
+        "secondary_height": 200.0,
+        "secondary_translate": [40.0, 0.0, 0.0],
+        "operation_tol": "tol"
+      },
+      "tool": {
+        "kind": "solid_cylinder",
+        "radius": 45.0,
+        "height": 420.0,
+        "angle": "tau",
+        "translate": [70.0, 0.0, -30.0]
+      }
+    }
+  ]
+}

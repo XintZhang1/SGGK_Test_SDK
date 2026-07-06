@@ -1,0 +1,10 @@
+{
+  "case_id": "step_roundtrip_smoke",
+  "api": "step_roundtrip",
+  "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+  "source_body_index": 0,
+  "step_app_protocol": "AP203",
+  "step_surface_to_bspline": true,
+  "step_curve_to_bspline": true,
+  "step_spcurve_in_wire_to_bspline": true
+}

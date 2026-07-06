@@ -1,0 +1,8 @@
+{
+  "case_id": "iges_roundtrip_smoke",
+  "api": "iges_roundtrip",
+  "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+  "source_body_index": 0,
+  "iges_face_only_mode": false,
+  "iges_write_sgk_specified_data": false
+}

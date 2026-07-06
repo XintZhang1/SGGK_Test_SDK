@@ -1,0 +1,124 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "tau": "2 * pi"
+  },
+  "key_points": {
+    "tool_axis_mid": [0.0, 20.0, 50.0]
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "UNION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "chain_bspline_support_sweep_cut",
+      "hypothesis": "A circular profile is swept along a BSpline curve constrained by a BSpline support face, then unioned with a cylinder near the support-sweep midspan.",
+      "expectations": {
+        "sample_input_properties": true,
+        "require_nonnegative_volume": true,
+        "volume_relation_abs_tol": "topo_tol",
+        "volume_relation_rel_tol": 1e-8,
+        "total_abs_volume": {
+          "min": 1.0
+        },
+        "point_relations": [
+          {
+            "id": "tool_axis_mid_inside",
+            "role": "tool",
+            "body_index": 0,
+            "point_ref": "tool_axis_mid",
+            "expected": "Inside",
+            "tolerance": "topo_tol"
+          }
+        ],
+        "clash_checks": [
+          {
+            "id": "target_tool_overlap",
+            "role_a": "target",
+            "role_b": "tool",
+            "body_index_a": 0,
+            "body_index_b": 0,
+            "expected": "AnyClash",
+            "tolerance": "topo_tol"
+          }
+        ],
+        "plane_extreme_checks": [
+          {
+            "id": "tool_x_min",
+            "role": "tool",
+            "body_index": 0,
+            "axis": "x",
+            "side": "min",
+            "expected": -70.0,
+            "tolerance": "topo_tol"
+          },
+          {
+            "id": "tool_x_max",
+            "role": "tool",
+            "body_index": 0,
+            "axis": "x",
+            "side": "max",
+            "expected": 70.0,
+            "tolerance": "topo_tol"
+          },
+          {
+            "id": "tool_z_max",
+            "role": "tool",
+            "body_index": 0,
+            "axis": "z",
+            "side": "max",
+            "expected": 120.0,
+            "tolerance": "topo_tol"
+          }
+        ]
+      },
+      "target": {
+        "chain": [
+          {
+            "id": "target_support_sweep",
+            "op": "support_sweep",
+            "path_radius": 150.0,
+            "profile_radius": 18.0,
+            "height": 90.0,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {
+            "id": "tool_cylinder",
+            "op": "primitive",
+            "kind": "solid_cylinder",
+            "radius": 70.0,
+            "height": 140.0,
+            "angle": "tau"
+          },
+          {
+            "id": "tool_place",
+            "op": "transform",
+            "translate": [0.0, 20.0, -20.0]
+          }
+        ]
+      },
+      "sweeps": [
+        {
+          "path": "tool.chain.1.translate.1",
+          "values": [
+            {"suffix": "near_minus_geom", "value": "20.0 - geom_tol"},
+            {"suffix": "nominal", "value": 20.0},
+            {"suffix": "near_plus_geom", "value": "20.0 + geom_tol"}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "tol": 0.01,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "chain_extrude_generated_cap",
+      "hypothesis": "A parameterized rect profile is extruded, transformed, and cut at generated cap tolerance offsets.",
+      "target": {
+        "chain": [
+          {"id": "target_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 55.0, "height": 280.0, "angle": "tau"},
+          {"id": "tool_cap_offset", "op": "transform", "translate": [0.0, 0.0, -30.0]}
+        ]
+      },
+      "sweeps": [
+        {
+          "path": "tool.chain.1.translate_z",
+          "values": [
+            {"suffix": "below_tol", "value": "-30.0 - tol"},
+            {"suffix": "flush", "value": -30.0},
+            {"suffix": "above_tol", "value": "-30.0 + tol"}
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "chain_sweep_generated_side",
+      "hypothesis": "A parameterized circle profile is swept along a line and used as the outer boolean cutter.",
+      "target": {
+        "chain": [
+          {"id": "target_wedge", "op": "primitive", "kind": "solid_wedge", "length": 260.0, "width": 180.0, "height": 240.0}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_profile", "op": "circle_profile", "radius": 35.0},
+          {"id": "tool_sweep", "op": "sweep_line", "height": 300.0, "operation_tol": "tol", "g1_tol": 0.1},
+          {"id": "tool_place", "op": "transform", "translate": [40.0, 20.0, -30.0]}
+        ]
+      }
+    },
+    {
+      "case_id": "chain_preboolean_generated_body",
+      "hypothesis": "A chain creates a pre-boolean cylinder-minus-wedge body and then applies a second outer boolean.",
+      "target": {
+        "chain": [
+          {"id": "pre_base_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 180.0, "height": 360.0, "angle": "tau"},
+          {
+            "id": "pre_cut_boolean",
+            "op": "boolean",
+            "boolean_type": "SUBTRACTION",
+            "operation_tol": "tol",
+            "tool": {
+              "chain": [
+                {"id": "pre_tool_wedge", "op": "primitive", "kind": "solid_wedge", "length": 140.0, "width": 240.0, "height": 200.0},
+                {"id": "pre_tool_place", "op": "transform", "translate": [40.0, 0.0, 0.0]}
+              ]
+            }
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "outer_tool_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 45.0, "height": 420.0, "angle": "tau"},
+          {"id": "outer_tool_place", "op": "transform", "translate": [70.0, 0.0, -30.0]}
+        ]
+      }
+    }
+  ]
+}

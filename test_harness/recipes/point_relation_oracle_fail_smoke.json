@@ -1,0 +1,30 @@
+{
+  "case_id": "point_relation_oracle_fail_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 2.0,
+  "tool_translate_x": 50.0,
+  "expectations": {
+    "result_bodies": {"min": 1, "max": 1},
+    "boolean_bbox_relation": false,
+    "boolean_volume_relation": false,
+    "point_relations": [
+      {
+        "id": "result_center_should_not_be_outside",
+        "role": "result",
+        "body_index": 0,
+        "point": [0.0, 0.0, 0.0],
+        "expected": "Outside",
+        "tolerance": 0.01,
+        "check_boundary": true
+      }
+    ]
+  }
+}

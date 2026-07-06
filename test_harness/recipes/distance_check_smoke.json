@@ -1,0 +1,42 @@
+{
+  "case_id": "distance_check_smoke",
+  "api": "api_boolean",
+  "boolean_type": "SUBTRACTION",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 2.0,
+  "tool_translate_x": 50.0,
+  "expectations": {
+    "result_bodies": {"min": 1, "max": 1},
+    "boolean_bbox_relation": false,
+    "boolean_volume_relation": false,
+    "distance_checks": [
+      {
+        "id": "target_tool_clearance",
+        "role_a": "target",
+        "body_index_a": 0,
+        "role_b": "tool",
+        "body_index_b": 0,
+        "kind": "minimum",
+        "threshold": 100.0,
+        "expected": 38.0,
+        "abs_tol": 0.00001
+      },
+      {
+        "id": "result_tool_clearance",
+        "role_a": "result",
+        "body_index_a": 0,
+        "role_b": "tool",
+        "body_index_b": 0,
+        "kind": "minimum",
+        "threshold": 100.0,
+        "distance": {"expected": 38.0, "abs_tol": 0.00001}
+      }
+    ]
+  }
+}

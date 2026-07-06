@@ -1,0 +1,4 @@
+interface:
+  display_name: "SGGK Source Attack"
+  short_description: "Generate SGGK attack DSL from kernel source."
+  default_prompt: "Use $sggk-source-attack to inspect geometry kernel source and emit SGGK attack DSL."

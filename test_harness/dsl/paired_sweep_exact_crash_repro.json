@@ -1,0 +1,56 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {"min": 1},
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_length_area": true
+    }
+  },
+  "cases": [
+    {
+      "case_id": "paired_sweep_exact_crash_repro",
+      "hypothesis": "A generated sweep/extrude exact side tangency subtraction exits with access-violation code after SDK success status is written.",
+      "target": {
+        "chain": [
+          {"id": "target_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_circle_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_line_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_side_place", "op": "transform", "translate_x": 170.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {"suffix": "sub_overlap_topo", "values": ["SUBTRACTION", "170.0 - topo_tol", 1]},
+            {"suffix": "sub_exact", "values": ["SUBTRACTION", 170.0, 1]},
+            {"suffix": "int_gap_topo", "values": ["INTERSECTION", "170.0 + topo_tol", 0]}
+          ]
+        }
+      ]
+    }
+  ]
+}

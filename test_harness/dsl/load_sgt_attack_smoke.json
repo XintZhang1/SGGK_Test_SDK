@@ -1,0 +1,48 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "tol": 0.01,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "chain_loaded_sgt_recut",
+      "hypothesis": "Reuse a previously generated SGT body as a corpus seed, then cut it with a parameterized cylinder.",
+      "target": {
+        "chain": [
+          {
+            "id": "load_boolean_result_seed",
+            "op": "load_sgt",
+            "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+            "body_index": 0
+          },
+          {"id": "place_loaded_seed", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "recut_tool_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 35.0, "height": 700.0, "angle": "tau"},
+          {"id": "recut_tool_place", "op": "transform", "translate": [40.0, 0.0, -80.0]}
+        ]
+      },
+      "sweeps": [
+        {
+          "path": "tool.chain.1.translate_x",
+          "values": [
+            {"suffix": "left_tol", "value": "40.0 - tol"},
+            {"suffix": "center", "value": 40.0},
+            {"suffix": "right_tol", "value": "40.0 + tol"}
+          ]
+        }
+      ]
+    }
+  ]
+}

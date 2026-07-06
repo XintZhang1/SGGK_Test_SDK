@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "registry_id": "freecad_corpus_recut_boolean_empty_result",
+  "description": "Stable public FreeCAD corpus recut boolean validation bug captured with durable SGT fixtures. SDK api_boolean reports success and TopoCheck success, but subtraction returns zero result bodies at a geometry-tolerance near-tangent overlap.",
+  "defaults": {
+    "api": "api_boolean",
+    "replay_status": "stable_failure",
+    "reasons": ["validation_failed"],
+    "modeling_failure_required": true,
+    "topo_track_policy": "diagnostic_when_modeling_fails"
+  },
+  "records": [
+    {
+      "bug_id": "sggk_bool_freecad_recut_subtraction_empty_001",
+      "fingerprint": "e67361f3777637c2",
+      "title": "FreeCAD imported target recut by near-tangent cylinder reports success but returns zero result bodies.",
+      "representative_case_id": "freecad_recut_e67361f3777637c2",
+      "validation_failures": [
+        "result_body_count_below_min actual=0 min=1"
+      ],
+      "expected": {
+        "returncode": 2,
+        "result_must_fail_validation": true
+      },
+      "notes": "This record promotes the public FreeCAD campaign discovery into durable local fixtures. Topo tracking is diagnostic only; the modeling oracle is non-empty result body count after SUBTRACTION.",
+      "observations": [
+        "Upstream source: FreeCAD/FreeCAD-library Mechanical Parts/Fasteners/Bolt Clearance Hole Cylinders/Unified/Normal/U_5s8/U_5s8NormalMean.step.",
+        "Primary contact from the discovery campaign: target Face#17[0] against tool Face#3[0], x-overlap approximately 1e-5."
+      ],
+      "target_sgt": "../fixtures/bug_records/freecad_e67361f3777637c2/target.sgt",
+      "tool_sgt": "../fixtures/bug_records/freecad_e67361f3777637c2/tool.sgt",
+      "primary_contact": {
+        "target": {
+          "role": "target",
+          "type": "Face",
+          "id": 17,
+          "local_index": 0,
+          "terminal_operation": "load_corpus_sgt:result_1_57f7a9de",
+          "operation_chain": [
+            "load_corpus_sgt:result_1_57f7a9de"
+          ]
+        },
+        "tool": {
+          "role": "tool",
+          "type": "Face",
+          "id": 3,
+          "local_index": 0,
+          "terminal_operation": "recut_cylinder:cylinder_tangent_x",
+          "operation_chain": [
+            "recut_cylinder:cylinder_tangent_x"
+          ]
+        },
+        "bbox_distance": 0.0,
+        "axis_gaps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "axis_overlaps": [
+          1.0000017601541344e-05,
+          5.280659999989439,
+          15.0
+        ],
+        "target_locator": {
+          "bbox": {
+            "empty": false,
+            "min": [
+              -8.8011,
+              -8.8011,
+              -2.5
+            ],
+            "max": [
+              8.8011,
+              8.8011,
+              12.5
+            ],
+            "center": [
+              0.0,
+              0.0,
+              5.0
+            ],
+            "diagonal": 29.063291102007014
+          },
+          "sense": true,
+          "area": 829.4841331052739
+        },
+        "tool_locator": {
+          "bbox": {
+            "empty": false,
+            "min": [
+              8.801089999982398,
+              -2.6403299999947194,
+              -7.780659999989439
+            ],
+            "max": [
+              14.081749999971837,
+              2.6403299999947194,
+              17.78065999998944
+            ],
+            "center": [
+              11.441419999977118,
+              0.0,
+              5.0
+            ],
+            "diagonal": 26.62990462266617
+          },
+          "sense": true,
+          "area": 424.0541872233314
+        }
+      },
+      "topo_track_diagnostic": {
+        "status": "skipped",
+        "reason": "topo_track disabled by recipe",
+        "skipped": true,
+        "skip_reason": "topo_track disabled by recipe",
+        "item_count": 0,
+        "ancestor_count": 0,
+        "resolved_ancestor_count": 0,
+        "unresolved_ancestor_count": 0,
+        "ambiguous_ancestor_count": 0,
+        "ancestor_input_role_counts": {}
+      },
+      "replay": {
+        "recipe": {
+          "case_id": "record_e67361f3777637c2",
+          "api": "api_boolean",
+          "family": "corpus_recut",
+          "variant": "cylinder_tangent_x_subtraction_overlap_geom_tol",
+          "hypothesis": "Reuse a corpus/imported SGT body as the target and recut it with a generated tool near bbox contact, covering tolerance-side boolean behavior on real topology.",
+          "boolean_type": "SUBTRACTION",
+          "modeling_tol": 0.01,
+          "check_valid": true,
+          "topo_track": false,
+          "non_destructive": true,
+          "expectations": {
+            "result_bodies": {
+              "min": 1
+            },
+            "sample_input_properties": false,
+            "require_property_calculations": true,
+            "require_finite_properties": true,
+            "require_nonnegative_length_area": true,
+            "require_nonnegative_volume": false,
+            "boolean_volume_relation": true,
+            "boolean_bbox_relation": true,
+            "volume_relation_abs_tol": 0.01,
+            "volume_relation_rel_tol": 1e-08
+          },
+          "target_kind": "loaded_sgt",
+          "target_source_file": "test_harness/fixtures/bug_records/freecad_e67361f3777637c2/target.sgt",
+          "target_body_index": 0,
+          "target_operations": [
+            "load_corpus_sgt:result_1_57f7a9de"
+          ],
+          "tool_kind": "solid_cylinder",
+          "tool_radius": 2.6403299999947194,
+          "tool_height": 25.561319999978878,
+          "tool_angle": 6.283185307179586,
+          "tool_translate_x": 11.441419999977118,
+          "tool_translate_y": 0.0,
+          "tool_translate_z": -7.780659999989439,
+          "tool_operations": [
+            "recut_cylinder:cylinder_tangent_x"
+          ]
+        }
+      }
+    }
+  ]
+}
