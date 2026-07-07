@@ -18,6 +18,17 @@ python .\test_harness\tools\run_interface_distillation.py `
 
 Add `--seed-example-model-outputs` when replaying the checked-in reviewed examples. Omit it when `artifacts/model_outputs` already contains real intranet small-model responses. The integrated runner still follows the steps below; it just builds tasks, normalizes model output, checks/compiles, executes, runs API smoke, runs ABC sample smoke, scans source, and writes one summary/report root.
 
+When the model surface is Qoder prompt paste-in rather than an API call, generate bounded prompt files first:
+
+```powershell
+python .\test_harness\tools\build_qoder_prompt_pack.py `
+  --out .\artifacts\qoder_prompt_pack `
+  --model-output-root .\artifacts\model_outputs `
+  --max-prompt-chars 60000
+```
+
+Paste `qoder_resume_prompt.md` plus one `prompts/interface/*.md` file into a fresh Qoder session. Save the JSON response to the prompt's `expected_output_path`. Re-run the pack builder after saving outputs so the checkpoint reflects completed work.
+
 ## 1. Build The Model Task
 
 ```powershell

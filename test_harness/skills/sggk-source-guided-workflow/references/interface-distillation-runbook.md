@@ -41,6 +41,20 @@ Use the wrapper for a Windows one-command replay:
 
 Omit `--seed-example-model-outputs` / `-SeedExampleModelOutputs` when `--model-output-root` already contains real intranet model responses.
 
+When the intranet model is accessed through Qoder only, first build a paste-in prompt pack instead of trying to keep one long chat alive:
+
+```powershell
+python .\test_harness\tools\build_qoder_prompt_pack.py `
+  --out .\artifacts\qoder_prompt_pack `
+  --model-output-root .\artifacts\model_outputs `
+  --source-task-dir .\artifacts\interface_distillation_windows_full_40chunk_v2\source_attack_tasks `
+  --source-task-limit 80 `
+  --max-prompt-chars 60000 `
+  --run-tag abc40_v2
+```
+
+Paste `qoder_resume_prompt.md` plus exactly one task prompt into a fresh Qoder session. Save the JSON response to the prompt's `expected_output_path`, then run the fixed harness commands. Do not rely on Qoder's automatic context compression.
+
 ## Evidence To Inspect
 
 Every run should produce:

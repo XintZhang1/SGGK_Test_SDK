@@ -262,6 +262,17 @@ python .\test_harness\tools\run_interface_distillation.py `
   --out .\artifacts\interface_distillation
 ```
 
+If the intranet model is only available through Qoder, do not keep one long Qoder conversation alive. Build a bounded paste-in prompt pack with a deterministic checkpoint:
+
+```powershell
+python .\test_harness\tools\build_qoder_prompt_pack.py `
+  --out .\artifacts\qoder_prompt_pack `
+  --model-output-root .\artifacts\model_outputs `
+  --max-prompt-chars 60000
+```
+
+Use `artifacts/qoder_prompt_pack/qoder_session_index.md` as the operator checklist. For each task, paste `qoder_resume_prompt.md` and exactly one prompt from `prompts/interface/` into a fresh Qoder session, then save the returned JSON to the prompt's `expected_output_path`. Re-run the pack builder to refresh `qoder_session_checkpoint.json` instead of asking Qoder to summarize a long chat.
+
 For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
 
 ```powershell

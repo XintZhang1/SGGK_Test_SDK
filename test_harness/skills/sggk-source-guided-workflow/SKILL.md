@@ -15,6 +15,7 @@ Turn source-code findings into reviewed harness attacks without asking the model
 - Read `references/occ-surrogate-examples.md` when public surrogate source examples or distillation prompts are needed.
 - Read `references/cluster-policy.md` when expanding one source-risk seed into a compact case cluster.
 - Read `references/interface-distillation-runbook.md` when replaying the full form-to-report campaign or teaching a small model how to interpret ABC/source-guided run evidence.
+- Read `references/qoder-context-pack.md` when the model surface is Qoder prompt paste-in rather than an API call, especially when avoiding Qoder's unsafe long-context compression.
 
 ## Workflow
 
