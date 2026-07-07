@@ -29,6 +29,14 @@ python .\test_harness\tools\build_qoder_prompt_pack.py `
 
 Paste `qoder_resume_prompt.md` plus one `prompts/interface/*.md` file into a fresh Qoder session. Save the JSON response to the prompt's `expected_output_path`. Re-run the pack builder after saving outputs so the checkpoint reflects completed work.
 
+For a UI wrapper around the same fixed files, run:
+
+```powershell
+python .\test_harness\tools\qoder_prompt_workbench.py --host 127.0.0.1 --port 8765
+```
+
+Use `http://127.0.0.1:8765/` to generate packs, copy prompt pairs, paste Qoder JSON, and save outputs without opening JSON files by hand.
+
 ## 1. Build The Model Task
 
 ```powershell

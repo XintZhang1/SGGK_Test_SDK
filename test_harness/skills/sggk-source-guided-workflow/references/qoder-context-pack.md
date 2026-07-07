@@ -28,6 +28,26 @@ The builder writes:
 
 Generated files belong under `artifacts/` and should not be committed.
 
+## Local Workbench UI
+
+Use the UI when an operator should not browse files by hand:
+
+```powershell
+python .\test_harness\tools\qoder_prompt_workbench.py --host 127.0.0.1 --port 8765
+```
+
+Open `http://127.0.0.1:8765/`.
+
+The UI wraps the same fixed builder and checkpoint files. It can:
+
+- generate or refresh the prompt pack
+- filter task status and budget
+- copy `qoder_resume_prompt.md` plus one task prompt
+- validate one pasted Qoder JSON object
+- save the JSON to `expected_output_path` under `artifacts/`
+
+The UI does not call Qoder or any model API.
+
 ## Paste Protocol
 
 For each task:

@@ -273,6 +273,14 @@ python .\test_harness\tools\build_qoder_prompt_pack.py `
 
 Use `artifacts/qoder_prompt_pack/qoder_session_index.md` as the operator checklist. For each task, paste `qoder_resume_prompt.md` and exactly one prompt from `prompts/interface/` into a fresh Qoder session, then save the returned JSON to the prompt's `expected_output_path`. Re-run the pack builder to refresh `qoder_session_checkpoint.json` instead of asking Qoder to summarize a long chat.
 
+For a point-and-click operator flow, start the local Qoder workbench:
+
+```powershell
+python .\test_harness\tools\qoder_prompt_workbench.py --host 127.0.0.1 --port 8765
+```
+
+Open `http://127.0.0.1:8765/`. The UI can generate the prompt pack, list task status, copy the resume/task prompt pair, validate pasted Qoder JSON, and save it to the expected `artifacts/model_outputs` or `artifacts/source_model_outputs` path.
+
 For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
 
 ```powershell

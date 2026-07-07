@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qoder Prompt Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <h1>Qoder Prompt Workbench</h1>
+          <p id="repoRoot">Loading repo...</p>
+        </div>
+        <div class="top-actions">
+          <button id="refreshBtn" class="ghost" type="button" title="Reload checkpoint state">Refresh</button>
+          <button id="buildBtn" class="primary" type="button" title="Generate prompt pack from current settings">Generate Pack</button>
+        </div>
+      </header>
+
+      <section class="config-band" aria-label="Prompt pack settings">
+        <label>
+          <span>Output Pack</span>
+          <input id="outInput" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>Model Outputs</span>
+          <input id="modelOutputInput" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>Source Tasks Dir</span>
+          <input id="sourceDirInput" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>Source JSONL</span>
+          <input id="sourceJsonlInput" type="text" spellcheck="false" />
+        </label>
+        <label class="number-field">
+          <span>Source Limit</span>
+          <input id="sourceLimitInput" type="number" min="0" step="1" />
+        </label>
+        <label class="number-field">
+          <span>Prompt Chars</span>
+          <input id="maxCharsInput" type="number" min="1000" step="1000" />
+        </label>
+        <label class="number-field">
+          <span>Run Tag</span>
+          <input id="runTagInput" type="text" spellcheck="false" />
+        </label>
+      </section>
+
+      <section class="status-strip" aria-live="polite">
+        <div><strong id="totalCount">0</strong><span>Total</span></div>
+        <div><strong id="doneCount">0</strong><span>Done</span></div>
+        <div><strong id="interfaceCount">0</strong><span>Interface</span></div>
+        <div><strong id="sourceCount">0</strong><span>Source</span></div>
+        <div><strong id="budgetCount">0</strong><span>Over Budget</span></div>
+        <p id="checkpointText">No checkpoint loaded.</p>
+      </section>
+
+      <section class="workspace">
+        <aside class="task-pane">
+          <div class="task-tools">
+            <input id="taskSearch" type="search" placeholder="Filter tasks" aria-label="Filter tasks" />
+            <select id="typeFilter" aria-label="Filter task type">
+              <option value="all">All types</option>
+              <option value="interface_form">Interface</option>
+              <option value="source_attack">Source</option>
+            </select>
+            <select id="statusFilter" aria-label="Filter task status">
+              <option value="all">All status</option>
+              <option value="todo">Todo</option>
+              <option value="done">Done</option>
+              <option value="over">Over budget</option>
+            </select>
+          </div>
+          <div id="taskList" class="task-list" role="listbox" aria-label="Prompt tasks"></div>
+        </aside>
+
+        <section class="detail-pane">
+          <div class="detail-header">
+            <div>
+              <h2 id="taskTitle">Select a task</h2>
+              <p id="taskMeta">Generate a pack, then choose one task from the left.</p>
+            </div>
+            <div class="detail-actions">
+              <button id="copyResumeBtn" class="ghost" type="button" disabled>Copy Resume</button>
+              <button id="copyTaskBtn" class="ghost" type="button" disabled>Copy Task</button>
+              <button id="copyCombinedBtn" class="primary" type="button" disabled>Copy Both</button>
+            </div>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="prompt" type="button">Prompt</button>
+            <button class="tab" data-tab="output" type="button">Output</button>
+            <button class="tab" data-tab="paths" type="button">Paths</button>
+          </div>
+
+          <section id="promptTab" class="tab-panel active">
+            <textarea id="promptPreview" readonly spellcheck="false" aria-label="Task prompt preview"></textarea>
+          </section>
+
+          <section id="outputTab" class="tab-panel">
+            <div class="output-bar">
+              <span id="outputPath">No output path selected.</span>
+              <button id="copyOutputPathBtn" class="ghost" type="button" disabled>Copy Path</button>
+              <button id="saveOutputBtn" class="primary" type="button" disabled>Save JSON</button>
+            </div>
+            <textarea id="outputEditor" spellcheck="false" placeholder="Paste Qoder JSON here. It must be one JSON object."></textarea>
+          </section>
+
+          <section id="pathsTab" class="tab-panel">
+            <dl class="path-list">
+              <div><dt>Prompt</dt><dd id="promptPath">-</dd></div>
+              <div><dt>Output</dt><dd id="expectedPath">-</dd></div>
+              <div><dt>Checkpoint</dt><dd id="checkpointPath">-</dd></div>
+              <div><dt>Index</dt><dd id="indexPath">-</dd></div>
+            </dl>
+          </section>
+        </section>
+      </section>
+
+      <footer class="log-band">
+        <div id="message" role="status">Ready.</div>
+      </footer>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
