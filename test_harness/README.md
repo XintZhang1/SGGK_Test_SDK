@@ -300,6 +300,30 @@ python .\test_harness\tools\run_abc_boolean_mass_recut.py `
 
 The report keeps raw triage evidence but filters explicit kernel unsupported/not-allowed groups out of candidate bugs.
 
+After a useful shard or full campaign, preserve a compact local regression asset. This keeps the replay recipes, baseline fingerprints, track/contact localization, and code/form references needed to detect SDK version regressions without committing ABC data or run artifacts:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py snapshot `
+  --campaign .\artifacts\abc_boolean_mass_recut `
+  --out .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --asset-id abc_boolean_mass_recut `
+  --sdk-version SGK1.4.10 `
+  --dataset-label abc_fetch_40chunk_sample50
+```
+
+After an SDK update, replay the saved recipes with `run_recipes.py --recipe-list <asset>\regression_recipe_list.txt`, then compare:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py compare `
+  --asset .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --new-run .\artifacts\regression_replay\abc_boolean_mass_recut\run\recipe_summary.json `
+  --new-triage .\artifacts\regression_replay\abc_boolean_mass_recut\triage\triage_summary.json `
+  --out .\artifacts\regression_compare\abc_boolean_mass_recut `
+  --new-sdk-version SGK1.4.11
+```
+
+The comparison report separates fixed baseline bugs, new issues from baseline-passing cases, changed failures, still-failing bugs, and unsupported behavior changes.
+
 For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
 
 ```powershell

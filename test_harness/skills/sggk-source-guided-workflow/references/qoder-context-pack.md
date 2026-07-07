@@ -103,6 +103,18 @@ python .\test_harness\tools\run_interface_distillation.py `
 
 Source outputs are review-required. Extract accepted `attack_dsl` or expanded `cluster_seed` outputs, then run `compile_attack_dsl.py --check`, compile, `run_recipes.py`, triage, preview, and geometry audit.
 
+After any run that should become future regression coverage, use fixed code to snapshot a local asset pack; do not ask Qoder to remember the run:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py snapshot `
+  --campaign .\artifacts\interface_distillation_qoder_run\model_runs\<request_id> `
+  --out .\artifacts\regression_assets\interface_distillation_qoder_run_<request_id> `
+  --asset-id interface_distillation_qoder_run_<request_id> `
+  --sdk-version SGK1.4.10
+```
+
+Snapshot one concrete recipe lane at a time, for example a `model_runs/<request_id>` directory, an API smoke lane, or an ABC mass-recut campaign root. On a later SDK version, replay `regression_recipe_list.txt` and run `manage_regression_assets.py compare` to summarize fixed bugs, new issues, changed failures, and track/contact localization. This comparison report is the durable compressed memory for Qoder, not chat history.
+
 ## Failure Mode Rules
 
 - Qoder output with prose outside JSON is invalid; reprompt the same task in a fresh session.

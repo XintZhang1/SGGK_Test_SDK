@@ -118,6 +118,42 @@ python .\test_harness\tools\run_abc_boolean_mass_recut.py `
 
 The mass report preserves raw failures, but `abc_boolean_mass_recut_bug_report.md` excludes groups whose normalized error text matches explicit known-unsupported messages such as `Not accepted type!` or `wire and face both ... not allowed ... now`. These are counted as unsupported groups, not bugs. Candidate bug groups still need replay/reduction before promotion.
 
+After each useful shard or full campaign, snapshot a compact regression asset so future SDK versions can replay the same tested surface:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py snapshot `
+  --campaign .\artifacts\abc_boolean_mass_recut `
+  --out .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --asset-id abc_boolean_mass_recut `
+  --sdk-version SGK1.4.10 `
+  --dataset-label abc_fetch_40chunk_sample50 `
+  --max-cases 5000 `
+  --pass-sample 2000
+```
+
+The asset keeps copied replay recipes, baseline failure fingerprints, source/tool/form references, and track/contact localization summaries. It does not belong in GitHub; keep it under `artifacts/` or intranet storage.
+
+When the SDK changes, replay and compare:
+
+```powershell
+python .\test_harness\tools\run_recipes.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --recipe-list .\artifacts\regression_assets\abc_boolean_mass_recut\regression_recipe_list.txt `
+  --out .\artifacts\regression_replay\abc_boolean_mass_recut\run `
+  --triage-out .\artifacts\regression_replay\abc_boolean_mass_recut\triage `
+  --jobs 1 `
+  --timeout 180
+
+python .\test_harness\tools\manage_regression_assets.py compare `
+  --asset .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --new-run .\artifacts\regression_replay\abc_boolean_mass_recut\run\recipe_summary.json `
+  --new-triage .\artifacts\regression_replay\abc_boolean_mass_recut\triage\triage_summary.json `
+  --out .\artifacts\regression_compare\abc_boolean_mass_recut `
+  --new-sdk-version SGK1.4.11
+```
+
+The comparison report separates fixed baseline bugs, new issues from baseline-passing cases, changed failures, still failing bugs, and unsupported cases that changed behavior. Use topo-track summaries first for localization; if topo-track is absent or skipped, use the stored target/tool contact candidates as the fallback rough locator.
+
 ## Failure Classification
 
 Classify failures before writing a bug:

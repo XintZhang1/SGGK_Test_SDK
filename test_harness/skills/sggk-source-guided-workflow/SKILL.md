@@ -16,6 +16,7 @@ Turn source-code findings into reviewed harness attacks without asking the model
 - Read `references/cluster-policy.md` when expanding one source-risk seed into a compact case cluster.
 - Read `references/interface-distillation-runbook.md` when replaying the full form-to-report campaign or teaching a small model how to interpret ABC/source-guided run evidence.
 - Read `references/qoder-context-pack.md` when the model surface is Qoder prompt paste-in rather than an API call, especially when avoiding Qoder's unsafe long-context compression.
+- Read `references/regression-asset-workflow.md` after a run should become a long-lived version-regression monitor.
 
 ## Workflow
 
@@ -31,7 +32,7 @@ Turn source-code findings into reviewed harness attacks without asking the model
    - `generate_boolean_matrix.py` for broad boolean coverage.
    - `generate_corpus_recut_matrix.py` for saved SGT/imported body recuts.
    - `run_campaign.py` or `plan_large_campaign.py` for integrated batches.
-7. After execution, triage, render previews, run geometry audit, replay stable seeds, and promote bug records only after portability audit.
+7. After execution, triage, render previews, run geometry audit, replay stable seeds, snapshot compact regression assets, and promote bug records only after portability audit.
 
 ## Commands
 
