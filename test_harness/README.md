@@ -245,6 +245,15 @@ For intranet small-model handoff, use `test_harness/skills/sggk-api-form-workflo
 Developers fill `test_harness/forms/api_test_form.schema.json`, then deterministic code converts the form into a constrained model task:
 
 Use `test_harness/INTERFACE_TEST_MATRIX.md` as the current checklist of supported runner APIs, body builders, validation oracles, source-guided cluster flow, and known extension gaps.
+Use `test_harness/forms/interface_distillation/00_manifest.json` as the first distillation campaign manifest. It enumerates ready forms for:
+
+- primitive `api_boolean`
+- ABC `step_import`
+- imported ABC SGT recut booleans through `loaded_sgt`
+- `sweep_circle_line` and `support_sweep_bspline_surface`
+- `extrude_rect`, `thicken_rect_sheet`, `revolve_line`, and `revolve_rect`
+- pre-boolean operation-history recuts
+- `step_roundtrip`, `iges_roundtrip`, oracle calibration, and `check_sgt`
 
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `

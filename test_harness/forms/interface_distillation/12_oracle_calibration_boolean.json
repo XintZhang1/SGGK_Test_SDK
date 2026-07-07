@@ -1,0 +1,36 @@
+{
+  "request_id": "iface_12_oracle_calibration_boolean",
+  "owner": "qa-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK ModelAnalysis/API.h: body properties",
+    "SGGK clash/distance/point-relation APIs used by validation"
+  ],
+  "test_goal": "Calibrate validation oracles on simple stable bodies before applying them to ABC/source-guided failures.",
+  "risk_summary": "A weak or wrong oracle can turn source-guided generation into noise; point, face, clash, distance, and exact-extreme checks need known-good baselines.",
+  "geometry": {
+    "family": "primitive",
+    "target_builder": "solid_sphere",
+    "tool_builder": "solid_sphere",
+    "parameter_notes": "Use simple separated and overlapping sphere cases with analytic expected distance and extrema."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "point_relation",
+    "face_point_relation",
+    "clash",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "All oracle records should match expected values; negative variants should fail through validation, not through crashes.",
+  "case_count": 6,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Use this to teach the model what a good report looks like before larger ABC failures."
+}

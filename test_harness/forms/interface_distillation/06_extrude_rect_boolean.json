@@ -1,0 +1,36 @@
+{
+  "request_id": "iface_06_extrude_rect_boolean",
+  "owner": "modeling-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Modeling API: api_create_rect_sheet_body",
+    "SGGK Modeling API: api_extrude_entity"
+  ],
+  "test_goal": "Exercise extrude-generated cap, side face, and edge topology in boolean tolerance bands.",
+  "risk_summary": "Flat generated faces are easy to align exactly with cutters; source branches around coplanarity, edge splitting, and tolerance expansion can produce validation-only failures.",
+  "geometry": {
+    "family": "generated_extrude",
+    "target_builder": "rect_profile -> extrude",
+    "tool_builder": "solid_cylinder or sweep_circle_line",
+    "parameter_notes": "Attack side face, cap face, and generated vertical edge separately when expanding beyond smoke."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "point_relation",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Extruded body booleans should remain valid and preserve expected inside sample points/extrema across near-contact variants.",
+  "case_count": 8,
+  "run_profile": "matrix",
+  "input_assets": {},
+  "notes": "This is a compact baseline before sweep/support-sweep and ABC recut."
+}

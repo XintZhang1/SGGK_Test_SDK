@@ -1,0 +1,35 @@
+{
+  "request_id": "iface_01_boolean_primitive_source_guided",
+  "owner": "kernel-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Boolean/API.h: api_boolean",
+    "OCC surrogate: BOPAlgo_Options::SetFuzzyValue clamps fuzzy tolerance to Precision::Confusion"
+  ],
+  "test_goal": "Exercise primitive cylinder/wedge boolean across subtraction and intersection near exact contact and tolerance bands.",
+  "risk_summary": "Source-level fuzzy/tolerance branches can make a near-tangent boolean report success while silently returning an empty, invalid, or topologically inconsistent result.",
+  "geometry": {
+    "family": "primitive",
+    "target_builder": "solid_cylinder",
+    "tool_builder": "solid_wedge or solid_cylinder",
+    "parameter_notes": "Use exact contact, +/- geom_tol, +/- topo_tol, and one source literal tolerance if available."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "boolean_volume_relation",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Subtraction should keep a valid non-empty target body; intersection should only become non-empty once the overlap is meaningful under the reviewed source tolerance.",
+  "case_count": 10,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Prefer cluster_seed so the same source predicate can later grow generated-topology and large-coordinate siblings."
+}

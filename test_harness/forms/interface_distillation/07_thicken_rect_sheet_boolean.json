@@ -1,0 +1,37 @@
+{
+  "request_id": "iface_07_thicken_rect_sheet_boolean",
+  "owner": "offset-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Offset/API.h: api_thicken_body",
+    "OCC surrogate: tolerance growth around generated topology"
+  ],
+  "test_goal": "Exercise a thickened rectangular sheet through boolean subtraction and side-contact tolerance clusters.",
+  "risk_summary": "Thicken/offset can create side and cap topology whose tolerances differ from the input sheet; downstream boolean can expose invalid topology or bad volume relation.",
+  "geometry": {
+    "family": "generated_thicken",
+    "target_builder": "rect_profile -> thicken",
+    "tool_builder": "solid_cylinder",
+    "parameter_notes": "Use asymmetric min/max distances and keep thickness comfortably above topo_tol for regression candidates."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "boolean_volume_relation",
+    "point_relation",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "The thickened target should cut cleanly, remain non-empty, and keep exact x/z extrema within tolerance.",
+  "case_count": 5,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Seed from boolean_thicken_rect_sheet_smoke.json when reviewing model output."
+}

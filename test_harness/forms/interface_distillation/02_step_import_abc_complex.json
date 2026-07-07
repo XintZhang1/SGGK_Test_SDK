@@ -1,0 +1,31 @@
+{
+  "request_id": "iface_02_step_import_abc_complex",
+  "owner": "exchange-dev",
+  "target_api": "step_import",
+  "sdk_source_refs": [
+    "SGGK StepExchange/API.h: api_step_import",
+    "ABC dataset complex STEP subset"
+  ],
+  "test_goal": "Import top-complex ABC STEP samples and capture SDK status, TopoCheck, property snapshots, previews, and triage groups.",
+  "risk_summary": "Complex STEP topology can import with partial success, zero result bodies, invalid topology, or hidden geometry loss that only shows up in downstream recut or property checks.",
+  "geometry": {
+    "family": "corpus",
+    "input_asset": "artifacts/abc_fetch_smoke/complex_dataset_index.json",
+    "parameter_notes": "Preserve ABC complex-feature ordering and use a bounded top-N sample for smoke."
+  },
+  "tolerance_focus": [
+    "import_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "Each selected STEP should either import into valid checked bodies/topologies or produce a clearly triaged failure with source path preserved.",
+  "case_count": 48,
+  "run_profile": "corpus",
+  "input_assets": {
+    "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json"
+  },
+  "notes": "This form may produce corpus run commands rather than one flat recipe because step_import over ABC is dataset-driven."
+}
