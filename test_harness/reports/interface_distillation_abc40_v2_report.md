@@ -48,6 +48,7 @@ Exit code: `0`. This means the workflow completed and wrote summaries. Individua
 | ABC feature profile | 2000 profiled, 1802 complex STEP files |
 | ABC top-complex import | 48 executed, 29 passed, 19 failed, 0 timed out |
 | ABC recut boolean | 24 executed, 21 passed, 3 failed, 0 timed out |
+| direct IGES import sanity | 1 executed, 1 passed, 0 failed |
 | source scan/task build | 80 source attack tasks, 3 critical / 18 high / 59 medium |
 
 ## Per-Form Results
@@ -67,7 +68,7 @@ Exit code: `0`. This means the workflow completed and wrote summaries. Individua
 | `iface_11_iges_roundtrip_imported_sgt` | 1 | 0 | roundtrip smoke passed |
 | `iface_12_oracle_calibration_boolean` | 1 | 0 | oracle calibration passed |
 | `iface_13_check_sgt_replay` | 1 | 0 | SGT replay passed |
-| `iface_14_iges_import_abc_complex` | 0 | 1 | data coverage gap: selected ABC root has no IGES files |
+| `iface_14_iges_import_abc_complex` | 0 | 1 | data coverage gap: selected ABC root has no IGES files; direct IGES import sanity passed with a generated roundtrip IGES |
 
 ## Candidate Bugs And Gaps
 
@@ -132,12 +133,13 @@ Next action: replay these two DSL-derived flat recipes and run reduction or topo
 
 Next action: replay with preview and geometry audit, then reduce the flat recipe while preserving the failing oracle.
 
-### IGES import: current ABC root lacks IGES files
+### IGES import: interface sanity passes, current ABC root lacks IGES files
 
 - Lane: `model_runs/iface_14_iges_import_abc_complex`
 - API: `iges_import`
 - Error message: `IGES file read error: artifacts/abc_fetch_smoke/examples/top_complex_001.igs`
-- Interpretation: data coverage gap. The 40chunk fetch root contains STEP only, so the seeding step kept the placeholder and recorded a note. This should not be treated as an SDK bug.
+- Direct sanity evidence: `manual_iges_import_from_roundtrip_v2` imported `api_smoke_suite/iges_roundtrip_smoke/output/roundtrip.iges` with 1 executed, 1 passed, 0 failed.
+- Interpretation: data coverage gap. The 40chunk fetch root contains STEP only, so the seeding step kept the placeholder and recorded a note. This should not be treated as an SDK bug or as evidence that `iges_import` itself is broken.
 
 Next action: fetch or point to an IGES-capable corpus, then rerun `iface_14` or an IGES-specific `run_corpus.py` lane.
 

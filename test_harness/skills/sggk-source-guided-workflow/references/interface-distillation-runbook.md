@@ -106,4 +106,4 @@ Important lessons from that run:
 - The ABC recut lane found three tangent-cylinder subtraction failures on one imported SGT result with error `wire and face both in the body is not allowed for boolean INTERSECTION or SUBTRACTION now.`
 - Sweep/extrude generated-topology intersection produced `Coedge has no PCurve to calc nominal curve` in two tolerance-band cases.
 - Revolve-rect boolean produced SDK success with failed oracles; these are validation-only candidates that need replay/reduction before becoming persistent bug records.
-- The 40chunk ABC fetch root contained STEP only. IGES import tests should use an IGES-capable corpus or remain marked as data coverage gaps.
+- The 40chunk ABC fetch root contained STEP only. Direct `iges_import` sanity passed when pointed at a generated `iges_roundtrip` output, so ABC IGES failures from placeholder paths should be classified as corpus coverage gaps, not SDK import bugs.
