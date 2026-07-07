@@ -193,7 +193,7 @@ def load_example_catalog(path: Path) -> dict[str, Any]:
 
 def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
     kind = example.get("kind")
-    notes = example.get("notes", [])
+    notes = list(example.get("notes", []))
     if kind == "attack_dsl":
         source_path = Path(str(example.get("source_path", "")))
         if not source_path.is_file():
@@ -239,7 +239,77 @@ def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unsupported example kind: {kind!r}")
 
 
-def seed_example_model_outputs(catalog_path: Path, model_output_root: Path) -> list[dict[str, Any]]:
+def read_abc_index_files(fetch_root: Path) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for name in ("complex_dataset_index.json", "dataset_index.json"):
+        path = fetch_root / name
+        if not path.is_file():
+            continue
+        loaded = read_json(path)
+        raw_files = loaded.get("files") if isinstance(loaded, dict) else loaded
+        if not isinstance(raw_files, list):
+            raw_files = loaded.get("items") if isinstance(loaded, dict) else []
+        for raw in raw_files:
+            if isinstance(raw, dict):
+                files.append(raw)
+    return files
+
+
+def source_suffix(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    return Path(normalized).suffix.lower()
+
+
+def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -> None:
+    if abc_fetch_root is None:
+        return
+    if payload.get("kind") != "flat_recipe":
+        return
+    recipe = payload.get("recipe")
+    if not isinstance(recipe, dict):
+        return
+    source_file = recipe.get("source_file")
+    if not isinstance(source_file, str):
+        return
+    if "artifacts/abc_fetch_smoke/examples/top_complex_001" not in source_file.replace("\\", "/"):
+        return
+
+    api = str(recipe.get("api") or "")
+    requested_suffix = source_suffix(source_file)
+    desired_suffixes = {
+        "step_import": {".step", ".stp"},
+        "step_roundtrip": {".step", ".stp"},
+        "iges_import": {".iges", ".igs"},
+        "iges_roundtrip": {".iges", ".igs"},
+    }.get(api, {requested_suffix} if requested_suffix else set())
+    files = read_abc_index_files(abc_fetch_root)
+    selected = ""
+    for item in files:
+        path = item.get("path") or item.get("source_file")
+        if not isinstance(path, str) or not path:
+            continue
+        if desired_suffixes and source_suffix(path) not in desired_suffixes:
+            continue
+        item_api = item.get("api")
+        if isinstance(item_api, str) and item_api and item_api != api:
+            continue
+        selected = path
+        break
+
+    notes = payload.setdefault("notes", [])
+    if selected:
+        recipe["source_file"] = selected
+        notes.append(f"Bound placeholder source_file from ABC fetch root: {abc_fetch_root}")
+    else:
+        suffix_text = ", ".join(sorted(desired_suffixes)) or requested_suffix or "matching"
+        notes.append(f"ABC fetch root has no {suffix_text} file for {api}; replace source_file before SDK execution.")
+
+
+def seed_example_model_outputs(
+    catalog_path: Path,
+    model_output_root: Path,
+    abc_fetch_root: Path | None = None,
+) -> list[dict[str, Any]]:
     catalog = load_example_catalog(catalog_path)
     seeded: list[dict[str, Any]] = []
     examples = catalog.get("examples")
@@ -252,6 +322,7 @@ def seed_example_model_outputs(catalog_path: Path, model_output_root: Path) -> l
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("example output is missing request_id")
         payload = example_output_payload(raw)
+        bind_abc_source_file(payload, abc_fetch_root)
         out_path = model_output_root / f"{safe_id(request_id)}.json"
         write_json(out_path, payload)
         seeded.append(
@@ -848,7 +919,12 @@ def main() -> int:
     seeded_examples: list[dict[str, Any]] = []
     if args.seed_example_model_outputs:
         try:
-            seeded_examples = seed_example_model_outputs(Path(args.example_catalog), Path(args.model_output_root))
+            abc_fetch_root = Path(args.abc_fetch_root) if args.abc_fetch_root else None
+            seeded_examples = seed_example_model_outputs(
+                Path(args.example_catalog),
+                Path(args.model_output_root),
+                abc_fetch_root,
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"failed to seed example model outputs: {exc}", file=sys.stderr)
             return 1

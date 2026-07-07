@@ -288,6 +288,8 @@ python .\test_harness\tools\run_interface_distillation.py `
   --timeout 180
 ```
 
+When `--seed-example-model-outputs` is combined with `--abc-fetch-root`, STEP/IGES import templates with placeholder `source_file` values are rebound to matching files from `complex_dataset_index.json` or `dataset_index.json` when possible. If the fetch root does not contain the requested format, the seeded output keeps the placeholder and records a note so the intranet model or reviewer can supply a concrete file path.
+
 Send the generated prompt files under `artifacts/interface_distillation/model_prompts/` to the intranet model, then save each reviewed JSON response as `artifacts/model_outputs/<request_id>.json`. After the Windows runner is built, execute the reviewed outputs plus the current API smoke suite:
 
 ```powershell
