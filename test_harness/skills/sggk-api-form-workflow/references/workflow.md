@@ -1,5 +1,23 @@
 # Fixed Workflow
 
+For a full interface campaign, prefer the integrated runner:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation `
+  --model-output-root .\artifacts\model_outputs `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --execute `
+  --api-smoke `
+  --abc-sample-smoke `
+  --abc-fetch-root C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
+  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --jobs 1 `
+  --timeout 180
+```
+
+Add `--seed-example-model-outputs` when replaying the checked-in reviewed examples. Omit it when `artifacts/model_outputs` already contains real intranet small-model responses. The integrated runner still follows the steps below; it just builds tasks, normalizes model output, checks/compiles, executes, runs API smoke, runs ABC sample smoke, scans source, and writes one summary/report root.
+
 ## 1. Build The Model Task
 
 ```powershell

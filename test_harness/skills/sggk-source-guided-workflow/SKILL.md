@@ -14,6 +14,7 @@ Turn source-code findings into reviewed harness attacks without asking the model
 - Read `references/source-guided-contract.md` before preparing small-model input or reviewing model output.
 - Read `references/occ-surrogate-examples.md` when public surrogate source examples or distillation prompts are needed.
 - Read `references/cluster-policy.md` when expanding one source-risk seed into a compact case cluster.
+- Read `references/interface-distillation-runbook.md` when replaying the full form-to-report campaign or teaching a small model how to interpret ABC/source-guided run evidence.
 
 ## Workflow
 
