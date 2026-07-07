@@ -298,6 +298,19 @@ python .\test_harness\tools\run_interface_distillation.py `
   --timeout 180
 ```
 
+On the Windows SDK machine, the same build/check/execute/report flow can be run through a wrapper:
+
+```powershell
+.\test_harness\scripts\run_interface_distillation_windows.ps1 `
+  -SdkDir C:\Develop\SGGK_Agent\SGK1.4.10\SGGK `
+  -AbcFetchRoot .\artifacts\abc_fetch_smoke `
+  -SourceRoot C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  -Jobs 1 `
+  -Timeout 180
+```
+
+The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, runs the example-output SDK-free check, then executes available reviewed model outputs plus API smoke, ABC sample, and source-task lanes with the local runner.
+
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
   .\test_harness\forms\api_test_form.example.json `
