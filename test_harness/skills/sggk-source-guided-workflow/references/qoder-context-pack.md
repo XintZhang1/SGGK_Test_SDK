@@ -108,4 +108,5 @@ Source outputs are review-required. Extract accepted `attack_dsl` or expanded `c
 - Qoder output with prose outside JSON is invalid; reprompt the same task in a fresh session.
 - Qoder output that invents SDK calls is invalid; require `needs_harness_extension`.
 - Qoder output that omits real oracles is review-failed.
+- Qoder output for 100k+ campaigns should be `campaign_command`; it must not enumerate individual generated cases.
 - Qoder output that depends on previous chat is invalid. The prompt must be runnable from the checkpoint and one task file only.

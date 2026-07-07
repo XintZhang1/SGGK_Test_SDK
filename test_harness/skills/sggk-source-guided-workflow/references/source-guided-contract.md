@@ -17,6 +17,7 @@ Require JSON only, with one of these top-level `kind` values:
 - `attack_dsl`: reviewed or draft SGGK attack DSL.
 - `flat_recipe`: one or more direct runner recipes for supported non-DSL APIs.
 - `cluster_seed`: a compact seed for `build_source_guided_cluster.py`.
+- `campaign_command`: a fixed-code large campaign command, used when the model should not enumerate every generated case.
 - `needs_harness_extension`: unsupported API/body builder with proposed runner fields and validation oracle.
 
 ## Required Fields
@@ -51,6 +52,13 @@ For `needs_harness_extension`, include:
 - `proposed_recipe_fields`
 - `proposed_artifacts`
 - `minimum_smoke_case`
+
+For `campaign_command`, include:
+
+- `command`
+- `why_this_fixed_campaign_matches`
+- `expected_artifacts`
+- `unsupported_filter_policy`
 
 ## Post-Checks
 

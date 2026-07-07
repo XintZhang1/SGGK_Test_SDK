@@ -254,6 +254,7 @@ Use `test_harness/forms/interface_distillation/00_manifest.json` as the first di
 - `extrude_rect`, `thicken_rect_sheet`, `revolve_line`, and `revolve_rect`
 - pre-boolean operation-history recuts
 - `step_roundtrip`, `iges_roundtrip`, oracle calibration, and `check_sgt`
+- 100k+ ABC `loaded_sgt` boolean mass recut with unsupported-filtered bug reporting
 
 Build all current interface-distillation tasks and prompts without requiring the SDK:
 
@@ -280,6 +281,24 @@ python .\test_harness\tools\qoder_prompt_workbench.py --host 127.0.0.1 --port 87
 ```
 
 Open `http://127.0.0.1:8765/`. The UI can generate the prompt pack, list task status, copy the resume/task prompt pair, validate pasted Qoder JSON, and save it to the expected `artifacts/model_outputs` or `artifacts/source_model_outputs` path.
+
+For the 100k+ ABC boolean recut lane, use the fixed campaign command instead of asking the model to emit individual cases:
+
+```powershell
+python .\test_harness\tools\run_abc_boolean_mass_recut.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --dataset <imported-sgt-root> `
+  --out .\artifacts\abc_boolean_mass_recut `
+  --target-cases 100000 `
+  --preset stress `
+  --shard-count 100 `
+  --shard-index 0 `
+  --jobs 1 `
+  --timeout 180 `
+  --resume
+```
+
+The report keeps raw triage evidence but filters explicit kernel unsupported/not-allowed groups out of candidate bugs.
 
 For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
 

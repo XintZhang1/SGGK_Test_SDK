@@ -412,9 +412,13 @@ def normalize_model_output(record: dict[str, Any], model_output_root: Path) -> d
         model_record["normalized_path"] = str(out_path)
     elif kind == "needs_harness_extension":
         model_record["normalized_path"] = str(found_path)
+    elif kind == "campaign_command":
+        model_record["normalized_path"] = str(found_path)
     else:
         model_record["kind"] = "invalid"
-        model_record["notes"].append("kind must be attack_dsl, flat_recipe, cluster_seed, or needs_harness_extension")
+        model_record["notes"].append(
+            "kind must be attack_dsl, flat_recipe, cluster_seed, campaign_command, or needs_harness_extension"
+        )
     return model_record
 
 
@@ -511,6 +515,8 @@ def check_model_output(record: dict[str, Any], out_root: Path) -> dict[str, Any]
         return check_flat_recipe(str(record["request_id"]), normalized_path)
     if kind == "cluster_seed":
         return check_cluster_seed(str(record["request_id"]), normalized_path, out_root)
+    if kind == "campaign_command":
+        return {"kind": kind, "ok": True, "skipped": True, "reason": "fixed large campaign command"}
     if kind == "needs_harness_extension":
         return {"kind": kind, "ok": True, "skipped": True, "reason": "extension request"}
     return {"kind": kind, "ok": False, "skipped": True, "reason": f"unsupported model kind: {kind}"}
@@ -700,6 +706,15 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
         if not args.execute:
             record["stage"] = "model_output_checked" if should_check else "model_output_ready"
             continue
+        if model["kind"] == "campaign_command":
+            record["execute_result"] = {
+                "kind": "campaign_command",
+                "ok": True,
+                "skipped": True,
+                "reason": "run fixed campaign command separately",
+            }
+            record["stage"] = "executed"
+            continue
         if not runner_available:
             record["stage"] = "model_output_checked"
             record["execute_result"] = {
@@ -716,6 +731,8 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
             result = execute_flat_recipe(str(record["request_id"]), normalized_path, out_root, runner, args.jobs, args.timeout)
         elif model["kind"] == "cluster_seed":
             result = execute_cluster_seed(str(record["request_id"]), normalized_path, out_root, runner, args.jobs, args.timeout)
+        elif model["kind"] == "campaign_command":
+            result = {"kind": "campaign_command", "ok": True, "skipped": True, "reason": "run fixed campaign command separately"}
         else:
             result = {"ok": False, "skipped": True, "reason": f"unsupported model kind: {model['kind']}"}
         record["execute_result"] = result

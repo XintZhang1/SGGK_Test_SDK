@@ -47,6 +47,21 @@ Runnable flat-recipe output:
 }
 ```
 
+Fixed large-campaign output:
+
+```json
+{
+  "kind": "campaign_command",
+  "command": "python .\\test_harness\\tools\\run_abc_boolean_mass_recut.py --target-cases 100000 ...",
+  "why_this_fixed_campaign_matches": "The form requests a corpus-scale ABC loaded_sgt recut lane; fixed code expands recipes and reports filtered bug groups.",
+  "expected_artifacts": [
+    "artifacts/abc_boolean_mass_recut/abc_boolean_mass_recut_summary.json",
+    "artifacts/abc_boolean_mass_recut/abc_boolean_mass_recut_bug_report.md"
+  ],
+  "unsupported_filter_policy": "Explicit kernel unsupported/not-allowed messages are counted separately and not filed as bugs."
+}
+```
+
 Unsupported output:
 
 ```json
@@ -71,4 +86,5 @@ Review rules:
 - Include real oracles. Good defaults are `result_bodies`, property checks, point/body relation, face/point relation, clash, distance, plane-extreme, and roundtrip comparison when applicable.
 - For tolerance requests, use `sweeps` or `paired_sweeps` around exact contact, `geom_tol`, and `topo_tol`.
 - For `api_boolean`, prefer DSL over flat recipes.
+- For 100k+ corpus campaigns, use `campaign_command`; do not enumerate individual cases in model output.
 - For `check_sgt`, `step_import`, `iges_import`, `step_roundtrip`, and `iges_roundtrip`, use flat recipe JSON if no DSL mapping exists.

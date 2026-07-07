@@ -131,12 +131,14 @@ def output_contract() -> str:
 2. flat_recipe: {"kind":"flat_recipe","recipe":{...},"notes":[],"commands":[]}
 3. cluster_seed: {"kind":"cluster_seed", ...seed fields...}
 4. needs_harness_extension: {"kind":"needs_harness_extension","api":"...","why_needed":"...","proposed_recipe_fields":{},"minimum_smoke_case":{}}
+5. campaign_command: {"kind":"campaign_command","command":"python ...","notes":[],"expected_artifacts":[]}
 
 Rules:
 - Do not write direct SDK code.
 - Prefer attack_dsl for api_boolean and source-guided geometry attacks.
 - Use flat_recipe for step_import, iges_import, step_roundtrip, iges_roundtrip, and check_sgt.
 - Use cluster_seed when one source predicate should expand through build_source_guided_cluster.py.
+- Use campaign_command for fixed-code 100k+ corpus campaigns; do not enumerate every generated case in model output.
 - Always include a real oracle, not API success only.
 """
 

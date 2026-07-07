@@ -96,6 +96,28 @@ Run both targeted and broad lanes:
 
 The source scan output is a prioritization aid. The small model must still read the cited source branch and adjust geometry/oracles before final bug filing.
 
+## ABC Boolean 100k Mass Recut Lane
+
+Use this after the `loaded_sgt` ABC recut form has been reviewed. The model or operator should not enumerate 100k cases by hand; it emits or confirms a `campaign_command`, then fixed code expands and runs the campaign:
+
+```powershell
+python .\test_harness\tools\run_abc_boolean_mass_recut.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --dataset C:\Develop\SGGK_Agent\artifacts\<imported-sgt-root> `
+  --out .\artifacts\abc_boolean_mass_recut `
+  --target-cases 100000 `
+  --preset stress `
+  --shard-count 100 `
+  --shard-index 0 `
+  --jobs 1 `
+  --timeout 180 `
+  --resume
+```
+
+`stress` generates 75 recipes per usable SGT source: 5 tool/contact families, 3 boolean operations, and 5 tolerance bands. A 100k campaign therefore needs about 1,334 usable imported SGTs. Run one shard first, then fan out shard indexes on the Windows machine.
+
+The mass report preserves raw failures, but `abc_boolean_mass_recut_bug_report.md` excludes groups whose normalized error text matches explicit known-unsupported messages such as `Not accepted type!` or `wire and face both ... not allowed ... now`. These are counted as unsupported groups, not bugs. Candidate bug groups still need replay/reduction before promotion.
+
 ## Failure Classification
 
 Classify failures before writing a bug:
@@ -105,6 +127,7 @@ Classify failures before writing a bug:
 - Data binding issue: `source_file` is missing, placeholder-only, wrong format, or not present in the selected ABC fetch root.
 - Corpus limitation: current dataset has only STEP or only IGES, so the other exchange API needs a different fetch root.
 - Harness extension: model requested an SDK surface not supported by the runner.
+- Known unsupported: kernel explicitly reports an unsupported/not-allowed case; keep raw evidence but exclude it from candidate bug reports.
 
 Use `triage_summary.json` `failure_groups` to deduplicate by fingerprint, then pick one representative case for replay/reduction.
 

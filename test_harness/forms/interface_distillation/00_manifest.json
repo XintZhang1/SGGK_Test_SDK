@@ -93,6 +93,12 @@
       "form": "13_check_sgt_replay.json",
       "covers": ["check_sgt", "SGT replay and TopoCheck"],
       "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 15,
+      "form": "15_boolean_abc_mass_recut.json",
+      "covers": ["api_boolean", "loaded_sgt", "ABC imported SGT recut", "100k mass campaign"],
+      "expected_model_output": "generated recut campaign command"
     }
   ],
   "task_build_command": "python .\\test_harness\\tools\\build_api_test_task.py .\\test_harness\\forms\\interface_distillation\\<form>.json --out .\\artifacts\\interface_distillation_tasks\\<request_id>.json",

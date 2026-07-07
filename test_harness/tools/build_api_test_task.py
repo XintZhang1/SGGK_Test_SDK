@@ -296,6 +296,14 @@ Use this shape for supported flat-recipe APIs:
   "commands": ["validate/run commands"]
 }}
 
+Use this shape for fixed large campaigns that should not enumerate every case:
+{{
+  "kind": "campaign_command",
+  "command": "python .\\test_harness\\tools\\run_abc_boolean_mass_recut.py ...",
+  "notes": ["why this fixed-code campaign matches the form"],
+  "expected_artifacts": ["summary/report paths"]
+}}
+
 If the requested API or body builder is unsupported, return:
 {{
   "kind": "needs_harness_extension",
@@ -307,6 +315,7 @@ If the requested API or body builder is unsupported, return:
 
 Hard rules:
 - Prefer attack DSL for api_boolean.
+- For 100k+ corpus campaigns, do not emit individual DSL cases; emit campaign_command and use fixed code to expand recipes.
 - Do not invent SDK calls outside the runner schema.
 - Use constants topo_tol=0.01, geom_tol=0.00001, max_model_size=500000.0 unless the form overrides them.
 - Use stable id values on all important chain steps.
@@ -335,6 +344,25 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
     selected_oracles = as_string_list(form.get("oracles"))
     oracle_notes = [ORACLE_GUIDANCE.get(oracle, f"Map {oracle} to a supported oracle or request extension.") for oracle in selected_oracles]
     preferred_format = guidance["preferred_format"]
+    fixed_commands = command_lines(request_id, preferred_format)
+    if request_id == "iface_15_boolean_abc_mass_recut":
+        fixed_commands = [
+            (
+                "python .\\test_harness\\tools\\run_abc_boolean_mass_recut.py "
+                "--runner .\\build\\test_harness\\Release\\sggk_case_runner.exe "
+                "--dataset .\\artifacts\\interface_distillation_windows_full_40chunk_v2\\abc_sample_smoke\\top_complex_import "
+                "--out .\\artifacts\\abc_boolean_mass_recut "
+                "--target-cases 100000 --preset stress --shard-count 100 --shard-index 0 "
+                "--jobs 1 --timeout 180 --resume"
+            ),
+        ]
+        guidance = dict(guidance)
+        guidance["preferred_format"] = "campaign_command"
+        guidance["notes"] = list(guidance.get("notes", [])) + [
+            "Use campaign_command for this large ABC recut form; fixed code expands 100k+ recipes and filters explicit unsupported failures from bug reports.",
+        ]
+        preferred_format = "campaign_command"
+
     task = {
         "task_version": 1,
         "created_at": now_iso_like(),
@@ -357,7 +385,7 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
         },
         "api_guidance": guidance,
         "oracle_guidance": oracle_notes,
-        "fixed_commands": command_lines(request_id, preferred_format),
+        "fixed_commands": fixed_commands,
     }
     task["prompt"] = render_prompt(form, guidance, oracle_notes)
     return task
