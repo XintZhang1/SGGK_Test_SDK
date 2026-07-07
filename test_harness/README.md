@@ -248,7 +248,7 @@ Use `test_harness/INTERFACE_TEST_MATRIX.md` as the current checklist of supporte
 Use `test_harness/forms/interface_distillation/00_manifest.json` as the first distillation campaign manifest. It enumerates ready forms for:
 
 - primitive `api_boolean`
-- ABC `step_import`
+- ABC `step_import` and `iges_import`
 - imported ABC SGT recut booleans through `loaded_sgt`
 - `sweep_circle_line` and `support_sweep_bspline_surface`
 - `extrude_rect`, `thicken_rect_sheet`, `revolve_line`, and `revolve_rect`
@@ -260,6 +260,15 @@ Build all current interface-distillation tasks and prompts without requiring the
 ```powershell
 python .\test_harness\tools\run_interface_distillation.py `
   --out .\artifacts\interface_distillation
+```
+
+For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation_examples `
+  --seed-example-model-outputs `
+  --check-model-outputs
 ```
 
 Send the generated prompt files under `artifacts/interface_distillation/model_prompts/` to the intranet model, then save each reviewed JSON response as `artifacts/model_outputs/<request_id>.json`. After the Windows runner is built, execute the reviewed outputs plus the current API smoke suite:

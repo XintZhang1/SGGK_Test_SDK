@@ -1,0 +1,152 @@
+{
+  "catalog_version": 1,
+  "purpose": "Reviewed example small-model outputs for the interface distillation forms. Use run_interface_distillation.py --seed-example-model-outputs to materialize them under artifacts/model_outputs before SDK-free checks or Windows SDK runs.",
+  "examples": [
+    {
+      "request_id": "iface_01_boolean_primitive_source_guided",
+      "kind": "cluster_seed",
+      "source_path": "test_harness/dsl/source_guided_cluster_seed_smoke.json",
+      "description": "Source-guided OCC surrogate cluster seed covering exact contact, geom/topo tolerance bands, generated topology, and large-coordinate sibling cases.",
+      "notes": [
+        "Use this as the preferred source-guided seed shape when the model reads a tolerance branch in source code."
+      ]
+    },
+    {
+      "request_id": "iface_02_step_import_abc_complex",
+      "kind": "flat_recipe",
+      "description": "Single ABC STEP import recipe template; replace source_file with a concrete path selected from complex_dataset_index.json before broad SDK execution.",
+      "recipe": {
+        "case_id": "iface_02_step_import_abc_complex_example",
+        "api": "step_import",
+        "source_file": "artifacts/abc_fetch_smoke/examples/top_complex_001.step",
+        "expectations": {
+          "result_bodies": {"min": 1},
+          "require_property_calculations": false,
+          "require_finite_properties": false
+        }
+      },
+      "notes": [
+        "For a full ABC lane, prefer run_abc_sample_smoke.py or run_corpus.py over hand-writing one recipe per file."
+      ]
+    },
+    {
+      "request_id": "iface_14_iges_import_abc_complex",
+      "kind": "flat_recipe",
+      "description": "Single ABC IGES import recipe template; replace source_file with a concrete .igs/.iges path from the profiled ABC corpus before broad SDK execution.",
+      "recipe": {
+        "case_id": "iface_14_iges_import_abc_complex_example",
+        "api": "iges_import",
+        "source_file": "artifacts/abc_fetch_smoke/examples/top_complex_001.igs",
+        "iges_face_only_mode": false,
+        "iges_write_sgk_specified_data": false,
+        "expectations": {
+          "result_bodies": {"min": 1},
+          "require_property_calculations": false,
+          "require_finite_properties": false
+        }
+      },
+      "notes": [
+        "Keep import-mode choices explicit so a failed result can be replayed exactly."
+      ]
+    },
+    {
+      "request_id": "iface_03_loaded_sgt_abc_recut_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/load_sgt_attack_smoke.json",
+      "description": "Loaded-SGT recut attack shape. Replace source_file with ABC import output SGTs when running the ABC dataset lane.",
+      "notes": [
+        "This teaches the model to reuse imported or failed SGT bodies through load_sgt rather than treating the API as black-box only."
+      ]
+    },
+    {
+      "request_id": "iface_04_sweep_circle_line_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/real_chain_tolerance_smoke.json",
+      "description": "Generated sweep/extrude side-face tolerance lane with source-style near-contact variants.",
+      "notes": [
+        "Use stable operation ids so triage can localize generated sweep and extrusion topology."
+      ]
+    },
+    {
+      "request_id": "iface_05_support_sweep_bspline_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/complex_surface_sweep_boolean_smoke.json",
+      "description": "BSpline support-face sweep boolean with point, clash, volume, and plane-extreme oracles.",
+      "notes": [
+        "This is the support-sweep example for generated complex surface topology."
+      ]
+    },
+    {
+      "request_id": "iface_06_extrude_rect_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/operation_chain_smoke.json",
+      "description": "Operation-chain example including rect_profile -> extrude before an outer boolean.",
+      "notes": [
+        "The first case in this DSL is the extrude-generated cap tolerance example."
+      ]
+    },
+    {
+      "request_id": "iface_07_thicken_rect_sheet_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/thicken_chain_smoke.json",
+      "description": "Rectangular sheet thicken followed by cylinder boolean and distance/plane-extreme oracles.",
+      "notes": [
+        "Use this shape for api_thicken_body source risks and sheet-to-solid offset boundaries."
+      ]
+    },
+    {
+      "request_id": "iface_08_revolve_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/revolve_rect_chain_smoke.json",
+      "description": "Closed-profile revolve solid attacked by a cutter across topo/geom tolerance bands.",
+      "notes": [
+        "For open-profile revolve source risks, use revolve_chain_smoke.json as a sibling example."
+      ]
+    },
+    {
+      "request_id": "iface_09_preboolean_history_recut",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/operation_chain_smoke.json",
+      "description": "Operation-chain example including primitive -> boolean -> outer recut.",
+      "notes": [
+        "The third case in this DSL teaches operation-history recut and stable boolean step ids."
+      ]
+    },
+    {
+      "request_id": "iface_10_step_roundtrip_imported_sgt",
+      "kind": "flat_recipe",
+      "source_path": "test_harness/recipes/step_roundtrip_smoke.json",
+      "description": "STEP roundtrip recipe shape using a generated SGT source body and explicit AP203/BSpline conversion flags.",
+      "notes": [
+        "When using ABC import outputs, replace source_file with the selected imported SGT."
+      ]
+    },
+    {
+      "request_id": "iface_11_iges_roundtrip_imported_sgt",
+      "kind": "flat_recipe",
+      "source_path": "test_harness/recipes/iges_roundtrip_smoke.json",
+      "description": "IGES roundtrip recipe shape using a generated SGT source body and explicit IGES writer flags.",
+      "notes": [
+        "Roundtrip comparison is the hard oracle; API success alone is not enough."
+      ]
+    },
+    {
+      "request_id": "iface_12_oracle_calibration_boolean",
+      "kind": "attack_dsl",
+      "source_path": "test_harness/dsl/oracle_checks_smoke.json",
+      "description": "Boolean oracle calibration example covering point/body, face/point, clash, distance, and plane-extreme checks.",
+      "notes": [
+        "Use this when teaching the model to add measurable oracles beyond SDK return status."
+      ]
+    },
+    {
+      "request_id": "iface_13_check_sgt_replay",
+      "kind": "flat_recipe",
+      "source_path": "test_harness/recipes/check_sgt_sample.json",
+      "description": "check_sgt replay recipe shape for SGT artifacts produced by earlier lanes.",
+      "notes": [
+        "This is the simplest replay path for saved SGT bodies and topology assets."
+      ]
+    }
+  ]
+}

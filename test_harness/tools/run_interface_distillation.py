@@ -40,10 +40,21 @@ def parse_args() -> argparse.Namespace:
         help="Directory where reviewed small-model JSON outputs are saved.",
     )
     parser.add_argument(
+        "--example-catalog",
+        default="test_harness/examples/interface_distillation_model_outputs/catalog.json",
+        help="Reviewed example-output catalog used by --seed-example-model-outputs.",
+    )
+    parser.add_argument(
+        "--seed-example-model-outputs",
+        action="store_true",
+        help="Materialize reviewed example outputs into --model-output-root before checking/running.",
+    )
+    parser.add_argument(
         "--runner",
         default="build/test_harness/Release/sggk_case_runner.exe",
         help="Path to sggk_case_runner.exe when --execute is used.",
     )
+    parser.add_argument("--check-model-outputs", action="store_true", help="Run SDK-free DSL/recipe checks for model outputs.")
     parser.add_argument("--execute", action="store_true", help="Check/compile/run reviewed model outputs when present.")
     parser.add_argument("--require-model-outputs", action="store_true", help="Return non-zero if any model output is missing.")
     parser.add_argument("--api-smoke", action="store_true", help="Run the current API smoke suite after model-output lanes.")
@@ -171,6 +182,90 @@ def build_tasks(forms_dir: Path, manifest: dict[str, Any], out_root: Path) -> li
     return records
 
 
+def load_example_catalog(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"examples": []}
+    loaded = read_json(path)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"example catalog root must be an object: {path}")
+    return loaded
+
+
+def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
+    kind = example.get("kind")
+    notes = example.get("notes", [])
+    if kind == "attack_dsl":
+        source_path = Path(str(example.get("source_path", "")))
+        if not source_path.is_file():
+            raise FileNotFoundError(f"attack_dsl example source not found: {source_path}")
+        return {
+            "kind": "attack_dsl",
+            "dsl": read_json(source_path),
+            "notes": notes,
+            "commands": example.get("commands", []),
+        }
+    if kind == "cluster_seed":
+        source_path = Path(str(example.get("source_path", "")))
+        if not source_path.is_file():
+            raise FileNotFoundError(f"cluster_seed example source not found: {source_path}")
+        payload = read_json(source_path)
+        if not isinstance(payload, dict):
+            raise ValueError(f"cluster_seed example must be an object: {source_path}")
+        payload = dict(payload)
+        payload.setdefault("kind", "cluster_seed")
+        payload.setdefault("notes", notes)
+        return payload
+    if kind == "flat_recipe":
+        if "recipe" in example:
+            recipe = example["recipe"]
+        else:
+            source_path = Path(str(example.get("source_path", "")))
+            if not source_path.is_file():
+                raise FileNotFoundError(f"flat_recipe example source not found: {source_path}")
+            recipe = read_json(source_path)
+        if not isinstance(recipe, dict):
+            raise ValueError("flat_recipe example recipe must be an object")
+        return {
+            "kind": "flat_recipe",
+            "recipe": recipe,
+            "notes": notes,
+            "commands": example.get("commands", []),
+        }
+    if kind == "needs_harness_extension":
+        payload = {key: value for key, value in example.items() if key not in {"request_id", "notes"}}
+        payload.setdefault("kind", "needs_harness_extension")
+        payload.setdefault("notes", notes)
+        return payload
+    raise ValueError(f"unsupported example kind: {kind!r}")
+
+
+def seed_example_model_outputs(catalog_path: Path, model_output_root: Path) -> list[dict[str, Any]]:
+    catalog = load_example_catalog(catalog_path)
+    seeded: list[dict[str, Any]] = []
+    examples = catalog.get("examples")
+    if not isinstance(examples, list):
+        raise ValueError(f"example catalog examples must be a list: {catalog_path}")
+    for raw in examples:
+        if not isinstance(raw, dict):
+            continue
+        request_id = raw.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("example output is missing request_id")
+        payload = example_output_payload(raw)
+        out_path = model_output_root / f"{safe_id(request_id)}.json"
+        write_json(out_path, payload)
+        seeded.append(
+            {
+                "request_id": request_id,
+                "kind": payload.get("kind"),
+                "path": str(out_path),
+                "source_path": raw.get("source_path", ""),
+                "description": raw.get("description", ""),
+            }
+        )
+    return seeded
+
+
 def find_model_output(request_id: str, model_output_root: Path) -> tuple[str, Path | None]:
     base = safe_id(request_id)
     candidates = [
@@ -250,6 +345,104 @@ def normalize_model_output(record: dict[str, Any], model_output_root: Path) -> d
         model_record["kind"] = "invalid"
         model_record["notes"].append("kind must be attack_dsl, flat_recipe, cluster_seed, or needs_harness_extension")
     return model_record
+
+
+def check_attack_dsl(request_id: str, dsl_path: Path, out_root: Path) -> dict[str, Any]:
+    base = safe_id(request_id)
+    checks_dir = out_root / "model_checks"
+    compiled_dir = out_root / "compiled_model_recipes" / base
+    check_report = checks_dir / f"{base}_check.json"
+    commands: list[dict[str, Any]] = []
+    commands.append(
+        run_command(
+            f"{request_id}: check DSL",
+            [
+                sys.executable,
+                "test_harness/tools/compile_attack_dsl.py",
+                str(dsl_path),
+                "--check",
+                "--report",
+                str(check_report),
+            ],
+        )
+    )
+    if commands[-1]["ok"]:
+        commands.append(
+            run_command(
+                f"{request_id}: compile DSL",
+                [
+                    sys.executable,
+                    "test_harness/tools/compile_attack_dsl.py",
+                    str(dsl_path),
+                    "--out",
+                    str(compiled_dir),
+                ],
+            )
+        )
+    return {
+        "kind": "attack_dsl",
+        "ok": all(command["ok"] for command in commands),
+        "commands": commands,
+        "check_report": str(check_report),
+        "compiled_dir": str(compiled_dir),
+    }
+
+
+def check_flat_recipe(request_id: str, recipe_path: Path) -> dict[str, Any]:
+    commands = [
+        run_command(
+            f"{request_id}: validate recipe",
+            [sys.executable, "test_harness/tools/validate_recipe.py", str(recipe_path)],
+        )
+    ]
+    return {
+        "kind": "flat_recipe",
+        "ok": all(command["ok"] for command in commands),
+        "commands": commands,
+    }
+
+
+def check_cluster_seed(request_id: str, seed_path: Path, out_root: Path) -> dict[str, Any]:
+    base = safe_id(request_id)
+    expanded_dsl = out_root / "expanded_cluster_dsl" / f"{base}.json"
+    commands = [
+        run_command(
+            f"{request_id}: expand cluster seed",
+            [
+                sys.executable,
+                "test_harness/tools/build_source_guided_cluster.py",
+                str(seed_path),
+                "--out",
+                str(expanded_dsl),
+            ],
+        )
+    ]
+    if not commands[-1]["ok"]:
+        return {"kind": "cluster_seed", "ok": False, "commands": commands, "expanded_dsl": str(expanded_dsl)}
+    dsl_result = check_attack_dsl(request_id, expanded_dsl, out_root)
+    return {
+        "kind": "cluster_seed",
+        "ok": commands[-1]["ok"] and dsl_result["ok"],
+        "commands": commands + dsl_result.get("commands", []),
+        "expanded_dsl": str(expanded_dsl),
+        "check_report": dsl_result.get("check_report"),
+        "compiled_dir": dsl_result.get("compiled_dir"),
+    }
+
+
+def check_model_output(record: dict[str, Any], out_root: Path) -> dict[str, Any]:
+    model = record.get("model_output") or {}
+    normalized_path = Path(str(model.get("normalized_path", "")))
+    kind = model.get("kind")
+    if kind == "attack_dsl":
+        return check_attack_dsl(str(record["request_id"]), normalized_path, out_root)
+    if kind == "flat_recipe":
+        return check_flat_recipe(str(record["request_id"]), normalized_path)
+    if kind == "cluster_seed":
+        return check_cluster_seed(str(record["request_id"]), normalized_path, out_root)
+    if kind == "needs_harness_extension":
+        return {"kind": kind, "ok": True, "skipped": True, "reason": "extension request"}
+    return {"kind": kind, "ok": False, "skipped": True, "reason": f"unsupported model kind: {kind}"}
 
 
 def execute_attack_dsl(
@@ -426,11 +619,18 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
         if model["kind"] == "needs_harness_extension":
             record["stage"] = "needs_harness_extension"
             continue
+        should_check = args.check_model_outputs or args.execute
+        if should_check:
+            check_result = check_model_output(record, out_root)
+            record["check_result"] = check_result
+            if not check_result.get("ok"):
+                record["stage"] = "model_output_check_failed"
+                continue
         if not args.execute:
-            record["stage"] = "model_output_ready"
+            record["stage"] = "model_output_checked" if should_check else "model_output_ready"
             continue
         if not runner_available:
-            record["stage"] = "model_output_ready"
+            record["stage"] = "model_output_checked"
             record["execute_result"] = {
                 "ok": False,
                 "skipped": True,
@@ -574,16 +774,21 @@ def markdown_report(summary: dict[str, Any]) -> str:
     lines.extend(["", "## Forms", ""])
     for record in summary.get("records", []):
         model = record.get("model_output") or {}
+        check_result = record.get("check_result") or {}
         execute_result = record.get("execute_result") or {}
         lines.append(
             f"- `{record.get('request_id')}` stage=`{record.get('stage')}` api=`{record.get('target_api')}` "
             f"geometry=`{record.get('geometry_family')}` preferred=`{record.get('preferred_output')}` "
-            f"model=`{model.get('kind', '')}` run_ok=`{execute_result.get('ok', '')}`"
+            f"model=`{model.get('kind', '')}` check_ok=`{check_result.get('ok', '')}` run_ok=`{execute_result.get('ok', '')}`"
         )
         if record.get("prompt_path"):
             lines.append(f"  prompt: `{record['prompt_path']}`")
         if model.get("input_path"):
             lines.append(f"  model_output: `{model.get('input_path')}`")
+        if check_result.get("check_report"):
+            lines.append(f"  check_report: `{check_result.get('check_report')}`")
+        if check_result.get("compiled_dir"):
+            lines.append(f"  compiled_recipes: `{check_result.get('compiled_dir')}`")
         if execute_result.get("triage_report"):
             lines.append(f"  triage: `{execute_result.get('triage_report')}`")
         if execute_result.get("contact_sheet"):
@@ -599,6 +804,11 @@ def markdown_report(summary: dict[str, Any]) -> str:
         lines.extend(["## ABC Sample Smoke", "", f"- `{summary['abc_sample_smoke']}`", ""])
     if summary.get("source_tasks"):
         lines.extend(["## Source Tasks", "", f"- `{summary['source_tasks']}`", ""])
+    if summary.get("seeded_examples"):
+        lines.extend(["## Seeded Examples", ""])
+        for item in summary["seeded_examples"]:
+            lines.append(f"- `{item.get('request_id')}` kind=`{item.get('kind')}` path=`{item.get('path')}`")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -615,6 +825,9 @@ def has_hard_failure(summary: dict[str, Any], require_outputs: bool, fail_on_fai
         if isinstance(value, dict) and value.get("ok") is False:
             return True
     for record in summary.get("records", []):
+        check = record.get("check_result")
+        if isinstance(check, dict) and check.get("ok") is False and not check.get("skipped"):
+            return True
         result = record.get("execute_result")
         if isinstance(result, dict) and result.get("ok") is False and not result.get("skipped"):
             return True
@@ -632,6 +845,13 @@ def main() -> int:
         return 1
 
     records = build_tasks(forms_dir, manifest, out_root)
+    seeded_examples: list[dict[str, Any]] = []
+    if args.seed_example_model_outputs:
+        try:
+            seeded_examples = seed_example_model_outputs(Path(args.example_catalog), Path(args.model_output_root))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"failed to seed example model outputs: {exc}", file=sys.stderr)
+            return 1
     execute_model_outputs(records, args, out_root)
     api_smoke = run_api_smoke(args, out_root)
     abc_sample_smoke = run_abc_sample(args, manifest, out_root)
@@ -645,6 +865,9 @@ def main() -> int:
         "model_output_root": args.model_output_root,
         "runner": args.runner,
         "execute": args.execute,
+        "check_model_outputs": args.check_model_outputs,
+        "example_catalog": args.example_catalog,
+        "seeded_examples": seeded_examples,
         "records": records,
         "stage_counts": summarize_records(records),
         "api_smoke": api_smoke,
