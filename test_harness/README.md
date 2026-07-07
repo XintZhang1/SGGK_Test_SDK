@@ -255,6 +255,40 @@ Use `test_harness/forms/interface_distillation/00_manifest.json` as the first di
 - pre-boolean operation-history recuts
 - `step_roundtrip`, `iges_roundtrip`, oracle calibration, and `check_sgt`
 
+Build all current interface-distillation tasks and prompts without requiring the SDK:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation
+```
+
+Send the generated prompt files under `artifacts/interface_distillation/model_prompts/` to the intranet model, then save each reviewed JSON response as `artifacts/model_outputs/<request_id>.json`. After the Windows runner is built, execute the reviewed outputs plus the current API smoke suite:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --execute `
+  --api-smoke `
+  --jobs 1 `
+  --timeout 120
+```
+
+When the ABC sample fetch and local SGGK source tree are available, extend the same run with corpus and source-guided task evidence:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --execute `
+  --api-smoke `
+  --abc-sample-smoke `
+  --abc-fetch-root .\artifacts\abc_fetch_smoke `
+  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --jobs 1 `
+  --timeout 180
+```
+
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
   .\test_harness\forms\api_test_form.example.json `
