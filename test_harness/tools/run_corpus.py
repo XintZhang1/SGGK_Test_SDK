@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0, help="Per-case timeout in seconds")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of files to run; 0 means all")
     parser.add_argument(
+        "--preserve-input-order",
+        action="store_true",
+        help="Preserve explicit file order from --dataset/--dataset-list before applying --limit",
+    )
+    parser.add_argument(
         "--sgt-api",
         action="append",
         choices=sorted(SGT_APIS),
@@ -101,7 +106,19 @@ def is_under(path: Path, root: Path) -> bool:
         return False
 
 
-def iter_inputs(paths: list[str], exclude_roots: list[Path]) -> list[Path]:
+def dedupe_preserving_order(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def iter_inputs(paths: list[str], exclude_roots: list[Path], preserve_order: bool = False) -> list[Path]:
     found: list[Path] = []
     for raw_path in paths:
         path = Path(raw_path)
@@ -110,12 +127,14 @@ def iter_inputs(paths: list[str], exclude_roots: list[Path]) -> list[Path]:
             if not any(is_under(resolved, root) for root in exclude_roots):
                 found.append(resolved)
         elif path.is_dir():
-            for child in path.rglob("*"):
+            for child in sorted(path.rglob("*"), key=lambda item: str(item).lower()):
                 resolved = child.resolve()
                 if any(is_under(resolved, root) for root in exclude_roots):
                     continue
                 if child.is_file() and child.suffix.lower() in EXTENSION_TO_API:
                     found.append(resolved)
+    if preserve_order:
+        return dedupe_preserving_order(found)
     return sorted(set(found), key=lambda p: str(p).lower())
 
 
@@ -461,7 +480,7 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
 
     dataset_paths = collect_dataset_paths(args)
-    scanned_inputs = iter_inputs(dataset_paths, [out_root])
+    scanned_inputs = iter_inputs(dataset_paths, [out_root], preserve_order=args.preserve_input_order)
     if not scanned_inputs:
         print("no supported corpus files found", file=sys.stderr)
         return 1

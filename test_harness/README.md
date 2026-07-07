@@ -398,6 +398,30 @@ python .\test_harness\tools\run_recipes.py `
 
 Verified result: 17/17 recipes passed, triage found no failure groups, and geometry audit reported no duplicate inputs or tolerance mismatches. The audit confirmed signed clearances at exact contact, `+/- 1e-5`, and `+/- 1e-2`; the contact sheet is `artifacts/source_directed_scan_smoke_preview_v2/contact.png`.
 
+Use `test_harness/skills/sggk-source-guided-workflow` when source findings, developer API forms, and deterministic cluster expansion need to be combined. The public surrogate examples use OCCT links and line ranges only, with reviewed SGGK DSL mappings in `test_harness/dsl/occ_source_guided_surrogate_examples.json`:
+
+```powershell
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\test_harness\dsl\occ_source_guided_surrogate_examples.json `
+  --check `
+  --report .\artifacts\occ_source_guided_surrogate_check.json
+```
+
+When a small model emits `kind=cluster_seed`, expand it deterministically before compile/run review:
+
+```powershell
+python .\test_harness\tools\build_source_guided_cluster.py `
+  .\test_harness\dsl\source_guided_cluster_seed_smoke.json `
+  --out .\artifacts\source_guided_cluster_smoke.json
+
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\artifacts\source_guided_cluster_smoke.json `
+  --check `
+  --report .\artifacts\source_guided_cluster_check.json
+```
+
+The cluster wrapper emits exact contact, `+/- geom_tol`, `+/- topo_tol`, source-literal bands when present, a generated-topology sibling, and an optional large-coordinate sibling. Keep randomized and broad coverage lanes in the same campaign through `generate_boolean_matrix.py`, `generate_corpus_recut_matrix.py`, `run_campaign.py`, or `plan_large_campaign.py`.
+
 ## Generated Recipe Lanes
 
 For larger generated attacks, compile DSL into one flat recipe per case and run them with process isolation. This prevents one crash or timeout from taking down the whole generated lane.

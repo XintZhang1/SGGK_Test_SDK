@@ -99,21 +99,29 @@ def bbox_from_locator(locator: Any) -> dict[str, Any] | None:
     if not isinstance(locator, dict):
         return None
     bbox = locator.get("bbox")
-    if isinstance(bbox, dict) and not bbox.get("empty"):
+    if isinstance(bbox, dict) and not bbox.get("empty") and bbox_extents(bbox) is not None:
         return bbox
     return None
 
 
-def bbox_points(bbox: dict[str, Any]) -> list[tuple[float, float, float]]:
+def bbox_extents(bbox: dict[str, Any]) -> tuple[list[float], list[float]] | None:
     mins = bbox.get("min")
     maxs = bbox.get("max")
     if not (isinstance(mins, list) and isinstance(maxs, list) and len(mins) == 3 and len(maxs) == 3):
-        return []
+        return None
     try:
         mn = [float(v) for v in mins]
         mx = [float(v) for v in maxs]
     except (TypeError, ValueError):
+        return None
+    return mn, mx
+
+
+def bbox_points(bbox: dict[str, Any]) -> list[tuple[float, float, float]]:
+    extents = bbox_extents(bbox)
+    if extents is None:
         return []
+    mn, mx = extents
     return [
         (x, y, z)
         for x in (mn[0], mx[0])
@@ -123,9 +131,19 @@ def bbox_points(bbox: dict[str, Any]) -> list[tuple[float, float, float]]:
 
 
 def bbox_label(bbox: dict[str, Any]) -> str:
-    mn = bbox.get("min", [])
-    mx = bbox.get("max", [])
+    extents = bbox_extents(bbox)
+    if extents is None:
+        return "bbox unavailable"
+    mn, mx = extents
     return f"min=[{', '.join(fmt_num(v) for v in mn)}] max=[{', '.join(fmt_num(v) for v in mx)}]"
+
+
+def bbox_signature_values(bbox: dict[str, Any]) -> list[float]:
+    extents = bbox_extents(bbox)
+    if extents is None:
+        return []
+    mn, mx = extents
+    return mn + mx
 
 
 def input_boxes(input_index: Any) -> dict[str, list[dict[str, Any]]]:
@@ -402,9 +420,9 @@ def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, An
         "api": api,
         "dsl_case": as_str(dsl.get("case_id")) if isinstance(dsl, dict) else "",
         "dsl_variant": as_str(dsl.get("variant")) if isinstance(dsl, dict) else "",
-        "target": [bbox.get("min") + bbox.get("max") for bbox in boxes_by_role.get("target", [])],
-        "tool": [bbox.get("min") + bbox.get("max") for bbox in boxes_by_role.get("tool", [])],
-        "result": [bbox.get("min") + bbox.get("max") for bbox in result],
+        "target": [bbox_signature_values(bbox) for bbox in boxes_by_role.get("target", [])],
+        "tool": [bbox_signature_values(bbox) for bbox in boxes_by_role.get("tool", [])],
+        "result": [bbox_signature_values(bbox) for bbox in result],
     }
     return {
         "case_id": case_id,

@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0, help="Per-case timeout in seconds")
     parser.add_argument("--corpus-limit", type=int, default=0, help="Maximum corpus files to run; 0 means all")
     parser.add_argument(
+        "--corpus-preserve-input-order",
+        action="store_true",
+        help="Preserve explicit corpus dataset-list order before applying --corpus-limit",
+    )
+    parser.add_argument(
         "--corpus-sgt-api",
         action="append",
         choices=["check_sgt", "step_roundtrip", "iges_roundtrip"],
@@ -417,6 +422,8 @@ def run_corpus_lane(
     append_common_run_flags(cmd, args)
     if args.corpus_limit:
         cmd.extend(["--limit", str(args.corpus_limit)])
+    if args.corpus_preserve_input_order:
+        cmd.append("--preserve-input-order")
     for api in args.corpus_sgt_api or []:
         cmd.extend(["--sgt-api", api])
     cmd.extend(["--source-body-index", str(args.corpus_source_body_index)])

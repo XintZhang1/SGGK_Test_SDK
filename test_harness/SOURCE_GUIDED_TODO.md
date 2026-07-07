@@ -1,9 +1,18 @@
 # Source-Guided Test Generation TODO
 
-This note preserves the next work item for the SGGK harness. The goal is to
-teach the intranet small model to use source code while writing test cases, then
-combine those source-guided cases with normal randomized / matrix-generated
-case clusters.
+Status: completed in the Windows SDK workspace on 2026-07-06.
+
+Completed artifacts:
+
+- `test_harness/skills/sggk-source-guided-workflow`
+- `test_harness/dsl/occ_source_guided_surrogate_examples.json`
+- `test_harness/dsl/source_guided_cluster_seed_smoke.json`
+- `test_harness/tools/build_source_guided_cluster.py`
+- `test_harness/README.md` source-guided workflow commands
+
+This note preserves the work item for review. The goal is to teach the intranet
+small model to use source code while writing test cases, then combine those
+source-guided cases with normal randomized / matrix-generated case clusters.
 
 ## Current Intent
 
@@ -15,17 +24,21 @@ case clusters.
   the needed API; in that case it should emit `needs_harness_extension`.
 - Because the public GitHub checkout does not contain SGGK source, use OCCT
   source as a transferable surrogate for examples and distillation data.
+- The current SGGK SDK is runnable from `C:\Develop\SGGK_Agent` on Windows; keep
+  SDK execution and generated artifacts there. The Mac workstation can operate
+  Codex/GitHub but should not be the SDK runtime until that constraint changes.
 
-## Next Implementation Tasks
+## Completed Implementation Tasks
 
-1. Add a source-guided workflow skill that composes:
+1. Added a source-guided workflow skill that composes:
    - `sggk-source-attack` for source risk scanning and DSL generation.
    - `sggk-api-form-workflow` for developer request forms and fixed runner
      commands.
-   - deterministic cluster expansion through existing matrix / DSL tools.
+   - deterministic cluster expansion through `build_source_guided_cluster.py`
+     and existing matrix / DSL tools.
 
-2. Add OCC surrogate examples under the harness skills, not OCCT source copies.
-   Use links and line references only. Candidate source anchors:
+2. Added OCC surrogate examples under the harness skills, not OCCT source
+   copies. The workflow stores links and line references only. Source anchors:
    - `BOPAlgo_Options::SetFuzzyValue` clamps fuzzy tolerance to
      `Precision::Confusion()`.
      https://github.com/Open-Cascade-SAS/OCCT/blob/4f95ecaa3b690e34988d42e2ca7fe882e7a8bc7d/src/ModelingAlgorithms/TKBO/BOPAlgo/BOPAlgo_Options.cxx#L49-L108
@@ -42,15 +55,17 @@ case clusters.
      fixed precision is not forced.
      https://github.com/Open-Cascade-SAS/OCCT/blob/4f95ecaa3b690e34988d42e2ca7fe882e7a8bc7d/src/DataExchange/TKDEIGES/IGESControl/IGESControl_Writer.cxx#L141-L165
 
-3. For each source anchor, create one reviewed attack DSL example:
+3. Added one reviewed attack DSL example for each source anchor in
+   `test_harness/dsl/occ_source_guided_surrogate_examples.json`:
    - fuzzy / confusion near-tangent boolean family
    - generated sweep / extrude side-face boolean family
    - edge / vertex tolerance growth family
    - exact-vs-fuzzy tolerance band family
    - exchange roundtrip tolerance drift family
 
-4. Add a deterministic source-guided cluster generator or wrapper. It should
-   take one reviewed source-risk seed and expand it into a small case cluster:
+4. Added deterministic source-guided cluster generator
+   `test_harness/tools/build_source_guided_cluster.py`. It takes one reviewed
+   source-risk seed and expands it into a small case cluster:
    - exact contact
    - `+/- geom_tol`
    - `+/- topo_tol`
@@ -59,15 +74,16 @@ case clusters.
      pre-boolean
    - optional large-coordinate sibling under `max_model_size`
 
-5. Make the small-model output contract explicit:
+5. Made the small-model output contract explicit in
+   `test_harness/skills/sggk-source-guided-workflow/references/source-guided-contract.md`:
    - input: source excerpt, source risk, developer form context, supported DSL
      builders, supported oracles, and cluster policy
-   - output: JSON only, either `attack_dsl`, `flat_recipe`,
-     `cluster_seed`, or `needs_harness_extension`
-   - post-checks: `compile_attack_dsl.py --check`, `run_recipes.py`,
-     triage, preview, and geometry audit
+   - output: JSON only, either `attack_dsl`, `flat_recipe`, `cluster_seed`, or
+     `needs_harness_extension`
+   - post-checks: `compile_attack_dsl.py --check`, `run_recipes.py`, triage,
+     preview, and geometry audit
 
-6. Keep the normal randomized / broad coverage lane in the loop:
+6. Kept the normal randomized / broad coverage lane in the loop:
    - source-guided DSL for targeted hypotheses
    - `generate_boolean_matrix.py` for broad boolean random/matrix coverage
    - `generate_corpus_recut_matrix.py` for saved SGT / imported body recuts
@@ -122,6 +138,15 @@ python .\test_harness\tools\build_source_attack_tasks.py `
   --max-tasks 80 `
   --context-lines 12 `
   --write-dsl-seeds
+```
+
+Validate the completed source-guided additions:
+
+```powershell
+python $env:CODEX_HOME\skills\.system\skill-creator\scripts\quick_validate.py .\test_harness\skills\sggk-source-guided-workflow
+python .\test_harness\tools\compile_attack_dsl.py .\test_harness\dsl\occ_source_guided_surrogate_examples.json --check --report .\artifacts\occ_source_guided_surrogate_check.json
+python .\test_harness\tools\build_source_guided_cluster.py .\test_harness\dsl\source_guided_cluster_seed_smoke.json --out .\artifacts\source_guided_cluster_smoke.json
+python .\test_harness\tools\compile_attack_dsl.py .\artifacts\source_guided_cluster_smoke.json --check --report .\artifacts\source_guided_cluster_check.json
 ```
 
 ## Safety
