@@ -51,6 +51,12 @@ larger regression monitor.
 Explicit unsupported kernel responses are stored as `known_unsupported`, not as
 candidate bugs. Add project-specific messages with `--unsupported-pattern`.
 
+When a run stores `recipe_summary.json` under a `run\` subdirectory and
+`triage_summary.json` under a sibling `triage\` directory, pass the campaign
+root to `--campaign`, not the `run\` directory. Passing only `run\` can still
+copy replay recipes, but the snapshot may lose triage fingerprints and classify
+failures as unclassified instead of `candidate_bug` or `known_unsupported`.
+
 ## Replay On A New SDK
 
 After updating/rebuilding the SDK runner, replay the saved cases:
