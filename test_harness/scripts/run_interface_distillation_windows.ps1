@@ -20,6 +20,7 @@ param(
   [switch]$SkipApiSmoke,
   [switch]$SkipAbcSample,
   [switch]$SkipSourceScan,
+  [switch]$SeedExampleModelOutputs,
   [switch]$FailOnFailures
 )
 
@@ -70,8 +71,11 @@ function Invoke-Native {
   $commandText = "$FilePath $($Arguments -join ' ')"
   Write-Host "[$Name]"
   Write-Host "  $commandText"
-  & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $logPath
+  & $FilePath @Arguments *> $logPath
   $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+  if (Test-Path $logPath) {
+    Get-Content $logPath | ForEach-Object { Write-Host $_ }
+  }
   $ok = $AcceptableExitCodes -contains $exitCode
   $status = if ($ok) { "ok" } else { "failed" }
   $script:StepRecords += New-StepRecord -Name $Name -Status $status -ExitCode $exitCode -LogPath $logPath -Command $commandText
@@ -204,6 +208,9 @@ try {
     )
     if (-not $SkipApiSmoke) {
       $executeArgs += "--api-smoke"
+    }
+    if ($SeedExampleModelOutputs) {
+      $executeArgs += "--seed-example-model-outputs"
     }
     if (-not $SkipAbcSample) {
       $executeArgs += @("--abc-sample-smoke", "--abc-fetch-root", $AbcFetchRoot)

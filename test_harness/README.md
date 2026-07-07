@@ -271,6 +271,23 @@ python .\test_harness\tools\run_interface_distillation.py `
   --check-model-outputs
 ```
 
+To replay the current checked-in examples as a full distillation run on the Windows SDK machine, seed the example model outputs into a dedicated model-output root and execute all lanes:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation_windows_full_40chunk `
+  --model-output-root .\artifacts\model_outputs_full_40chunk `
+  --seed-example-model-outputs `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --execute `
+  --api-smoke `
+  --abc-sample-smoke `
+  --abc-fetch-root C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
+  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --jobs 1 `
+  --timeout 180
+```
+
 Send the generated prompt files under `artifacts/interface_distillation/model_prompts/` to the intranet model, then save each reviewed JSON response as `artifacts/model_outputs/<request_id>.json`. After the Windows runner is built, execute the reviewed outputs plus the current API smoke suite:
 
 ```powershell
@@ -303,13 +320,14 @@ On the Windows SDK machine, the same build/check/execute/report flow can be run 
 ```powershell
 .\test_harness\scripts\run_interface_distillation_windows.ps1 `
   -SdkDir C:\Develop\SGGK_Agent\SGK1.4.10\SGGK `
-  -AbcFetchRoot .\artifacts\abc_fetch_smoke `
+  -AbcFetchRoot C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
   -SourceRoot C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  -SeedExampleModelOutputs `
   -Jobs 1 `
   -Timeout 180
 ```
 
-The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, runs the example-output SDK-free check, then executes available reviewed model outputs plus API smoke, ABC sample, and source-task lanes with the local runner.
+The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, runs the example-output SDK-free check, then executes available reviewed model outputs plus API smoke, ABC sample, and source-task lanes with the local runner. Use `-SeedExampleModelOutputs` for a checked-in baseline replay; omit it when `-ModelOutputRoot` already contains real intranet small-model responses that should not be overwritten.
 
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
