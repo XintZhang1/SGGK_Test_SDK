@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     snapshot = subparsers.add_parser("snapshot", help="Materialize a compact regression asset pack from a run")
-    snapshot.add_argument("--campaign", required=True, help="Campaign/run root, abc summary, recipe_summary.json, or triage dir")
+    snapshot.add_argument("--campaign", required=True, help="Campaign/run root, abc summary, recipe_summary.json, corpus_summary.json, or triage dir")
     snapshot.add_argument("--out", required=True, help="Output directory for the asset pack")
     snapshot.add_argument("--asset-id", default="", help="Stable asset id; defaults to output directory name")
     snapshot.add_argument("--sdk-version", default="", help="SDK/kernel version label for the baseline")
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
 
     compare = subparsers.add_parser("compare", help="Compare a new replay/run against a baseline asset pack")
     compare.add_argument("--asset", required=True, help="Asset pack directory or asset_manifest.json")
-    compare.add_argument("--new-run", required=True, help="New run root, campaign root, or recipe_summary.json")
+    compare.add_argument("--new-run", required=True, help="New run root, campaign root, recipe_summary.json, or corpus_summary.json")
     compare.add_argument("--new-triage", default="", help="New triage root or triage_summary.json")
     compare.add_argument("--out", required=True, help="Output directory for regression_comparison.json/md")
     compare.add_argument("--new-sdk-version", default="", help="SDK/kernel version label for the new run")
@@ -191,7 +191,10 @@ def campaign_paths(raw: str) -> dict[str, str]:
     recipe_summary = first_existing(
         [
             path if path.name == "recipe_summary.json" else root / "recipe_summary.json",
+            path if path.name == "corpus_summary.json" else root / "corpus_summary.json",
             root / "run" / "recipe_summary.json",
+            root / "run" / "corpus_summary.json",
+            root / "runs" / "corpus" / "corpus_summary.json",
         ]
     )
     triage_summary = first_existing(
@@ -201,7 +204,10 @@ def campaign_paths(raw: str) -> dict[str, str]:
         ]
     )
     if recipe_summary is None and root.is_dir():
-        matches = sorted(root.rglob("recipe_summary.json"), key=lambda item: str(item).lower())
+        matches = sorted(
+            [*root.rglob("recipe_summary.json"), *root.rglob("corpus_summary.json")],
+            key=lambda item: str(item).lower(),
+        )
         recipe_summary = matches[0] if matches else None
     if triage_summary is None and root.is_dir():
         matches = sorted(root.rglob("triage_summary.json"), key=lambda item: str(item).lower())
@@ -209,7 +215,7 @@ def campaign_paths(raw: str) -> dict[str, str]:
     return {
         "campaign_root": str(root),
         "campaign_summary": "",
-        "recipe_summary": str(recipe_summary) if recipe_summary else "",
+            "recipe_summary": str(recipe_summary) if recipe_summary else "",
         "triage_summary": str(triage_summary) if triage_summary else "",
         "recipe_manifest": str(root / "recipes_manifest.json") if (root / "recipes_manifest.json").is_file() else "",
         "bug_report": str(root / "abc_boolean_mass_recut_bug_report.md") if (root / "abc_boolean_mass_recut_bug_report.md").is_file() else "",
@@ -390,6 +396,9 @@ def source_code_refs() -> dict[str, Any]:
         "git_commit": git_value(["rev-parse", "HEAD"]),
         "git_commit_short": git_value(["rev-parse", "--short=12", "HEAD"]),
         "tools": [
+            "test_harness/tools/discover_corpus.py",
+            "test_harness/tools/profile_cad_features.py",
+            "test_harness/tools/run_corpus.py",
             "test_harness/tools/run_abc_boolean_mass_recut.py",
             "test_harness/tools/generate_corpus_recut_matrix.py",
             "test_harness/tools/run_recipes.py",
@@ -397,6 +406,10 @@ def source_code_refs() -> dict[str, Any]:
             "test_harness/tools/manage_regression_assets.py",
         ],
         "forms": [
+            "test_harness/forms/interface_distillation/02_step_import_abc_complex.json",
+            "test_harness/forms/interface_distillation/10_step_roundtrip_imported_sgt.json",
+            "test_harness/forms/interface_distillation/13_check_sgt_replay.json",
+            "test_harness/forms/interface_distillation/14_iges_import_abc_complex.json",
             "test_harness/forms/interface_distillation/15_boolean_abc_mass_recut.json",
         ],
     }
