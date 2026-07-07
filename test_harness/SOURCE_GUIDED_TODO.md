@@ -24,6 +24,8 @@ source-guided cases with normal randomized / matrix-generated case clusters.
   the needed API; in that case it should emit `needs_harness_extension`.
 - Because the public GitHub checkout does not contain SGGK source, use OCCT
   source as a transferable surrogate for examples and distillation data.
+- Use `test_harness/INTERFACE_TEST_MATRIX.md` as the interface-by-interface
+  checklist for the distillation loop.
 - The current SGGK SDK is runnable from `C:\Develop\SGGK_Agent` on Windows; keep
   SDK execution and generated artifacts there. The Mac workstation can operate
   Codex/GitHub but should not be the SDK runtime until that constraint changes.

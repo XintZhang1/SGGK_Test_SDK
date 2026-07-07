@@ -244,6 +244,8 @@ Small-model generated attacks should use the JSON DSL first. The runner can exec
 For intranet small-model handoff, use `test_harness/skills/sggk-api-form-workflow`.
 Developers fill `test_harness/forms/api_test_form.schema.json`, then deterministic code converts the form into a constrained model task:
 
+Use `test_harness/INTERFACE_TEST_MATRIX.md` as the current checklist of supported runner APIs, body builders, validation oracles, source-guided cluster flow, and known extension gaps.
+
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
   .\test_harness\forms\api_test_form.example.json `

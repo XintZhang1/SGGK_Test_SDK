@@ -1032,6 +1032,14 @@ def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
     return recipes
 
 
+def is_cluster_seed_file(path: Path) -> bool:
+    try:
+        loaded = load_json(path)
+    except DslError:
+        return False
+    return loaded.get("kind") == "cluster_seed"
+
+
 def write_recipe(recipe: dict[str, Any], out_dir: Path) -> Path:
     case_id = resolve_string(recipe.get("case_id"), "recipe.case_id")
     out_path = out_dir / f"{case_id}.json"
@@ -1043,11 +1051,19 @@ def check_dsl_file(path: Path, validate: bool) -> tuple[dict[str, Any], list[dic
     record: dict[str, Any] = {
         "path": str(path),
         "ok": False,
+        "skipped": False,
+        "skip_reason": "",
         "recipe_count": 0,
         "validation_failure_count": 0,
         "compile_error": "",
         "recipes": [],
     }
+    if is_cluster_seed_file(path):
+        record["ok"] = True
+        record["skipped"] = True
+        record["skip_reason"] = "cluster_seed; expand with build_source_guided_cluster.py before DSL compilation"
+        return record, []
+
     try:
         recipes = compile_dsl_file(path)
     except DslError as exc:
@@ -1088,6 +1104,10 @@ def main() -> int:
         for dsl_path in files:
             record, valid_recipes = check_dsl_file(dsl_path, not args.no_validate)
             file_records.append(record)
+            if record.get("skipped"):
+                if args.check:
+                    print(f"SKIP {dsl_path}: {record['skip_reason']}")
+                continue
             if record["compile_error"]:
                 compile_failures += 1
                 print(f"FAIL {dsl_path}", file=sys.stderr)
