@@ -176,6 +176,63 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
     assert resumed.gate_attempts == 1
     assert resumed.attempts[0]["fixed_gate"]["ok"] is True
 
+    wrong_goal = pipeline.run_task(
+        task,
+        run_id="mock_topocheck_wrong_goal",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="must_reproduce_target_signature",
+        target_failure_signature={"kind": "crash", "exception_code": "0xC0000005"},
+        execute=False,
+    )
+    assert not wrong_goal.ok
+    assert not wrong_goal.authoring_accepted
+    assert "did not stably reproduce" in wrong_goal.error
+
+
+def test_existing_pair_with_forged_acceptance_metadata_is_never_resumed(tmp_path: Path) -> None:
+    accepted_path = tmp_path / "artifacts/accepted/iface_01.json"
+    _, valid = candidate_pair()
+    gateway_config = config()
+    pipeline = MessageHarnessPipeline(
+        gateway_config,
+        repo_root=tmp_path,
+        tool_repo_root=TOOL_REPO_ROOT,
+        client=OpenAICompatibleMessageClient(
+            gateway_config,
+            transport=RepairQueueTransport([provider_response(valid)], accepted_path),
+        ),
+        gate_timeout_seconds=30.0,
+    )
+    task = TaskSpec(
+        task_id="reject_forged_resume",
+        prompt="Generate one bounded api_boolean attack_dsl.",
+        expected_output_path=accepted_path,
+        output_contract={"type": "json_object", "allowed_kinds": ["attack_dsl"]},
+    )
+    first = pipeline.run_task(
+        task,
+        run_id="valid_before_tamper",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+    )
+    assert first.ok
+    provenance_path = accepted_path.with_name("iface_01.provenance.json")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    provenance["acceptance"] = {
+        "authoring_accepted": True,
+        "requires_fixed_gate": True,
+        "accepted_by": "",
+    }
+    provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
+
+    resumed = pipeline.run_task(task, run_id="forged_resume", max_gate_repairs=0)
+
+    assert not resumed.ok
+    assert not resumed.skipped
+    assert not resumed.authoring_accepted
+    assert "not a verified" in resumed.error
+
 
 def test_gate_budget_exhaustion_is_nonzero_and_never_creates_accepted_output(tmp_path: Path) -> None:
     accepted_path = tmp_path / "artifacts/accepted/iface_01.json"

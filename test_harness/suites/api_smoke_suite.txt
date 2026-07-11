@@ -12,6 +12,7 @@
 ../recipes/boolean_split_plane_smoke.json
 ../recipes/boolean_slice_smoke.json
 ../recipes/topology_section_spheres_smoke.json
+../api_plugins/api_combine_bodies/examples/smoke.json
 ../recipes/offset2d_line_smoke.json
 ../recipes/offset2d_cannot_connect_smoke.json
 ../recipes/offset2d_crv_degenerate_smoke.json

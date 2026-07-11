@@ -11,6 +11,7 @@ those outputs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -26,7 +27,6 @@ from campaign_profiles import CampaignRequestError, resolve_campaign_argv, valid
 
 CAPABILITIES = load_capabilities()
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ABC_PLACEHOLDER_PREFIX = "artifacts/abc_fetch_smoke/examples/top_complex_001"
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,17 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-output-provenance-root",
         default="artifacts/model_output_provenance",
-        help="Optional sidecar directory for saved-output provenance JSON. Matrix reads only; gates ignore it.",
-    )
-    parser.add_argument(
-        "--example-catalog",
-        default="test_harness/examples/interface_distillation_model_outputs/catalog.json",
-        help="Deterministic fixture catalog used by --seed-example-model-outputs.",
-    )
-    parser.add_argument(
-        "--seed-example-model-outputs",
-        action="store_true",
-        help="Materialize deterministic fixture outputs into --model-output-root before checking/running.",
+        help="Optional alternate sidecar directory; outputs still require hash-matching Message API pipeline acceptance.",
     )
     parser.add_argument(
         "--runner",
@@ -200,278 +190,8 @@ def build_tasks(forms_dir: Path, manifest: dict[str, Any], out_root: Path) -> li
     return records
 
 
-def load_example_catalog(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {"examples": []}
-    loaded = read_json(path)
-    if not isinstance(loaded, dict):
-        raise ValueError(f"example catalog root must be an object: {path}")
-    return loaded
-
-
-def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
-    kind = example.get("kind")
-    notes = list(example.get("notes", []))
-    if kind == "attack_dsl":
-        source_path = Path(str(example.get("source_path", "")))
-        if not source_path.is_file():
-            raise FileNotFoundError(f"attack_dsl example source not found: {source_path}")
-        return {
-            "kind": "attack_dsl",
-            "dsl": read_json(source_path),
-            "notes": notes,
-        }
-    if kind == "cluster_seed":
-        source_path = Path(str(example.get("source_path", "")))
-        if not source_path.is_file():
-            raise FileNotFoundError(f"cluster_seed example source not found: {source_path}")
-        payload = read_json(source_path)
-        if not isinstance(payload, dict):
-            raise ValueError(f"cluster_seed example must be an object: {source_path}")
-        payload = dict(payload)
-        payload.setdefault("kind", "cluster_seed")
-        payload.setdefault("notes", notes)
-        return payload
-    if kind == "flat_recipe":
-        if "recipe" in example:
-            recipe = example["recipe"]
-        else:
-            source_path = Path(str(example.get("source_path", "")))
-            if not source_path.is_file():
-                raise FileNotFoundError(f"flat_recipe example source not found: {source_path}")
-            recipe = read_json(source_path)
-        if not isinstance(recipe, dict):
-            raise ValueError("flat_recipe example recipe must be an object")
-        return {
-            "kind": "flat_recipe",
-            "recipe": recipe,
-            "notes": notes,
-        }
-    if kind == "needs_harness_extension":
-        payload = {key: value for key, value in example.items() if key not in {"request_id", "notes"}}
-        payload.setdefault("kind", "needs_harness_extension")
-        payload.setdefault("notes", notes)
-        return payload
-    if kind == "campaign_request":
-        payload = {
-            "kind": "campaign_request",
-            "profile_id": example.get("profile_id"),
-            "args": example.get("args", {}),
-            "notes": notes,
-        }
-        if isinstance(example.get("expected_artifacts"), list):
-            payload["expected_artifacts"] = example["expected_artifacts"]
-        normalized, errors = validate_campaign_request(payload)
-        if errors or normalized is None:
-            raise ValueError("invalid campaign_request example: " + "; ".join(errors))
-        return payload
-    raise ValueError(f"unsupported example kind: {kind!r}")
-
-
-def read_abc_index_files(fetch_root: Path) -> list[dict[str, Any]]:
-    files: list[dict[str, Any]] = []
-    for name in ("complex_dataset_index.json", "dataset_index.json"):
-        path = fetch_root / name
-        if not path.is_file():
-            continue
-        loaded = read_json(path)
-        raw_files = loaded.get("files") if isinstance(loaded, dict) else loaded
-        if not isinstance(raw_files, list):
-            raw_files = loaded.get("items") if isinstance(loaded, dict) else []
-        for raw in raw_files:
-            if isinstance(raw, dict):
-                files.append(raw)
-    return files
-
-
-def source_suffix(value: str) -> str:
-    normalized = value.replace("\\", "/")
-    return Path(normalized).suffix.lower()
-
-
-def repo_local_existing_file(path_text: str) -> bool:
-    path = Path(path_text)
-    candidate = path if path.is_absolute() else REPO_ROOT / path
-    try:
-        candidate.resolve().relative_to(REPO_ROOT.resolve())
-    except (OSError, ValueError):
-        return False
-    return candidate.is_file()
-
-
-def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -> dict[str, Any]:
-    result = {
-        "required": False,
-        "bound": False,
-        "ok": True,
-        "reason": "",
-        "source_file": "",
-    }
-    if payload.get("kind") != "flat_recipe":
-        return result
-    recipe = payload.get("recipe")
-    if not isinstance(recipe, dict):
-        return result
-    source_file = recipe.get("source_file")
-    if not isinstance(source_file, str):
-        return result
-    normalized_source = source_file.replace("\\", "/")
-    if ABC_PLACEHOLDER_PREFIX not in normalized_source:
-        result["source_file"] = source_file
-        if not repo_local_existing_file(source_file):
-            result.update(
-                {
-                    "ok": False,
-                    "reason": "flat_recipe_source_file_is_not_repo_local_existing_file",
-                }
-            )
-        return result
-
-    result["required"] = True
-    if abc_fetch_root is None:
-        result.update(
-            {
-                "ok": False,
-                "reason": "abc_fetch_root_required_for_placeholder_source_file",
-                "source_file": source_file,
-            }
-        )
-        return result
-
-    api = str(recipe.get("api") or "")
-    requested_suffix = source_suffix(source_file)
-    desired_suffixes = {
-        "step_import": {".step", ".stp"},
-        "step_roundtrip": {".step", ".stp"},
-        "iges_import": {".iges", ".igs"},
-        "iges_roundtrip": {".iges", ".igs"},
-    }.get(api, {requested_suffix} if requested_suffix else set())
-    files = read_abc_index_files(abc_fetch_root)
-    selected = ""
-    for item in files:
-        path = item.get("path") or item.get("source_file")
-        if not isinstance(path, str) or not path:
-            continue
-        if desired_suffixes and source_suffix(path) not in desired_suffixes:
-            continue
-        if not repo_local_existing_file(path):
-            continue
-        item_api = item.get("api")
-        if isinstance(item_api, str) and item_api and item_api != api:
-            continue
-        selected = path
-        break
-
-    notes = payload.setdefault("notes", [])
-    if selected:
-        recipe["source_file"] = selected
-        notes.append(f"Bound placeholder source_file from ABC fetch root: {abc_fetch_root}")
-        result.update({"bound": True, "source_file": selected})
-    else:
-        suffix_text = ", ".join(sorted(desired_suffixes)) or requested_suffix or "matching"
-        notes.append(f"ABC fetch root has no {suffix_text} file for {api}; replace source_file before SDK execution.")
-        result.update(
-            {
-                "ok": False,
-                "reason": f"abc_fetch_root_has_no_repo_local_{suffix_text}_file_for_{api}",
-                "source_file": source_file,
-            }
-        )
-    return result
-
-
 def model_output_provenance_path(request_id: str, provenance_root: Path) -> Path:
     return provenance_root / f"{safe_id(request_id)}.json"
-
-
-def write_model_output_provenance(
-    request_id: str,
-    output_path: Path,
-    provenance_root: Path,
-    *,
-    source_type: str,
-    source_label: str = "",
-    source_path: str = "",
-    description: str = "",
-) -> Path:
-    path = model_output_provenance_path(request_id, provenance_root)
-    write_json(
-        path,
-        {
-            "schema_version": 1,
-            "request_id": request_id,
-            "source_type": source_type,
-            "source_label": source_label,
-            "source_path": source_path,
-            "description": description,
-            "output_path": str(output_path),
-            "saved_at": now_iso_like(),
-            "boundary": {
-                "model_calls": False,
-                "direct_api_calls": False,
-                "production_flow": "saved_json_sidecar_metadata_only",
-            },
-        },
-    )
-    return path
-
-
-def seed_example_model_outputs(
-    catalog_path: Path,
-    model_output_root: Path,
-    provenance_root: Path,
-    abc_fetch_root: Path | None = None,
-) -> list[dict[str, Any]]:
-    catalog = load_example_catalog(catalog_path)
-    seeded: list[dict[str, Any]] = []
-    examples = catalog.get("examples")
-    if not isinstance(examples, list):
-        raise ValueError(f"example catalog examples must be a list: {catalog_path}")
-    for raw in examples:
-        if not isinstance(raw, dict):
-            continue
-        request_id = raw.get("request_id")
-        if not isinstance(request_id, str) or not request_id:
-            raise ValueError("example output is missing request_id")
-        payload = example_output_payload(raw)
-        binding = bind_abc_source_file(payload, abc_fetch_root)
-        if not binding.get("ok"):
-            seeded.append(
-                {
-                    "request_id": request_id,
-                    "kind": payload.get("kind"),
-                    "status": "skipped",
-                    "reason": binding.get("reason") or "seed_example_not_safe_to_materialize",
-                    "source_file": binding.get("source_file") or "",
-                    "source_path": raw.get("source_path", ""),
-                    "description": raw.get("description", ""),
-                }
-            )
-            continue
-        out_path = model_output_root / f"{safe_id(request_id)}.json"
-        write_json(out_path, payload)
-        provenance_path = write_model_output_provenance(
-            request_id,
-            out_path,
-            provenance_root,
-            source_type="reviewed_fixture",
-            source_label=str(catalog_path),
-            source_path=str(raw.get("source_path") or ""),
-            description=str(raw.get("description") or ""),
-        )
-        seeded.append(
-            {
-                "request_id": request_id,
-                "kind": payload.get("kind"),
-                "status": "seeded",
-                "path": str(out_path),
-                "provenance_path": str(provenance_path),
-                "source_path": raw.get("source_path", ""),
-                "description": raw.get("description", ""),
-                "binding": binding,
-            }
-        )
-    return seeded
 
 
 def find_model_output(request_id: str, model_output_root: Path) -> tuple[str, Path | None]:
@@ -541,6 +261,9 @@ def load_model_output_provenance(
             }
         source_type = compact_provenance_value(loaded.get("source_type")) or "unspecified_saved_output"
         repair = loaded.get("repair") if isinstance(loaded.get("repair"), dict) else {}
+        acceptance = loaded.get("acceptance") if isinstance(loaded.get("acceptance"), dict) else {}
+        fixed_gate = loaded.get("fixed_gate") if isinstance(loaded.get("fixed_gate"), dict) else {}
+        boundary = loaded.get("boundary") if isinstance(loaded.get("boundary"), dict) else {}
         result = {
             "found": True,
             "path": str(path),
@@ -551,8 +274,23 @@ def load_model_output_provenance(
             "source_path": compact_provenance_value(loaded.get("source_path")),
             "model": compact_provenance_value(loaded.get("model")),
             "interface": compact_provenance_value(loaded.get("interface")),
+            "run_id": compact_provenance_value(loaded.get("run_id")),
+            "prompt_sha256": compact_provenance_value(loaded.get("prompt_sha256")),
+            "message_content_sha256": compact_provenance_value(
+                loaded.get("message_content_sha256")
+            ),
             "prompt_pack": compact_provenance_value(loaded.get("prompt_pack")),
             "saved_at": compact_provenance_value(loaded.get("saved_at")),
+            "candidate_sha256": compact_provenance_value(loaded.get("candidate_sha256")),
+            "authoring_accepted": acceptance.get("authoring_accepted") is True,
+            "accepted_by": compact_provenance_value(acceptance.get("accepted_by")),
+            "requires_fixed_gate": acceptance.get("requires_fixed_gate") is True,
+            "fixed_gate_ok": fixed_gate.get("ok") is True,
+            "fixed_gate_kind": compact_provenance_value(fixed_gate.get("kind")),
+            "fixed_gate_report_path": compact_provenance_value(fixed_gate.get("report_path")),
+            "model_calls": boundary.get("model_calls") is True,
+            "direct_api_calls": boundary.get("direct_api_calls") is True,
+            "production_flow": compact_provenance_value(boundary.get("production_flow")),
         }
         if repair:
             result["repair_output"] = bool(repair.get("is_repair_output"))
@@ -566,6 +304,69 @@ def load_model_output_provenance(
         "path": "",
         "source_type": "missing_output" if found_path is None else "unknown_saved_output",
     }
+
+
+def pipeline_acceptance_error(found_path: Path, provenance: dict[str, Any]) -> str:
+    """Require a hash-bound promotion record from the Message API pipeline."""
+
+    try:
+        candidate_value = read_json(found_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"model output is not valid JSON: {exc}"
+    candidate_sha256 = hashlib.sha256(
+        json.dumps(
+            candidate_value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    accepted_source_types = {"intranet_message_api", "siliconflow_test_message_api"}
+    if provenance.get("found") is not True:
+        return "Message API pipeline provenance is missing"
+    if provenance.get("schema_version") != 3:
+        return "provenance is not a schema_version=3 pipeline acceptance record"
+    if provenance.get("source_type") not in accepted_source_types:
+        return "provenance source is not an allowed Message API profile"
+    if provenance.get("interface") != "openai_compatible_chat_completions_message_content_json":
+        return "provenance interface is not Message API message.content JSON"
+    if not all(
+        isinstance(provenance.get(key), str) and provenance.get(key)
+        for key in ("model", "run_id", "prompt_sha256", "message_content_sha256")
+    ):
+        return "provenance is missing immutable Message API call identity"
+    if provenance.get("authoring_accepted") is not True:
+        return "provenance does not mark authoring_accepted=true"
+    if provenance.get("accepted_by") != "message_harness_pipeline":
+        return "provenance was not accepted by message_harness_pipeline"
+    if provenance.get("requires_fixed_gate") is not False or provenance.get("fixed_gate_ok") is not True:
+        return "provenance does not prove a completed fixed gate"
+    if (
+        provenance.get("model_calls") is not True
+        or provenance.get("direct_api_calls") is not True
+        or provenance.get("production_flow")
+        != "message_api_fixed_gate_repair_atomic_acceptance"
+    ):
+        return "provenance does not prove the Message API pipeline boundary"
+    report_path_raw = provenance.get("fixed_gate_report_path")
+    if not isinstance(report_path_raw, str) or not report_path_raw:
+        return "provenance is missing the fixed-gate report path"
+    report_path = Path(report_path_raw)
+    if not report_path.is_absolute():
+        report_path = REPO_ROOT / report_path
+    try:
+        report = read_json(report_path)
+    except (OSError, json.JSONDecodeError):
+        return "fixed-gate report is missing or unreadable"
+    if (
+        not isinstance(report, dict)
+        or report.get("ok") is not True
+        or report.get("kind") != provenance.get("fixed_gate_kind")
+    ):
+        return "fixed-gate report does not match the accepted provenance"
+    if provenance.get("candidate_sha256") != candidate_sha256:
+        return "provenance candidate_sha256 does not match the saved output"
+    return ""
 
 
 def normalize_model_output(
@@ -589,6 +390,12 @@ def normalize_model_output(
     model_record["provenance"] = load_model_output_provenance(request_id, found_path, provenance_root)
     if found_path is None:
         model_record["kind"] = "missing"
+        return model_record
+    provenance = model_record["provenance"]
+    acceptance_error = pipeline_acceptance_error(found_path, provenance)
+    if acceptance_error:
+        model_record["kind"] = "invalid"
+        model_record["notes"] = [acceptance_error]
         return model_record
 
     diagnostics_path = out_root / "model_normalize" / f"{base}_diagnostics.json"
@@ -1591,20 +1398,6 @@ def markdown_report(summary: dict[str, Any]) -> str:
         lines.extend(["## ABC Sample Smoke", "", f"- `{summary['abc_sample_smoke']}`", ""])
     if summary.get("source_tasks"):
         lines.extend(["## Source Tasks", "", f"- `{summary['source_tasks']}`", ""])
-    if summary.get("seeded_examples"):
-        lines.extend(["## Seeded Examples", ""])
-        for item in summary["seeded_examples"]:
-            if item.get("status") == "skipped":
-                lines.append(
-                    f"- `{item.get('request_id')}` kind=`{item.get('kind')}` status=`skipped` "
-                    f"reason=`{item.get('reason')}` source_file=`{item.get('source_file')}`"
-                )
-            else:
-                lines.append(
-                    f"- `{item.get('request_id')}` kind=`{item.get('kind')}` "
-                    f"status=`{item.get('status') or 'seeded'}` path=`{item.get('path')}`"
-                )
-        lines.append("")
     return "\n".join(lines)
 
 
@@ -1641,20 +1434,6 @@ def main() -> int:
         return 1
 
     records = build_tasks(forms_dir, manifest, out_root)
-    seeded_examples: list[dict[str, Any]] = []
-    if args.seed_example_model_outputs:
-        try:
-            abc_inputs = manifest.get("abc_inputs") if isinstance(manifest.get("abc_inputs"), dict) else {}
-            abc_fetch_root = Path(args.abc_fetch_root or str(abc_inputs.get("preferred_fetch_root") or "artifacts/abc_fetch_smoke"))
-            seeded_examples = seed_example_model_outputs(
-                Path(args.example_catalog),
-                Path(args.model_output_root),
-                Path(args.model_output_provenance_root),
-                abc_fetch_root,
-            )
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"failed to seed example model outputs: {exc}", file=sys.stderr)
-            return 1
     execute_model_outputs(records, args, out_root)
     api_smoke = run_api_smoke(args, out_root)
     abc_sample_smoke = run_abc_sample(args, manifest, out_root)
@@ -1669,8 +1448,6 @@ def main() -> int:
         "runner": args.runner,
         "execute": args.execute,
         "check_model_outputs": args.check_model_outputs,
-        "example_catalog": args.example_catalog,
-        "seeded_examples": seeded_examples,
         "records": records,
         "stage_counts": summarize_records(records),
         "model_output_matrix": build_model_output_matrix(records),

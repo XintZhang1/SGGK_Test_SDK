@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request_id": "adapt_api_combine_bodies",
+  "api": "api_combine_bodies",
+  "sdk_header": "ModelingBase/API.h",
+  "sdk_modules": [
+    "ModelingBase",
+    "Topology"
+  ],
+  "function_signature": "BodyPtr api_combine_bodies(const BodyList& bodies, bool clone = true)",
+  "adapter_archetype": "body_list_to_body",
+  "behavior": "Combine target and tool BodyPtr inputs into one BodyPtr while optionally cloning the inputs.",
+  "input_roles": [
+    "target",
+    "tool"
+  ],
+  "result_roles": [
+    "result"
+  ],
+  "required_oracles": [
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "smoke_guidance": "Use two separated solid spheres and require exactly one valid result body with finite nonnegative properties.",
+  "topotrack": {
+    "mode": "unavailable",
+    "reason": "The API returns BodyPtr and exposes no ModelingRet TopoTrack channel."
+  }
+}

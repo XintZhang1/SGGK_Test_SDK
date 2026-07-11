@@ -1,6 +1,9 @@
 # Source-Guided Cluster Policy
 
-Use this policy when one reviewed source-risk seed should become a compact cluster.
+This is the host-owned expansion policy used by the integrated pipeline when an
+untrusted `cluster_seed` candidate should become a compact cluster. A seed file
+outside the pipeline is prompt context or a checked-in deterministic fixture,
+not an accepted model output.
 
 ## Bands
 
@@ -27,7 +30,8 @@ For intersection, default:
 - `gap_topo`: `0`
 - source literal bands: caller-specified, default `0`
 
-Review these defaults against the source predicate before bug filing.
+The fixed gate and later qualification must check these defaults against the
+source predicate before any candidate bug report is promoted for review.
 
 ## Siblings
 

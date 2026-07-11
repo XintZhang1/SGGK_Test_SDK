@@ -1,0 +1,64 @@
+{
+  "contract_version": 1,
+  "api": "api_combine_bodies",
+  "version": 1,
+  "description": "Combine two constructed bodies through ModelingBase api_combine_bodies and validate the returned body.",
+  "archetype": "custom_cpp_adapter",
+  "adapter_symbol": "RunApiCombineBodiesPlugin",
+  "adapter_file": "adapter.inc",
+  "recipe_schema": "recipe.schema.json",
+  "sdk_headers": [
+    "ModelingBase/API.h"
+  ],
+  "sdk_modules": [
+    "ModelingBase",
+    "Topology"
+  ],
+  "input_roles": [
+    "target",
+    "tool"
+  ],
+  "result_roles": [
+    "result"
+  ],
+  "topotrack": {
+    "mode": "unavailable",
+    "reason": "api_combine_bodies returns BodyPtr rather than ModelingRet topology tracking"
+  },
+  "capability": {
+    "preferred_format": "flat_recipe",
+    "runner_recipe_api": true,
+    "body_required": [
+      "target",
+      "tool"
+    ],
+    "required_fields": [
+      "api",
+      "case_id",
+      "target_kind",
+      "target_radius",
+      "tool_kind",
+      "tool_radius"
+    ],
+    "supported_body_builders": [
+      "solid_sphere"
+    ],
+    "supported_oracles": [
+      "result_bodies",
+      "properties",
+      "topocheck"
+    ],
+    "notes": [
+      "This pilot proves that a new SDK API can be added without editing the central Python API dispatch or C++ adapter map.",
+      "The plugin schema is authoritative for model-authored recipes."
+    ]
+  },
+  "examples": {
+    "positive": [
+      "examples/smoke.json"
+    ],
+    "negative": [
+      "examples/unknown_field.invalid.json"
+    ]
+  }
+}

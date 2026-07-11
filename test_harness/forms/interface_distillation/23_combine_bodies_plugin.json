@@ -1,0 +1,30 @@
+{
+  "request_id": "iface_23_combine_bodies_plugin",
+  "owner": "kernel-dev",
+  "target_api": "api_combine_bodies",
+  "sdk_source_refs": [
+    "SGGK ModelingBase/API.h: api_combine_bodies"
+  ],
+  "test_goal": "Generate a strict plugin-backed flat recipe for the newly adapted api_combine_bodies interface.",
+  "risk_summary": "A new API must be discoverable through its plugin manifest, validated by its private schema, compiled into the generated adapter registry, and exercised without adding a central API branch.",
+  "geometry": {
+    "family": "plugin",
+    "target_builder": "solid_sphere",
+    "tool_builder": "solid_sphere",
+    "parameter_notes": "Use two separated spheres so the combined body contains two unambiguous disconnected components."
+  },
+  "tolerance_focus": [
+    "plugin_registration",
+    "strict_recipe_schema"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "The plugin adapter returns one valid combined body and records finite nonnegative properties for it.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return flat_recipe only. Use exactly the fields permitted by the api_combine_bodies plugin recipe schema."
+}

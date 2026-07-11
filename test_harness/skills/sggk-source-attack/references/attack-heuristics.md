@@ -2,7 +2,14 @@
 
 Use this reference when translating suspicious source into test cases.
 
-For large source roots, run `scan_source_risks.py` before hand-authoring DSL. The scanner emits `source_risk_report.json`, `source_risk_report.md`, `source_risk_files.txt`, and `attack_seed_drafts.json`; use those findings to choose files and hypotheses, not as final proof that a bug exists. For small-model batches, run `build_source_attack_tasks.py` on the scan output so each task carries a wider source excerpt, the finding, the review-required seed DSL, and the required output contract.
+For large source roots, run `scan_source_risks.py`, then
+`build_source_attack_tasks.py`, before building the Message API prompt pack. The
+scanner emits `source_risk_report.json`, `source_risk_report.md`,
+`source_risk_files.txt`, and `attack_seed_drafts.json`. Findings and seed DSL
+are bounded prompt context, not tests or proof of a bug. Only
+`run_message_harness_pipeline.py` may turn that context into an untrusted model
+candidate, run fixed gates, and promote an accepted output; do not hand-author,
+copy/paste, or directly execute a model response.
 
 ## Source Patterns To Search
 

@@ -14,6 +14,7 @@ SUPPORTED_KINDS = frozenset(
         "cluster_seed",
         "needs_harness_extension",
         "campaign_request",
+        "api_plugin_candidate",
     }
 )
 FILESYSTEM_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -274,6 +275,37 @@ def _validate_extension(candidate: Mapping[str, Any], diagnostics: list[Contract
             )
 
 
+def _validate_api_plugin_candidate(
+    candidate: Mapping[str, Any],
+    diagnostics: list[ContractDiagnostic],
+) -> None:
+    for key in ("api", "description"):
+        if not _nonempty_string(candidate.get(key)):
+            diagnostics.append(
+                _error(
+                    f"API_PLUGIN_{key.upper()}_MISSING",
+                    f"$.{key}",
+                    f"api_plugin_candidate requires a non-empty {key}.",
+                    f"Provide {key} from the trusted API intake evidence.",
+                )
+            )
+    for key in (
+        "adapter_spec",
+        "recipe_schema",
+        "smoke_recipe",
+        "negative_recipe",
+        "capability",
+        "topotrack",
+    ):
+        if not isinstance(candidate.get(key), dict):
+            diagnostics.append(
+                _error(
+                    f"API_PLUGIN_{key.upper()}_INVALID",
+                    f"$.{key}",
+                    f"api_plugin_candidate requires {key} as an object.",
+                    "Return the complete fixed-archetype plugin candidate JSON.",
+                )
+            )
 def _schema_type_matches(value: Any, expected: str) -> bool:
     if expected == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
@@ -611,6 +643,8 @@ def validate_candidate(
         _validate_extension(candidate, diagnostics)
     elif kind == "campaign_request":
         _validate_campaign_request(candidate, diagnostics, allowed_campaign_profiles or {})
+    elif kind == "api_plugin_candidate":
+        _validate_api_plugin_candidate(candidate, diagnostics)
     return ContractReport(
         not any(item.severity == "error" for item in diagnostics),
         kind=kind,

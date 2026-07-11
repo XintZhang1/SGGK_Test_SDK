@@ -61,22 +61,26 @@ Typed large-campaign output:
     "resume": true
   },
   "notes": ["The form requests a corpus-scale ABC loaded_sgt recut lane."],
-  "expected_artifacts": [
-    "artifacts/abc_boolean_mass_recut/abc_boolean_mass_recut_summary.json",
-    "artifacts/abc_boolean_mass_recut/abc_boolean_mass_recut_bug_report.md"
-  ],
   "expected_artifacts": ["abc_boolean_mass_recut_summary.json", "abc_boolean_mass_recut_bug_report.md"]
 }
 ```
+
+Fixed-template new-API output must use the complete, schema-valid shape in
+`test_harness/api_plugin_candidates/api_combine_bodies.example.json`; abbreviated
+objects with empty schema/smoke/capability fields are invalid. The complete
+object must satisfy `test_harness/schemas/api_plugin_candidate.schema.json`, and
+the host binds its API, archetype, function, SDK header/modules, required
+oracles, and TopoTrack mode to the trusted intake contract. The model cannot emit
+C++, CMake, commands, runner/cwd/environment fields, SDK paths, or link flags.
 
 Unsupported output:
 
 ```json
 {
   "kind": "needs_harness_extension",
-  "api": "api_offset_body",
-  "why_needed": "The current runner has no recipe for standalone body offset.",
-  "extension_summary": "Add a flat api_offset_body recipe with primitive or loaded_sgt input plus offset distance.",
+  "api": "api_fillet_body",
+  "why_needed": "No built-in/plugin adapter or registered fixed archetype covers this signature.",
+  "extension_summary": "Define a reviewed fillet adapter archetype and semantic smoke contract.",
   "proposed_recipe_fields": {
     "source_kind": "solid_cylinder | loaded_sgt",
     "offset_distance": "number or numeric expression",
@@ -93,7 +97,7 @@ Unsupported output:
   },
   "minimum_smoke_case": {
     "case_id": "offset_near_tol_001",
-    "api": "api_offset_body"
+    "api": "api_fillet_body"
   },
   "patch_plan": [
     {"layer": "schema", "change": "Add recipe fields.", "files": []},
@@ -108,11 +112,12 @@ Unsupported output:
 Review rules:
 
 - Valid JSON only.
-- No direct SDK code.
+- No direct SDK code, source patches, or build configuration.
 - No unsupported body builders.
 - Use stable operation `id` values in chains.
 - Include real oracles. Good defaults are `result_bodies`, property checks, point/body relation, face/point relation, clash, distance, plane-extreme, and roundtrip comparison when applicable.
 - For tolerance requests, use `sweeps` or `paired_sweeps` around exact contact, `geom_tol`, and `topo_tol`.
 - For `api_boolean`, prefer DSL over flat recipes.
 - For 100k+ corpus campaigns, use `campaign_request`; never emit commands, runner/data/output paths, cwd, environment, or shell fields.
+- For supported new APIs, use `api_plugin_candidate`; fixed code must pass `adapter_build_pass` before promotion.
 - For `check_sgt`, `step_import`, `iges_import`, `step_roundtrip`, and `iges_roundtrip`, use flat recipe JSON if no DSL mapping exists.

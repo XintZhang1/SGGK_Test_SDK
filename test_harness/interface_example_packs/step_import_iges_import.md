@@ -1,8 +1,7 @@
 # step_import_iges_import
 
-Use this excerpt for `step_import` and `iges_import` forms that ask the model to
-author a single flat recipe or identify when a fixed corpus campaign should be
-used instead.
+Use this excerpt in Message API tasks for `step_import` and `iges_import` forms
+that require one flat-recipe candidate or should select a fixed corpus campaign.
 
 Rules:
 - Return `{"kind":"flat_recipe","recipe":{...}}` for one selected file.

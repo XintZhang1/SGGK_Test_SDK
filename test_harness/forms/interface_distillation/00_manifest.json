@@ -141,6 +141,12 @@
       "form": "22_offset2d_degenerate.json",
       "covers": ["api_offset2d", "degenerate arc", "CrvDegenToPoint status"],
       "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 23,
+      "form": "23_combine_bodies_plugin.json",
+      "covers": ["api_combine_bodies", "compile-time plugin registry", "plugin-private schema"],
+      "expected_model_output": "flat_recipe"
     }
   ],
   "task_build_command": "python .\\test_harness\\tools\\build_api_test_task.py .\\test_harness\\forms\\interface_distillation\\<form>.json --out .\\artifacts\\interface_distillation_tasks\\<request_id>.json",

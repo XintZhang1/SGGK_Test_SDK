@@ -1,0 +1,18 @@
+{
+  "case_id": "plugin_combine_bodies_invalid",
+  "api": "api_combine_bodies",
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 5.0,
+  "model_command": "must be rejected",
+  "expectations": {
+    "result_bodies": {
+      "min": 1,
+      "max": 1
+    },
+    "require_property_calculations": true,
+    "require_finite_properties": true,
+    "require_nonnegative_volume": true
+  }
+}

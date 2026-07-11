@@ -1,14 +1,23 @@
 # Output Contract
 
-Use this reference before returning generated attacks.
+Use this reference when reporting a source-attack run performed through the
+integrated Message API pipeline. It is a host evidence/reporting contract, not
+an instruction for Codex, a human, or a standalone model to author runnable
+JSON.
 
 ## Required Output Shape
 
 Return concise Markdown with three sections:
 
-1. `Findings`: source references and why they look fragile.
-2. `Attack DSL`: JSON blocks for runnable attack DSL or `needs_harness_extension` objects.
-3. `Run`: exact command lines for `scan_source_risks.py`, `sggk_case_runner`, `compile_attack_dsl.py`, `generate_boolean_matrix.py`, `generate_corpus_recut_matrix.py`, `probe_exact_bbox.py`, `probe_topotrack_crashes.py`, `run_recipes.py`, `discover_corpus.py`, `audit_corpus_dataset.py`, `profile_cad_features.py`, `run_corpus.py`, `preflight_campaign.py`, `run_campaign.py`, `plan_large_campaign.py`, `collect_campaign_shards.py`, `triage_artifacts.py`, `render_case_preview.py`, `audit_case_geometry.py`, `replay_regression_seeds.py`, `reduce_failure_recipe.py`, `export_failure_bundles.py`, `collect_bug_registry.py`, `build_debug_handoff.py`, `export_bug_record_drafts.py`, `promote_bug_records.py`, `audit_bug_record_portability.py`, `record_bug_cases.py`, or `check_bug_registry_regression.py`.
+1. `Inputs`: source references, risk findings, task manifest, profile, and trusted local bindings.
+2. `Authoring`: pipeline summary, candidate count, selected candidate, accepted output/provenance, fixed-gate status, and any bounded repair diagnostics.
+3. `Execution`: SDK/semantic result, triage, replay, reduction, TopoTrack, and candidate-only bug-report evidence.
+
+Production authoring commands are limited to
+`build_model_prompt_pack.py` followed by `run_message_harness_pipeline.py`.
+Low-level DSL/compiler/validator/runner commands may appear only as pipeline
+fixed-gate evidence or as explicit debugging of checked-in deterministic
+fixtures. They cannot accept captured model output.
 
 ## Finding Format
 
@@ -27,13 +36,13 @@ When using the deterministic source scanner, report:
 - `attack_seed_drafts.json` count and representative `seed_id` values
 - `source_attack_tasks.jsonl` and `source_attack_task_manifest.md` when `build_source_attack_tasks.py` was used
 - top severity/category counts
-- whether any generated `dsl_seed` was compiled or edited before running
-- source files that still require manual reading
+- confirmation that generated `dsl_seed` files were used only as prompt context and were not compiled, edited, or executed as model output
+- source references included in the bounded task context
 
 ## Recipe Rules
 
-- Emit valid JSON, not pseudo-JSON.
-- Prefer attack DSL over flat recipes. Flat recipes are acceptable only for already compiled/debug output.
+- The Message API candidate must be valid JSON, not pseudo-JSON.
+- Prefer attack DSL over flat recipes when the manifest contract allows both.
 - Use exact numeric literals where possible.
 - Include deterministic IDs.
 - Prefer one recipe per hypothesis plus nearby variants for threshold issues.
@@ -60,7 +69,7 @@ When using the deterministic source scanner, report:
 - For GUI handoff, use `build_debug_handoff.py --registry <bug_registry> --out <debug_handoff>` or the campaign's `debug_handoff/` output. For known-bug replay lanes, use `build_debug_handoff.py --registry <known_bug_records> --triage <known_bug_replay_triage> --out <debug_handoff>` so pack names keep registry fingerprints and bug ids while focus/input SGTs come from the latest replay artifacts. When available, `sggk_topology_extract.exe` exports primary-contact target/tool topology to `focus/*.sgt`; each pack also writes `visual_index.json` / `visual_index.md` for all copied debug/focus/input SGTs and `focus_index.json` / `focus_index.md` for extraction status. Report `debug_handoff_report.md`, each pack directory, `visual_index.md`, `focus_index.md`, `sgt_paths.txt`, copied debug SGT count, copied focus-topology SGT count, copied input SGT count, and the topology extractor path.
 - Render screenshots with `render_case_preview.py <artifact-root> --out-dir <preview-dir> --contact-sheet <preview-dir>/contact.png`. For tolerance families, run `audit_case_geometry.py <artifact-root> --out <audit-dir> --exact-bbox-runner <runner>` and check signed clearances before claiming variants are distinct.
 - Summarize oracle coverage with `summarize_oracle_coverage.py --campaign <campaign-root> --out <coverage-dir>` for existing runs, or use the default `run_campaign.py` `oracle_coverage/` output. Report passed cases missing validation, passed cases below the minimum oracle-kind count, and oracle counts for property snapshots, metric expectations, point/body relation, face/point relation, clash, distance, and exact plane-extreme checks.
-- For model-generated DSL, run `compile_attack_dsl.py <dsl> --check --report <dsl-check-report.json>` before compiling or executing it. Report `mode`, `file_count`, `recipe_count`, `compile_failure_count`, and `validation_failure_count`. Keep the check report outside compiled recipe directories so later `validate_recipe.py <compiled-dir>` sees only recipe files.
+- For a model-authored DSL candidate, report the fixed `compile_attack_dsl.py --check` evidence produced by `run_message_harness_pipeline.py`, including `mode`, `file_count`, `recipe_count`, `compile_failure_count`, and `validation_failure_count`. Do not run the compiler manually on captured model output. Direct compiler use is limited to checked-in deterministic fixtures or diagnosis of an existing pipeline gate artifact.
 - Use `triage_artifacts.py <artifact-root> --out <triage-dir>` after large corpus or DSL batches to generate `triage_summary.json` and `triage_report.md`.
 - For generated flat recipe batches, prefer `run_recipes.py --runner <runner> --recipe <recipe-dir> --out <artifact-root> --jobs N --resume --triage-out <triage-dir> --preview-out <preview-dir> --geometry-audit-out <audit-dir>`.
 - For SGT corpus recut batches, run `generate_corpus_recut_matrix.py --dataset-list <dataset_index.json> --out <recipe-dir> --preset smoke|standard|stress --runner <runner>`, then run the generated recipes with `run_recipes.py` plus preview and geometry audit. Report the source count, skipped source count, recipe count, exact-bbox probe status, bbox source counts, contact sheet, and signed-clearance audit. Use `--require-exact-bbox-probe` for extent-sensitive bug-filing lanes.
@@ -91,7 +100,8 @@ Finding:
 
 - `src/Boolean/Foo.cpp:123`: near-tangent branch compares distance with `Precision::MinLocalTol`; risk is unstable split classification on generated extrusion side faces. Recipes: `boolean_min_local_tol_001`.
 
-Attack DSL:
+Illustrative candidate contract shape (prompt/reference context only; do not
+save or run this as a captured model response):
 
 ```json
 {
@@ -131,11 +141,10 @@ Run commands:
 ```powershell
 python .\test_harness\tools\scan_source_risks.py .\SGK1.4.10\SGGK\include --out .\artifacts\sdk_include_source_risk_scan --max-findings 120 --max-seeds 30
 python .\test_harness\tools\build_source_attack_tasks.py .\artifacts\sdk_include_source_risk_scan --out .\artifacts\sdk_include_source_attack_tasks --max-tasks 80 --context-lines 12 --write-dsl-seeds
-python .\test_harness\tools\compile_attack_dsl.py .\attacks\boolean_min_local_tol_001.json --out .\artifacts\compiled_attacks
+python .\test_harness\tools\build_model_prompt_pack.py --source-task-dir .\artifacts\sdk_include_source_attack_tasks --out .\artifacts\source_model_prompt_pack
+python .\test_harness\tools\run_message_harness_pipeline.py --profile intranet --run-id source_attack_batch --execute --runner .\build\test_harness\Release\sggk_case_runner.exe .\artifacts\source_model_prompt_pack\model_task_manifest.json
 python .\test_harness\tools\generate_corpus_recut_matrix.py --dataset-list .\artifacts\dataset_index.json --out .\artifacts\corpus_recut_recipes --preset smoke --case-prefix corpus_recut --runner .\build\test_harness\Release\sggk_case_runner.exe
 python .\test_harness\tools\audit_corpus_dataset.py --dataset-list .\artifacts\dataset_index.json --out .\artifacts\dataset_audit
-python .\test_harness\tools\run_recipes.py --runner .\build\test_harness\Release\sggk_case_runner.exe --recipe .\artifacts\compiled_attacks --out .\artifacts\attack_run --jobs 4 --triage-out .\artifacts\attack_triage --preview-out .\artifacts\attack_preview --contact-sheet .\artifacts\attack_preview\contact.png
-.\build\test_harness\Release\sggk_case_runner.exe --recipe .\attacks\boolean_min_local_tol_001.json --out .\artifacts
 python .\test_harness\tools\triage_artifacts.py .\artifacts --out .\artifacts\triage
 python .\test_harness\tools\render_case_preview.py .\artifacts --out-dir .\artifacts\preview --contact-sheet .\artifacts\preview\contact.png
 python .\test_harness\tools\audit_case_geometry.py .\artifacts --out .\artifacts\geometry_audit --exact-bbox-runner .\build\test_harness\Release\sggk_case_runner.exe --fail-on-tolerance-mismatch

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sggk://api_plugins/api_combine_bodies/recipe.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "api",
+    "case_id",
+    "target_kind",
+    "target_radius",
+    "tool_kind",
+    "tool_radius",
+    "expectations"
+  ],
+  "properties": {
+    "api": {
+      "const": "api_combine_bodies"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "combine_clone": {
+      "type": "boolean"
+    },
+    "modeling_tol": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "check_valid": {
+      "type": "boolean"
+    },
+    "topo_track": {
+      "type": "boolean"
+    },
+    "target_kind": {
+      "const": "solid_sphere"
+    },
+    "target_radius": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "target_translate_x": {
+      "type": "number"
+    },
+    "target_translate_y": {
+      "type": "number"
+    },
+    "target_translate_z": {
+      "type": "number"
+    },
+    "tool_kind": {
+      "const": "solid_sphere"
+    },
+    "tool_radius": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "tool_translate_x": {
+      "type": "number"
+    },
+    "tool_translate_y": {
+      "type": "number"
+    },
+    "tool_translate_z": {
+      "type": "number"
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_bodies",
+        "require_property_calculations",
+        "require_finite_properties",
+        "require_nonnegative_volume"
+      ],
+      "properties": {
+        "result_bodies": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "require_property_calculations": {
+          "const": true
+        },
+        "require_finite_properties": {
+          "const": true
+        },
+        "require_nonnegative_volume": {
+          "const": true
+        }
+      }
+    }
+  }
+}

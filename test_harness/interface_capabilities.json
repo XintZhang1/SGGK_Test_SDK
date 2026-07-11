@@ -3,7 +3,7 @@
   "generated_at": "2026-07-11",
   "purpose": "Machine-readable capability registry for JSON-only Message API SGGK harness tasks and deterministic local gates.",
   "unknown_policy": {
-    "target_api": "Return needs_harness_extension when target_api is not listed here.",
+    "target_api": "Resolve built-in and checked-in plugin capabilities first. For a trusted new-API adaptation task, return api_plugin_candidate only when a registered fixed archetype matches; otherwise return needs_harness_extension.",
     "body_builder": "Return needs_harness_extension when a required body builder is not listed here.",
     "oracle": "Map unknown oracle intent to a listed oracle only when the mapping is exact; otherwise return needs_harness_extension."
   },
@@ -21,13 +21,6 @@
       "allowed_contexts": ["model_output", "regression_asset"],
       "production_boundary": "Explicit external test profile only; it uses the same message.content JSON contract and never acts as an implicit fallback.",
       "description": "Output produced by the explicitly selected SiliconFlow test profile."
-    },
-    "reviewed_fixture": {
-      "title": "Reviewed deterministic fixture",
-      "category": "reviewed_fixture",
-      "allowed_contexts": ["model_output", "regression_asset", "matrix_synthetic"],
-      "production_boundary": "Checked-in or generated test fixture only; it does not claim a live Message API call.",
-      "description": "Deterministic reviewed fixture used by SDK-free contract and regression tests."
     },
     "unknown_saved_output": {
       "title": "Unknown saved output",
@@ -78,6 +71,10 @@
     "needs_harness_extension": {
         "gate": "validate_harness_extension.py then adapter backlog registration",
         "description": "Structured non-executable report used when the current harness cannot express the requested API, builder, or oracle."
+    },
+    "api_plugin_candidate": {
+      "gate": "materialize_api_plugin_candidate.py then isolated configure/build/runtime/smoke validation",
+      "description": "Strict spec-only new-API adapter candidate. Fixed templates generate C++; the model cannot provide commands or CMake."
     }
   },
   "interface_families": {

@@ -1,6 +1,9 @@
 # OCC Surrogate Source Examples
 
-Use these public OCCT anchors as transferable examples when proprietary SGGK source is unavailable. Store links, line ranges, hypotheses, and reviewed harness mappings only; do not copy OCCT source into this repository.
+Use these public OCCT anchors as bounded prompt examples when proprietary SGGK
+source is unavailable. Store links, line ranges, hypotheses, and
+human-authored deterministic harness mappings only; do not copy OCCT source
+into this repository.
 
 ## Anchors
 
@@ -29,11 +32,13 @@ Use these public OCCT anchors as transferable examples when proprietary SGGK sou
    - Risk: export precision derived from shape tolerance when fixed precision is not forced.
    - Harness mapping: `iges_roundtrip` and `step_roundtrip` recipes from generated/corpus SGT sources with property drift oracles.
 
-## Reviewed DSL
+## Checked-In Deterministic Fixture
 
-The reviewed surrogate DSL lives at `test_harness/dsl/occ_source_guided_surrogate_examples.json`.
+The human-authored surrogate fixture lives at
+`test_harness/dsl/occ_source_guided_surrogate_examples.json`. It is not a saved
+model response or a production authoring path.
 
-Run structural checks:
+For host-side fixture debugging, run its structural check directly:
 
 ```powershell
 python .\test_harness\tools\compile_attack_dsl.py .\test_harness\dsl\occ_source_guided_surrogate_examples.json --check --report .\artifacts\occ_source_guided_surrogate_check.json

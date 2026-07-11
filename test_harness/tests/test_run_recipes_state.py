@@ -50,10 +50,18 @@ def test_launcher_freezes_recipe_and_writes_run_state_before_process(
 
     monkeypatch.setattr(run_recipes.subprocess, "run", fake_run)
 
-    result = run_recipes.run_one(runner, recipe, out, timeout=1.0, sdk_threads=2)
+    result = run_recipes.run_one(
+        runner,
+        recipe,
+        out,
+        timeout=1.0,
+        sdk_threads=2,
+        capture_flat_topotrack=True,
+    )
     state = json.loads((out / "state_case" / "run_state.json").read_text(encoding="utf-8"))
 
     assert result["returncode"] == 0
+    assert result["command"][-1] == "--capture-flat-topotrack"
     assert state["phase"] == "completed"
     assert state["recipe_sha1"] == run_recipes.file_sha1(recipe)
     assert state["runner_sha1"] == run_recipes.file_sha1(runner)

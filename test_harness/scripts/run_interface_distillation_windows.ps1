@@ -15,12 +15,10 @@ param(
   [switch]$SkipGitPull,
   [switch]$SkipBuild,
   [switch]$SkipBaseSmoke,
-  [switch]$SkipExampleCheck,
   [switch]$SkipExecute,
   [switch]$SkipApiSmoke,
   [switch]$SkipAbcSample,
   [switch]$SkipSourceScan,
-  [switch]$SeedExampleModelOutputs,
   [switch]$FailOnFailures
 )
 
@@ -196,17 +194,6 @@ try {
     )
   }
 
-  if (-not $SkipExampleCheck) {
-    Invoke-Native -Name "distillation_example_check" -FilePath $Python -Arguments @(
-      ".\test_harness\tools\run_interface_distillation.py",
-      "--out", ".\artifacts\interface_distillation_examples",
-      "--model-output-root", ".\artifacts\interface_distillation_example_model_outputs",
-      "--seed-example-model-outputs",
-      "--check-model-outputs",
-      "--require-model-outputs"
-    )
-  }
-
   if (-not $SkipExecute) {
     $executeArgs = @(
       ".\test_harness\tools\run_interface_distillation.py",
@@ -219,9 +206,6 @@ try {
     )
     if (-not $SkipApiSmoke) {
       $executeArgs += "--api-smoke"
-    }
-    if ($SeedExampleModelOutputs) {
-      $executeArgs += "--seed-example-model-outputs"
     }
     if (-not $SkipAbcSample) {
       $executeArgs += @("--abc-sample-smoke", "--abc-fetch-root", $AbcFetchRoot)

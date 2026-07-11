@@ -3,7 +3,9 @@
 This matrix is the current inventory for distilling the end-to-end workflow:
 
 ```text
-developer/source form -> model-authored DSL or recipe -> generated case cluster -> harness run -> triage/report
+trusted form/intake -> parallel Message API candidates -> fixed gates
+                    -> real SDK/plugin execution -> deterministic promotion
+                    -> qualification/replay/TopoTrack -> candidate report
 ```
 
 It distinguishes top-level runner APIs from SDK calls that are currently tested as body builders or validation oracles.
@@ -26,7 +28,20 @@ These values are accepted by the flat recipe `api` field and by the DSL compiler
 | `step_roundtrip` | `api_step_export` then `api_step_import` | Existing `.sgt` body | Source-guided drift tests for precision, BSpline conversion, units, dropped topology | `recipes/step_roundtrip_smoke.json`, `dsl/exchange_roundtrip_smoke.json` |
 | `iges_roundtrip` | `api_iges_export` then `api_iges_import` | Existing `.sgt` body | Source-guided export precision/tolerance drift tests | `recipes/iges_roundtrip_smoke.json`, `dsl/exchange_roundtrip_smoke.json` |
 
-Use `needs_harness_extension` when source inspection points to an API not represented in this table or in the body-builder/oracle sections below.
+## Compile-Time API Plugins
+
+Plugin APIs are discovered from checked-in manifests, merged into Python
+capabilities, validated by each plugin's strict recipe schema, generated into
+the C++ dispatch/metadata registry at configure time, and verified against the
+compiled `--list-adapters-json` output.
+
+| Plugin API | SDK surface | Archetype | Current evidence |
+|---|---|---|---|
+| `api_combine_bodies` | `sggk::api_combine_bodies` | checked-in `custom_cpp_adapter`; generated candidates use `body_list_to_body` | positive/negative schema fixtures, Release build, runtime registry hash, three stable smoke hashes |
+
+For a new API, use `api_plugin_candidate` when a registered fixed archetype can
+represent its SDK signature. Use `needs_harness_extension` only when neither a
+built-in adapter, an existing plugin, nor a registered archetype can cover it.
 
 ## Body Builders Tested Through Boolean
 
@@ -86,7 +101,7 @@ Every distilled test should include at least one real-result oracle beyond API s
 | `distance_checks` | `api_topo_minimum_distance`, `api_topo_maximum_distance` | exact contact, gap/overlap, proximity thresholds | `recipes/distance_check_smoke.json` |
 | `plane_extreme_checks` | generated coordinate plane + minimum distance | exact min/max coordinate oracle, not conservative bbox | `recipes/plane_extreme_sphere_smoke.json` |
 | roundtrip comparison | source/result properties and bbox after exchange | STEP/IGES drift | `recipes/step_roundtrip_smoke.json`, `recipes/iges_roundtrip_smoke.json` |
-| topo tracking | SDK ModelingRet topology history | source-guided localization | native DSL boolean runs with `topo_track=true` |
+| topo tracking | SDK ModelingRet topology history | source-guided localization | native DSL capture or paired isolated flat-recipe capture/control probe |
 
 ## Distillation Flow Per Interface
 
@@ -96,11 +111,12 @@ Use this exact loop for each interface family:
    - `target_api`: one of the top-level runner APIs.
    - `geometry.family`: one of `primitive`, `generated_extrude`, `generated_thicken`, `generated_sweep`, `support_sweep_bspline`, `generated_revolve`, `pre_boolean`, `loaded_sgt`, `exchange_file`, or `corpus`.
    - `sdk_source_refs`: intranet source file/function/line, or an OCC surrogate link for public examples.
-2. Ask the model to produce one of:
+2. Generate several independent Message API candidates, each producing one of:
    - `attack_dsl` for boolean/body-builder/source-guided cases.
    - `flat_recipe` for direct import/check/roundtrip cases.
    - `cluster_seed` for `build_source_guided_cluster.py`.
    - `campaign_request` for a registered large-run profile with bounded args.
+   - `api_plugin_candidate` for a new API matching a registered fixed archetype.
    - `needs_harness_extension` for unsupported SDK APIs.
 3. Expand to a small cluster when source risk involves tolerance/contact:
    - exact contact
@@ -109,14 +125,16 @@ Use this exact loop for each interface family:
    - source literal thresholds
    - generated-topology sibling
    - optional large-coordinate sibling under `max_model_size`
-4. Run static gates:
+4. Run static gates and canonical de-duplication:
    - `compile_attack_dsl.py --check --report` for DSL.
    - `validate_recipe.py` for flat recipes or compiled output.
-5. Run Windows SDK tests:
+5. Independently run Windows SDK tests or isolated plugin builds, then apply a
+   deterministic host selection goal:
    - `run_recipes.py` for generated recipe folders.
    - `run_corpus.py` for ABC STEP/IGES import.
    - `run_abc_sample_smoke.py` for top-complex import plus exact-bbox recut.
-6. Produce report artifacts:
+6. Qualify failures before bug candidacy; then replay, reduce, perform paired
+   TopoTrack probes, and produce report artifacts:
    - `recipe_summary.json` or `corpus_summary.json`
    - `triage_report.md`
    - `validation.json` for failing cases
@@ -151,4 +169,6 @@ The current harness does not yet expose standalone runner APIs for:
 - HLR/display-only APIs
 - meshing/tessellation APIs
 
-When source inspection targets one of these, the model should emit `needs_harness_extension` with proposed recipe fields, required artifacts, and one minimum smoke case.
+When source inspection targets one of these, first add a reviewed fixed adapter
+archetype or checked-in plugin contract. Until then, the model may emit only a
+non-executing `needs_harness_extension` intake; it cannot author a source patch.

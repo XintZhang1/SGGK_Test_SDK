@@ -507,6 +507,8 @@ def summarize_input_contact_candidates(input_index: Any, max_entries: int) -> li
             distance, gaps, overlaps, overlap_axes = bbox_distance(target["bbox"], tool["bbox"])
             candidates.append(
                 {
+                    "evidence_kind": "bbox_nearness_heuristic",
+                    "causal_proof": False,
                     "target": target["ref"],
                     "tool": tool["ref"],
                     "bbox_distance": distance,

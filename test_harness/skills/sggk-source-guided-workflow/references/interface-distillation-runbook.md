@@ -1,47 +1,21 @@
 # Interface Distillation Runbook
 
-Use this runbook when the goal is to teach a smaller intranet model the full loop:
+Use this runbook for the complete automatic intranet Message API loop:
 
 ```text
-developer/source form -> constrained model output -> generated tests -> Windows SDK run -> triage report
+developer/source form -> Message API candidate pool -> fixed gates -> Windows SDK run -> deterministic selection -> triage report
 ```
 
-The model may use intranet source code during test-case authoring. It must still emit structured harness JSON, not direct SDK code.
+Bounded intranet source context may be included in the prompt manifest. The
+model still returns one structured candidate in `message.content`, never direct
+SDK code, and only the integrated pipeline may accept it.
 
 ## Campaign Driver
 
-Use the offline driver only to evaluate already accepted outputs or deterministic fixtures:
-
-```powershell
-python .\test_harness\tools\run_interface_distillation.py `
-  --out .\artifacts\interface_distillation_windows_full_40chunk `
-  --model-output-root .\artifacts\model_outputs_full_40chunk `
-  --seed-example-model-outputs `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --execute `
-  --api-smoke `
-  --abc-sample-smoke `
-  --abc-fetch-root $env:SGGK_DATA_ROOT `
-  --source-root $env:SGGK_SOURCE_ROOT `
-  --jobs 1 `
-  --timeout 180
-```
-
-Use the wrapper for a Windows one-command replay:
-
-```powershell
-.\test_harness\scripts\run_interface_distillation_windows.ps1 `
-  -SdkDir $env:SGGK_SDK_DIR `
-  -AbcFetchRoot $env:SGGK_DATA_ROOT `
-  -SourceRoot $env:SGGK_SOURCE_ROOT `
-  -SeedExampleModelOutputs `
-  -Jobs 1 `
-  -Timeout 180
-```
-
-Omit `--seed-example-model-outputs` / `-SeedExampleModelOutputs` when `--model-output-root` already contains real intranet model responses.
-
-Build a provider-neutral prompt pack and run it through the integrated Message API pipeline. Each task is isolated and must return one JSON object in `message.content`:
+Build a provider-neutral prompt pack and run it through the integrated Message
+API pipeline. There is no fixture-seeding or human-authored model-output path.
+Each independent candidate is isolated and must return one JSON object in
+`message.content`:
 
 ```powershell
 python .\test_harness\tools\build_model_prompt_pack.py `
@@ -59,7 +33,9 @@ python .\test_harness\tools\run_message_harness_pipeline.py `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-Use `--profile siliconflow-test` only for the explicit external simulation lane. The pipeline stages candidates, applies fixed gates and bounded repair, accepts only passing JSON/provenance pairs, and optionally executes the SDK. The low-level gateway is transport debugging only.
+Use `--profile siliconflow-test` only for the explicit external simulation lane.
+It uses the same manifest, candidate contract, gates, selection, and execution
+path as `intranet`. The low-level gateway is transport debugging only.
 
 ## Evidence To Inspect
 
@@ -79,16 +55,19 @@ Every run should produce:
 
 Treat command return code 0 as "workflow completed", not as "all test cases passed". `run_recipes.py` and `run_corpus.py` can return accepted nonzero status for discovered failures so triage, preview, and report generation can continue.
 
-## Small-Model Review Rules
+## Automatic Candidate Rules
 
 The automatic acceptance path enforces these rules:
 
-- `cluster_seed` is not directly runnable. Expand it with `build_source_guided_cluster.py`, then check and compile the emitted DSL.
+- `cluster_seed` is not directly runnable. The pipeline invokes the fixed `build_source_guided_cluster.py` expansion before the DSL gate.
 - `attack_dsl` must pass `compile_attack_dsl.py --check --report` before execution.
 - `flat_recipe` must pass `validate_recipe.py` before execution.
 - API success is not enough. Failed `validation.json`, TopoCheck, roundtrip comparison, point/face relation, clash, distance, plane-extreme, or empty-result oracle is a failure.
-- ABC import templates with placeholder `source_file` values are rebound during seeding when `--abc-fetch-root` is provided. If the dataset lacks the requested format, keep the placeholder and write a note instead of inventing a path.
-- Keep proprietary source excerpts and generated artifacts under `artifacts/` or intranet-only storage. Commit only forms, skills, reviewed DSL/templates, portable bug records, and human-written summary reports.
+- ABC import tasks must receive a concrete trusted asset binding from the task pack. A model may not invent or rebind a filesystem path.
+- Keep proprietary source excerpts and generated artifacts under `artifacts/`
+  or intranet-only storage. Commit only forms, skills, human-authored
+  deterministic fixtures/templates, portable bug records, and human-written
+  summary reports; never commit a captured model response as a fixture.
 
 ## ABC And Source-Guided Lanes
 
@@ -100,7 +79,10 @@ Run both targeted and broad lanes:
 - ABC recut lane: imports corpus bodies, saves SGT results, then attacks them with exact/gap/overlap generated cutters
 - source scan lane: scans SGGK headers/source, writes risk findings, and builds source-attack task JSONL for the intranet model
 
-The source scan output is a prioritization aid. The small model must still read the cited source branch and adjust geometry/oracles before final bug filing.
+Source scan output is prioritization and prompt context only. Each Message API
+candidate must ground geometry/oracles in the cited branch, and fixed
+qualification/replay still decides whether a failure can proceed to a
+candidate bug report.
 
 ## ABC Boolean 100k Mass Recut Lane
 

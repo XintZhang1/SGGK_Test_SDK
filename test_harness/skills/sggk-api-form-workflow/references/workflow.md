@@ -5,12 +5,13 @@ The production path is fully automatic:
 ```text
 API/C++ form
   -> provider-neutral prompt manifest
-  -> configured Message API candidate
-  -> normalize + kind-specific fixed gate
+  -> parallel Message API candidate pool
+  -> normalize + kind-specific fixed gate + SHA-256 de-duplication
   -> bounded diagnostic repair
-  -> authoring-accepted JSON + provenance
-  -> optional SDK execution
-  -> triage + same-failure replay + failure bundle + bug draft
+  -> independent SDK execution or isolated adapter build
+  -> deterministic selection + atomic promotion
+  -> qualification + same-failure replay + reduction + TopoTrack probe
+  -> candidate-only failure bundle/report
 ```
 
 ## Build And Run
@@ -45,8 +46,12 @@ runner, dataset, output, cwd, environment, executable, or shell fields.
 - `cluster_seed` is expanded by fixed code and then passes the DSL gate.
 - `campaign_request` selects a registered profile and bounded typed arguments;
   fixed code binds local paths and resolves argv with `shell=False`.
+- `api_plugin_candidate` is materialized through a registered fixed C++
+  archetype, then must pass isolated Release build/schema/registry/three-replay
+  semantic gates.
 - `needs_harness_extension` is a non-executing report. It does not apply or
-  propose a source patch.
+  propose a source patch and is used only when no existing adapter/plugin or
+  registered archetype can cover the API.
 - The low-level `run_authoring_gateway.py` stages transport-contract candidates
   for diagnostics only. Its provenance has `authoring_accepted=false`.
 
@@ -54,11 +59,11 @@ SDK/oracle failures never trigger model repair and never get relabeled as SDK
 bugs. The pipeline keeps the accepted test, writes triage and replay evidence,
 and emits artifact-local bug candidates marked as requiring classification.
 
-## Offline Evaluation
+## Post-promotion Evaluation
 
-`run_interface_distillation.py` may evaluate already saved, accepted outputs or
-checked-in deterministic fixtures. It is not a model transport and is not the
-production acceptance entry point.
+`run_interface_distillation.py` may evaluate outputs already promoted by the
+Message API pipeline. It is not a model transport and cannot author, seed, or
+accept a model output.
 
 Report the pipeline summary, accepted output/provenance, fixed-gate report,
 recipe summary, triage report, replay classification, and any failure bundles.

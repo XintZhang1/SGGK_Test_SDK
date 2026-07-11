@@ -1,27 +1,28 @@
-# Message API Harness Pipeline
+# Message API Harness Profiles
 
-The production authoring path is `run_message_harness_pipeline.py`. It accepts
-an explicit provider profile, reads exactly one JSON object from
-`choices[0].message.content`, stages it as a candidate, runs the output contract
-and kind-specific fixed harness gate, performs bounded diagnostic repair, and
-only then atomically promotes a formal output plus provenance.
+`run_message_harness_pipeline.py` is the only production authoring entrypoint.
+Each independent response is exactly one JSON object from
+`choices[0].message.content`. A task may generate several candidates in
+parallel; fixed host code normalizes, gates, canonical-hash de-duplicates,
+executes, scores, selects, and atomically promotes one candidate.
 
-SiliconFlow is an explicit external test profile for exercising the same
-Message API path before an intranet deployment. It is never an implicit
-fallback for the `intranet` profile.
+SiliconFlow is an explicit external simulator for the same manifest, candidate
+contract, fixed gates, selection, and SDK execution path used by the intranet
+Qwen endpoint. Equal protocol/model identity does not imply byte- or
+token-identical sampling. It is never an implicit fallback for `intranet`.
 
 ## Boundary
 
-- The profile, endpoint, model, credential, and optional CA bundle come only
-  from environment variables.
-- `reasoning_content` is never a candidate; only its character count and
-  SHA-256 may be recorded.
-- Credentials, authorization headers, and reasoning text are never persisted.
-- The transport gateway does not run the SDK, execute model-authored commands,
-  apply a patch, or invoke Git.
-- Contract errors and fixed-gate errors have separate bounded repair budgets.
-  SDK/oracle failures never trigger model repair; they enter triage/replay.
-- Only pipeline provenance may set `authoring_accepted=true`.
+- Profile, endpoint, model, credential, and optional CA bundle come only from
+  environment variables.
+- Only `message.content` is candidate data. Reasoning text and credentials are
+  never persisted.
+- Model JSON cannot provide commands, executable/runner paths, cwd,
+  environment, shell, SDK/link flags, or dataset/output paths.
+- Contract/fixed-gate repair is bounded. SDK/oracle failure enters
+  qualification and replay; it never triggers code repair by the model.
+- Only the integrated pipeline may set `authoring_accepted=true`.
+- There is no human-authored or fixture-seeding acceptance path.
 
 ## Profiles
 
@@ -34,7 +35,7 @@ $env:SGGK_QWEN_API_KEY = "<optional-token>"
 $env:SGGK_QWEN_CA_BUNDLE = "<optional-ca-pem>"
 ```
 
-Explicit SiliconFlow test endpoint:
+Explicit SiliconFlow simulator:
 
 ```powershell
 $env:SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -42,45 +43,39 @@ $env:SILICONFLOW_MODEL = "<verified-qwen-model-id>"
 $env:SILICONFLOW_API_KEY = "<token>"
 ```
 
-Missing variables fail closed. Setting only the SiliconFlow variables cannot
-make an `intranet` run use SiliconFlow.
+Missing required variables fail closed. Setting only SiliconFlow variables
+cannot make an `intranet` run use SiliconFlow.
 
-## Production batch
-
-Build the deterministic prompt pack, then run its manifest:
+## Candidate batch
 
 ```powershell
 python .\test_harness\tools\build_model_prompt_pack.py `
   --out .\artifacts\model_prompt_pack
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile siliconflow-test `
-  --run-id siliconflow_qwen_smoke `
-  --max-contract-repairs 1 `
-  --max-gate-repairs 1 `
-  .\artifacts\model_prompt_pack\model_task_manifest.json
-```
-
-Use `--profile intranet` for the internal endpoint. `--task-id <id>` may be
-repeated to select a bounded subset. Add `--execute --runner <runner>` for the
-test/triage/report stage, and `--campaign-dataset <root>` when a selected task
-may return `campaign_request`. Existing formal outputs must be a verified
-fixed-gate accepted pair; replacement requires explicit `--overwrite`.
-
-## Bounded single task
-
-```powershell
-python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
-  --task-id api_boolean_smoke `
-  --run-id api_boolean_smoke `
+  --run-id qwen36_batch `
+  --candidate-count 3 `
+  --candidate-parallelism 3 `
+  --execute `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-The manifest owns prompt, expected formal output, allowed kinds, campaign
-profiles, and task identity. CLI arguments cannot replace that contract.
+The intranet default is three candidates and 32,768 output tokens per authoring
+or investigation call; `siliconflow-test` defaults to one candidate and 8,192
+tokens to bound external calls. Candidate count is limited to eight. Repeated
+`--authoring-role` selects the role cycle. `--task-id` may be repeated for a
+bounded subset. Existing accepted outputs require `--overwrite` for
+replacement.
 
-Large corpus work uses a typed `campaign_request`, never a command string:
+Selection goals are host-owned: `fixed_gate_only`, `must_pass_execution`,
+`must_reproduce_target_signature`, `extension_backlog`, and
+`adapter_build_pass`. `auto` requires execution success when `--execute` is
+present. Completion order, latency, token usage, and model self-scores are
+ignored.
+
+Typed large campaigns use `campaign_request`; the model never emits a command:
 
 ```json
 {
@@ -92,36 +87,78 @@ Large corpus work uses a typed `campaign_request`, never a command string:
 }
 ```
 
-The prompt-pack manifest carries `allowed_campaign_profiles` with bounded JSON
-schemas and defaults, but no executable, runner, dataset, or output binding.
-Fixed local code resolves an accepted request to an argv array later with
-`shell=False`; model output cannot provide executable or path bindings.
+The manifest registers bounded argument schemas. Fixed code later binds local
+runner/data/output paths and executes an argv array with `shell=false`.
 
-## Evidence, acceptance, and exit status
+## New API adaptation
 
-Each pipeline task writes under
-`artifacts/message_harness_pipeline/<run-id>/<task-id>/` and nests gateway
-attempts, fixed-gate reports, repair evidence, optional execution evidence, and
-`task_summary.json`. The batch writes `pipeline_summary.json`.
+```powershell
+python .\test_harness\tools\build_api_adaptation_task.py `
+  .\test_harness\api_intakes\<api>.json `
+  --out .\artifacts\api_adaptation\<api>
 
-Low-level transport attempts include:
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --candidate-count 3 `
+  --selection-goal adapter_build_pass `
+  --execute `
+  .\artifacts\api_adaptation\<api>\model_task_manifest.json
+```
 
-- `request_manifest.json`
-- `raw_response.json` (reasoning removed)
-- `candidate.json` when an object was parsed and it contains no configured secret
-- `contract_report.json`
-- `provenance.json`
-- `hashes.json`
+Qwen emits only `api_plugin_candidate` spec/schema/examples/capability data.
+Fixed code emits the registered C++ template and requires an isolated Release
+build, positive/negative schema checks, runtime adapter registry presence, and
+three equal semantic replay hashes. The gate binds the candidate to the trusted
+API intake and records SDK-input, runner, runtime-registry, build-report, and
+semantic hashes; a different valid API or weakened smoke oracle is rejected.
 
-A transport/contract-successful attempt is still only a candidate. Formal
-`<output>.json` and `<output>.provenance.json` are published only after the
-pipeline's fixed gate passes. Formal provenance records the candidate hash,
-fixed-gate evidence, and `authoring_accepted=true`.
+## Candidate bug investigation
+
+```powershell
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --execute `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --analyze-bugs `
+  --bug-source-root $env:SGGK_SOURCE_ROOT `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
+```
+
+This enables deterministic qualification, three-attempt replay, bounded
+signature-preserving reduction, paired isolated TopoTrack capture/control,
+failure bundles, and parallel reproduction/topology/source/skeptical Qwen
+investigators. Investigators request registered content tools only.
+Only `stable_same_failure` groups whose every attempt matches the immutable
+signature enter this root-cause lane. Other outcomes remain inconclusive and
+cannot create a reproducer, draft, or Qwen hypothesis report. Replay counts are
+host-derived rather than model-authored.
+
+Source locations require opaque host-issued references. With
+`siliconflow-test`, source excerpts are disabled unless
+`--allow-external-source-evidence` is explicitly present. Final reports remain
+`candidate_only` and require alternatives, counter-evidence, registered
+falsification tools, and an immutable reproduction/signature reference.
+
+## Evidence and exit status
+
+Each task writes under
+`artifacts/message_harness_pipeline/<run-id>/<task-id>/`. `task_summary.json`
+records the complete candidate pool, roles, hashes, duplicate relations, fixed
+gates, execution states, deterministic scores, selection, and artifacts. The
+batch writes `pipeline_summary.json`.
+
+Transport attempts retain redacted request/response, candidate, contract,
+provenance, and hashes. Formal JSON/provenance appears only after selection.
+Post-promotion consumers require hash-matching Message API provenance,
+`authoring_accepted=true`, and a successful fixed gate.
 
 - Exit `0`: every selected task reached its requested accepted/executed state.
-- Exit `1`: at least one Message API, fixed-gate, or requested execution task failed.
-- Exit `2`: profile, CLI, manifest, or local input configuration was invalid.
+- Exit `1`: a Message API, gate, selection, or requested execution failed.
+- Exit `2`: profile, CLI, manifest, or trusted local input was invalid.
 
-`run_authoring_gateway.py` remains a low-level transport/contract diagnostic
-tool. Its contract-level promotion must target disposable debug/staging paths;
-it does not establish `authoring_accepted` and is not a production entrypoint.
+The internal `run_authoring_gateway.py` diagnostic cannot establish
+`authoring_accepted` and is not a production entrypoint.
+
+Local deployments may increase `--max-tokens`, candidate count, and bounded
+investigation rounds. Response bytes, repairs, tool calls, SDK timeouts/jobs,
+replay count, reducer trials, and all execution authority remain host bounded.

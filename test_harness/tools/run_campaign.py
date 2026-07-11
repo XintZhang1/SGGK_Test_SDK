@@ -864,6 +864,7 @@ def run_topotrack_probe(
     probe_root = out_root / "topotrack_probe"
     lane_results: list[dict[str, Any]] = []
     classification_counts: dict[str, int] = {}
+    merged_results: list[dict[str, Any]] = []
     selected_count = 0
     probed_count = 0
     for lane in lanes:
@@ -917,6 +918,9 @@ def run_topotrack_probe(
                     classification_counts[str(key)] = classification_counts.get(str(key), 0) + int(value or 0)
             lane_result["selected_count"] = lane_selected
             lane_result["skipped_count"] = probe_summary.get("skipped_count")
+            for item in probe_summary.get("results", []):
+                if isinstance(item, dict):
+                    merged_results.append({**item, "campaign_lane": lane_name})
         lane_results.append(lane_result)
     if not lane_results:
         return {"skipped": True, "reason": "no failed recipe lanes with summaries"}
@@ -926,6 +930,7 @@ def run_topotrack_probe(
         "lane_count": probed_count,
         "selected_count": selected_count,
         "classification_counts": classification_counts,
+        "results": merged_results,
         "lanes": lane_results,
     }
     write_json(probe_root / "topotrack_probe_index.json", index)
@@ -940,17 +945,6 @@ def run_topotrack_probe(
         "topotrack_only_modeling_ok": classification_counts.get("topotrack_only_modeling_ok", 0),
         "lanes": lane_results,
     }
-
-
-def first_existing_recipe_path(seed: dict[str, Any]) -> str:
-    paths = seed.get("recipe_paths")
-    if not isinstance(paths, list):
-        return ""
-    for raw in paths:
-        text = str(raw or "")
-        if text and Path(text).is_file():
-            return text
-    return ""
 
 
 def write_reduction_index_report(index: dict[str, Any], path: Path) -> None:
@@ -1000,79 +994,36 @@ def run_reductions(
     replay_summary = read_json(Path(str(replay["summary_path"])))
     if not isinstance(replay_summary, dict):
         return {"skipped": True, "reason": "replay summary missing"}
-    candidates: list[dict[str, Any]] = []
-    for result in replay_summary.get("results", []):
-        if not isinstance(result, dict) or result.get("status") not in {"stable_same_failure", "stable_failure"}:
-            continue
-        seed = result.get("seed")
-        if not isinstance(seed, dict):
-            continue
-        recipe_path = first_existing_recipe_path(seed)
-        if not recipe_path:
-            continue
-        candidates.append({"result": result, "seed": seed, "recipe_path": recipe_path})
-    selected = candidates if args.reduction_limit == 0 else candidates[: args.reduction_limit]
     reductions_root = out_root / "reductions"
-    reductions: list[dict[str, Any]] = []
     timeout = args.reduction_timeout if args.reduction_timeout > 0 else args.timeout
-    for index, item in enumerate(selected):
-        result = item["result"]
-        seed = item["seed"]
-        fingerprint = str(result.get("fingerprint") or seed.get("fingerprint") or f"seed_{index}")
-        case_id = str(result.get("representative_case_id") or seed.get("representative_case_id") or fingerprint)
-        reduce_out = reductions_root / f"{index:03d}_{sanitize_name(fingerprint)}"
-        cmd = [
-            sys.executable,
-            str(script_dir / "reduce_failure_recipe.py"),
-            "--runner",
-            str(runner),
-            "--recipe",
-            item["recipe_path"],
-            "--out",
-            str(reduce_out),
-            "--timeout",
-            str(timeout),
-            "--max-trials",
-            str(args.reduction_max_trials),
-            "--min-dimension",
-            str(args.reduction_min_dimension),
-        ]
-        record = run_command(f"reduce_{sanitize_name(fingerprint)}", cmd, acceptable={0, 2})
-        command_records.append(record)
-        reduction_summary = read_json(reduce_out / "reduction_summary.json")
-        entry: dict[str, Any] = {
-            "fingerprint": fingerprint,
-            "representative_case_id": case_id,
-            "input_recipe": item["recipe_path"],
-            "out": str(reduce_out),
-            "summary_path": str(reduce_out / "reduction_summary.json"),
-            "report_path": str(reduce_out / "reduction_report.md"),
-            "reduced_recipe": str(reduce_out / "reduced_recipe.json") if (reduce_out / "reduced_recipe.json").is_file() else "",
-            "returncode": record["returncode"],
-            "ok": record["ok"],
-            "status": "completed" if record["ok"] else "failed",
+    cmd = [
+        sys.executable,
+        str(script_dir / "reduce_replay_failures.py"),
+        "--runner",
+        str(runner),
+        "--replay",
+        str(replay["summary_path"]),
+        "--out",
+        str(reductions_root),
+        "--limit",
+        str(args.reduction_limit),
+        "--timeout",
+        str(timeout),
+        "--max-trials",
+        str(args.reduction_max_trials),
+        "--min-dimension",
+        str(args.reduction_min_dimension),
+    ]
+    record = run_command("reduce_stable_replay_failures", cmd, acceptable={0, 2})
+    command_records.append(record)
+    index_payload = read_json(reductions_root / "reduction_index.json")
+    if not isinstance(index_payload, dict):
+        return {
+            "out": str(reductions_root),
+            "skipped": False,
+            "failed": True,
+            "reason": "hardened reduction batch did not produce reduction_index.json",
         }
-        if isinstance(reduction_summary, dict):
-            entry["trials"] = reduction_summary.get("trials")
-            entry["accepted_reductions"] = reduction_summary.get("accepted_reductions")
-            final_observation = reduction_summary.get("final_observation")
-            if isinstance(final_observation, dict):
-                entry["final_returncode"] = final_observation.get("returncode")
-                entry["final_artifact_dir"] = final_observation.get("artifact_dir")
-        reductions.append(entry)
-    index_payload = {
-        "generated_at": now_iso_like(),
-        "candidate_count": len(candidates),
-        "selected_count": len(selected),
-        "completed_count": sum(1 for item in reductions if item.get("status") == "completed"),
-        "accepted_reduction_count": sum(int(item.get("accepted_reductions") or 0) for item in reductions),
-        "reduction_limit": args.reduction_limit,
-        "reduction_max_trials": args.reduction_max_trials,
-        "reduction_timeout": timeout,
-        "reduction_min_dimension": args.reduction_min_dimension,
-        "reductions": reductions,
-    }
-    write_json(reductions_root / "reduction_index.json", index_payload)
     write_reduction_index_report(index_payload, reductions_root / "reduction_index.md")
     return {
         "out": str(reductions_root),
@@ -1092,6 +1043,7 @@ def run_bundle_export(
     aggregate: dict[str, Any] | None,
     replay: dict[str, Any] | None,
     reductions: dict[str, Any] | None,
+    topotrack_probe: dict[str, Any] | None,
     lanes: list[dict[str, Any]],
     command_records: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -1118,6 +1070,12 @@ def run_bundle_export(
     ]
     if isinstance(reductions, dict) and reductions.get("summary_path"):
         cmd.extend(["--reductions", str(reductions["summary_path"])])
+    if (
+        isinstance(topotrack_probe, dict)
+        and not topotrack_probe.get("skipped")
+        and topotrack_probe.get("summary_path")
+    ):
+        cmd.extend(["--topotrack-probe", str(topotrack_probe["summary_path"])])
     for lane in lanes:
         preview_out = lane.get("preview_out") if isinstance(lane, dict) else ""
         if preview_out:
@@ -1144,8 +1102,6 @@ def run_bug_registry(
     args: argparse.Namespace,
     script_dir: Path,
     out_root: Path,
-    aggregate: dict[str, Any] | None,
-    replay: dict[str, Any] | None,
     bundles: dict[str, Any] | None,
     command_records: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -1157,14 +1113,10 @@ def run_bug_registry(
         "--out",
         str(out_root / "bug_registry"),
     ]
-    if isinstance(aggregate, dict) and aggregate.get("summary_path"):
-        cmd.extend(["--triage", str(aggregate["summary_path"])])
-    if isinstance(replay, dict) and replay.get("summary_path"):
-        cmd.extend(["--replay", str(replay["summary_path"])])
     if isinstance(bundles, dict) and bundles.get("index_path"):
         cmd.extend(["--bundle-index", str(bundles["index_path"])])
-    if "--triage" not in cmd and "--bundle-index" not in cmd:
-        return {"skipped": True, "reason": "no aggregate triage or bundle index"}
+    if "--bundle-index" not in cmd:
+        return {"skipped": True, "reason": "no stable failure-bundle index"}
     record = run_command("collect_bug_registry", cmd)
     command_records.append(record)
     registry_out = out_root / "bug_registry"
@@ -1236,8 +1188,6 @@ def run_bug_record_drafts(
     args: argparse.Namespace,
     script_dir: Path,
     out_root: Path,
-    aggregate: dict[str, Any] | None,
-    replay: dict[str, Any] | None,
     bundles: dict[str, Any] | None,
     debug_handoff: dict[str, Any] | None,
     command_records: list[dict[str, Any]],
@@ -1252,16 +1202,12 @@ def run_bug_record_drafts(
         "--bug-prefix",
         str(args.bug_record_prefix),
     ]
-    if isinstance(aggregate, dict) and aggregate.get("summary_path"):
-        cmd.extend(["--triage", str(aggregate["summary_path"])])
-    if isinstance(replay, dict) and replay.get("summary_path"):
-        cmd.extend(["--replay", str(replay["summary_path"])])
     if isinstance(bundles, dict) and bundles.get("index_path"):
         cmd.extend(["--bundle-index", str(bundles["index_path"])])
     if isinstance(debug_handoff, dict) and not debug_handoff.get("skipped") and debug_handoff.get("index_path"):
         cmd.extend(["--debug-handoff", str(debug_handoff["index_path"])])
-    if "--triage" not in cmd and "--bundle-index" not in cmd:
-        return {"skipped": True, "reason": "no aggregate triage or bundle index"}
+    if "--bundle-index" not in cmd:
+        return {"skipped": True, "reason": "no stable failure-bundle index"}
     record = run_command("export_bug_record_drafts", cmd)
     command_records.append(record)
     draft_path = out_root / "bug_record_drafts" / "drafts.json"
@@ -2266,10 +2212,27 @@ def main() -> int:
     aggregate = run_aggregate_triage(args, script_dir, out_root, lanes, command_records)
     replay = run_replay(args, script_dir, runner, out_root, aggregate, command_records)
     reductions = run_reductions(args, script_dir, runner, out_root, replay, command_records)
-    bundles = run_bundle_export(args, script_dir, out_root, aggregate, replay, reductions, lanes, command_records)
-    bug_registry = run_bug_registry(args, script_dir, out_root, aggregate, replay, bundles, command_records)
+    bundles = run_bundle_export(
+        args,
+        script_dir,
+        out_root,
+        aggregate,
+        replay,
+        reductions,
+        topotrack_probe,
+        lanes,
+        command_records,
+    )
+    bug_registry = run_bug_registry(args, script_dir, out_root, bundles, command_records)
     debug_handoff = run_debug_handoff(args, script_dir, out_root, aggregate, bug_registry, lanes, command_records)
-    bug_record_drafts = run_bug_record_drafts(args, script_dir, out_root, aggregate, replay, bundles, debug_handoff, command_records)
+    bug_record_drafts = run_bug_record_drafts(
+        args,
+        script_dir,
+        out_root,
+        bundles,
+        debug_handoff,
+        command_records,
+    )
     bug_records_promoted = run_promote_bug_records(args, script_dir, out_root, bug_record_drafts, command_records)
     bug_records_promoted_replay = run_promoted_bug_record_replay(args, script_dir, runner, bug_records_promoted, command_records)
     known_bug_regression = run_known_bug_regression(args, script_dir, runner, out_root, command_records)

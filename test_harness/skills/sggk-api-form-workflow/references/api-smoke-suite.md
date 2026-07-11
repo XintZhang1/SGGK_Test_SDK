@@ -9,6 +9,7 @@ Coverage:
 - Result validation oracles: result body count, property metrics, point/body relation, face/point relation, clash, distance, and exact plane-extreme checks.
 - Serialized SGT reload through `check_sgt`.
 - Data exchange roundtrip through `step_roundtrip` and `iges_roundtrip`.
+- Compile-time `api_combine_bodies` plugin schema, runtime dispatch, properties, and semantic oracle.
 
 Run command:
 
@@ -22,6 +23,13 @@ python .\test_harness\tools\run_recipes.py `
   --triage-out .\artifacts\api_smoke_suite_triage `
   --preview-out .\artifacts\api_smoke_suite_preview `
   --contact-sheet .\artifacts\api_smoke_suite_preview\contact.png
+```
+
+Verify the compiled plugin registry separately:
+
+```powershell
+python .\test_harness\tools\validate_plugin_runtime.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe
 ```
 
 Known limits:

@@ -10,13 +10,17 @@ import time
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from harness_capabilities import (
     load_capabilities,
     supported_body_builders,
     supported_recipe_apis,
 )
+from plugin_catalog import plugin_map
 
 CAPABILITIES = load_capabilities()
+PLUGIN_RECORDS = plugin_map()
 IMPLEMENTED_RECIPE_APIS = {
     "api_boolean",
     "api_boolean_slice",
@@ -29,7 +33,7 @@ IMPLEMENTED_RECIPE_APIS = {
     "iges_import",
     "step_roundtrip",
     "iges_roundtrip",
-}
+} | set(PLUGIN_RECORDS)
 SUPPORTED_APIS = set(supported_recipe_apis(CAPABILITIES)) & IMPLEMENTED_RECIPE_APIS
 BOOLEAN_TYPES = {"UNION", "INTERSECTION", "SUBTRACTION"}
 STEP_APP_PROTOCOLS = {"AP203", "AP214", "AP242"}
@@ -1378,6 +1382,18 @@ def validate_recipe(recipe: dict[str, Any], *, check_assets: bool = False, asset
     api = recipe.get("api")
     if api not in SUPPORTED_APIS:
         errors.append(f"api must be one of {sorted(SUPPORTED_APIS)}")
+        return errors
+
+    plugin = PLUGIN_RECORDS.get(api) if isinstance(api, str) else None
+    if plugin is not None:
+        schema = json.loads(plugin.recipe_schema_path.read_text(encoding="utf-8-sig"))
+        validator = Draft202012Validator(schema)
+        for item in sorted(validator.iter_errors(recipe), key=lambda error: list(error.absolute_path)):
+            path = ".".join(str(part) for part in item.absolute_path) or "recipe"
+            errors.append(f"{path}: {item.message}")
+        case_id = recipe.get("case_id")
+        if isinstance(case_id, str) and not CASE_ID_PATTERN.fullmatch(case_id):
+            errors.append("case_id must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
         return errors
 
     reject_unknown_keys(recipe, allowed_recipe_keys(recipe), "recipe", errors)

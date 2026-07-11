@@ -12,4 +12,18 @@ cmake --build --preset windows-release
 Pop-Location
 ```
 
-See `test_harness/README.md` for the runner workflow.
+The authoring path is fully Message API based:
+
+```text
+parallel Qwen candidates -> fixed gates -> real SDK/plugin execution
+                         -> deterministic selection -> atomic promotion
+                         -> qualification/replay/TopoTrack -> candidate bug report
+```
+
+Start with:
+
+- `test_harness/HARNESS_ARCHITECTURE.md` for trust boundaries and the complete data flow;
+- `test_harness/SILICONFLOW_MESSAGE_API_TESTING.md` for intranet and explicit SiliconFlow profiles;
+- `test_harness/INTERFACE_TEST_MATRIX.md` for built-in and plugin API coverage;
+- `test_harness/README.md` for runner and campaign commands;
+- `docs/ABC_DATASET_LARGE_TEST_PLAN.md` for staged large-scale execution.

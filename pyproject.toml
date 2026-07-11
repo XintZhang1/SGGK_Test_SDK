@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Deterministic authoring and execution harness for the SGGK SDK"
 requires-python = ">=3.11"
 dependencies = [
+  "jsonschema==4.26.0",
   "Pillow==12.1.1",
 ]
 

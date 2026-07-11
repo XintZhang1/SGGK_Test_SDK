@@ -33,6 +33,8 @@
 #include <Topology/Tools/TopoCheckTool.h>
 #include <Topology/Tools/TopoPropertyTool.h>
 
+#include "generated_plugin_headers.inc"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -371,6 +373,8 @@ struct CliOptions
     fs::path outRoot = "artifacts";
     std::string caseIdOverride;
     int sdkThreads = 1;
+    bool listAdaptersJson = false;
+    bool captureFlatTopoTrack = false;
 };
 
 class SggkSession
@@ -3398,9 +3402,17 @@ CliOptions ParseCli(int argc, char** argv)
                 throw std::runtime_error("--sdk-threads must be an integer in [1, 64]");
             }
         }
+        else if (arg == "--list-adapters-json")
+        {
+            opts.listAdaptersJson = true;
+        }
+        else if (arg == "--capture-flat-topotrack")
+        {
+            opts.captureFlatTopoTrack = true;
+        }
         else if (arg == "--help" || arg == "-h")
         {
-            std::cout << "Usage: sggk_case_runner [--recipe file.json] [--out artifacts] [--case-id id] [--sdk-threads 1]\n";
+            std::cout << "Usage: sggk_case_runner [--recipe file.json] [--out artifacts] [--case-id id] [--sdk-threads 1] [--list-adapters-json] [--capture-flat-topotrack]\n";
             std::exit(0);
         }
         else
@@ -8716,9 +8728,10 @@ void WriteBinaryTopoTracking(
     const CaseRecipe& recipe,
     const ModelingResultPtr& ret,
     const BinaryBodyInputs& inputs,
-    const fs::path& caseDir)
+    const fs::path& caseDir,
+    bool captureFlatTopoTrack)
 {
-    if (recipe.topoTrack && !recipe.dslSource.empty())
+    if (recipe.topoTrack && (!recipe.dslSource.empty() || captureFlatTopoTrack))
     {
         WriteTopoTrack(recipe, ret, inputs.topologyIndex, caseDir);
         WriteTopoTrackSummary(recipe, ret, inputs.topologyIndex, caseDir);
@@ -8726,7 +8739,7 @@ void WriteBinaryTopoTracking(
     else
     {
         const std::string reason = recipe.topoTrack
-            ? "SDK topology tracking capture skipped for flat recipes"
+            ? "flat recipe TopoTrack capture requires isolated --capture-flat-topotrack execution"
             : "topo_track disabled by recipe";
         WriteEmptyTopoTrack(caseDir, reason);
         WriteSkippedTopoTrackSummary(recipe, caseDir, reason);
@@ -8830,7 +8843,7 @@ int RunBooleanSplitCase(const CliOptions& cli, const CaseRecipe& recipe)
     WriteTextFile(caseDir / "report" / "split_result.json", splitJson + "\n");
 
     const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
-    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir, cli.captureFlatTopoTrack);
     const auto resultProperties = ComputeBodyProperties(resultBodies);
     WriteProperties(resultProperties, caseDir);
     const bool validationOk = WriteValidation(
@@ -8895,7 +8908,7 @@ int RunBooleanSliceCase(const CliOptions& cli, const CaseRecipe& recipe)
     WriteTextFile(caseDir / "report" / "slice_result.json", sliceJson + "\n");
 
     const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
-    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir, cli.captureFlatTopoTrack);
     const auto resultProperties = ComputeBodyProperties(resultBodies);
     WriteProperties(resultProperties, caseDir);
     const bool validationOk = WriteValidation(
@@ -8990,7 +9003,7 @@ int RunTopologySectionCase(const CliOptions& cli, const CaseRecipe& recipe)
     WriteTextFile(caseDir / "report" / "topology_section_result.json", sectionJson + "\n");
 
     const bool topoOk = WriteTopoCheckTopologies(resultTopologies, caseDir);
-    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir, cli.captureFlatTopoTrack);
     const bool validationOk = sectionFailures.empty();
     std::ostringstream validation;
     validation << "{\n"
@@ -9014,6 +9027,9 @@ int RunTopologySectionCase(const CliOptions& cli, const CaseRecipe& recipe)
 
 using CaseAdapter = int (*)(const CliOptions&, const CaseRecipe&);
 
+#include "generated_plugin_adapters.inc"
+#include "generated_plugin_metadata.inc"
+
 const std::map<std::string, CaseAdapter>& FlatRecipeAdapters()
 {
     static const std::map<std::string, CaseAdapter> adapters = {
@@ -9027,8 +9043,38 @@ const std::map<std::string, CaseAdapter>& FlatRecipeAdapters()
         {"api_boolean_slice", &RunBooleanSliceCase},
         {"api_offset_body", &RunApiOffsetBodyCase},
         {"api_topology_section", &RunTopologySectionCase},
+#include "generated_plugin_entries.inc"
     };
     return adapters;
+}
+
+std::string AdapterCatalogJson()
+{
+    const auto& pluginHashes = GeneratedPluginManifestHashes();
+    const auto& pluginVersions = GeneratedPluginVersions();
+    const auto& pluginContractVersions = GeneratedPluginContractVersions();
+    std::ostringstream os;
+    os << "{\n  \"schema_version\": 1,\n  \"adapters\": [\n";
+    os << "    {\"api\":\"api_boolean\",\"source\":\"builtin\",\"contract_version\":0,\"plugin_version\":0,\"manifest_sha256\":\"\"}";
+    bool first = false;
+    for (const auto& item : FlatRecipeAdapters())
+    {
+        if (!first)
+        {
+            os << ",\n";
+        }
+        first = false;
+        const auto hash = pluginHashes.find(item.first);
+        const auto version = pluginVersions.find(item.first);
+        const auto contractVersion = pluginContractVersions.find(item.first);
+        os << "    {\"api\":\"" << EscapeJson(item.first) << "\""
+           << ",\"source\":\"" << (hash == pluginHashes.end() ? "builtin" : "plugin") << "\""
+           << ",\"contract_version\":" << (contractVersion == pluginContractVersions.end() ? 0 : contractVersion->second)
+           << ",\"plugin_version\":" << (version == pluginVersions.end() ? 0 : version->second)
+           << ",\"manifest_sha256\":\"" << (hash == pluginHashes.end() ? "" : hash->second) << "\"}";
+    }
+    os << "\n  ]\n}\n";
+    return os.str();
 }
 
 int RunCase(const CliOptions& cli, CaseRecipe recipe)
@@ -9091,7 +9137,7 @@ int RunCase(const CliOptions& cli, CaseRecipe recipe)
     }
 
     const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
-    if (recipe.topoTrack && !recipe.dslSource.empty())
+    if (recipe.topoTrack && (!recipe.dslSource.empty() || cli.captureFlatTopoTrack))
     {
         WriteTopoTrack(recipe, ret, inputTopologyIndex, caseDir);
         WriteTopoTrackSummary(recipe, ret, inputTopologyIndex, caseDir);
@@ -9099,7 +9145,7 @@ int RunCase(const CliOptions& cli, CaseRecipe recipe)
     else
     {
         const std::string reason = recipe.topoTrack
-            ? "SDK topology tracking capture skipped for flat recipes; use native DSL for enriched provenance"
+            ? "flat recipe TopoTrack capture requires isolated --capture-flat-topotrack execution"
             : "topo_track disabled by recipe";
         WriteEmptyTopoTrack(caseDir, reason);
         WriteSkippedTopoTrackSummary(recipe, caseDir, reason);
@@ -9131,6 +9177,11 @@ int main(int argc, char** argv)
     try
     {
         const CliOptions cli = ParseCli(argc, argv);
+        if (cli.listAdaptersJson)
+        {
+            std::cout << AdapterCatalogJson();
+            return 0;
+        }
         std::vector<CaseRecipe> recipes = LoadRecipes(cli.recipePath);
         if (!cli.caseIdOverride.empty() && recipes.size() > 1)
         {

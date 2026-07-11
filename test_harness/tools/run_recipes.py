@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Maximum recipes to run; 0 means all")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel runner processes")
     parser.add_argument("--sdk-threads", type=int, default=1, help="SDK threads per isolated runner process")
+    parser.add_argument(
+        "--capture-flat-topotrack",
+        action="store_true",
+        help="Enable crash-prone flat-recipe TopoTrack querying inside each isolated runner process",
+    )
     parser.add_argument("--fail-fast", action="store_true", help="Stop after first failed recipe")
     parser.add_argument("--resume", action="store_true", help="Skip previous passing recipes")
     parser.add_argument(
@@ -335,7 +340,14 @@ def skipped_result(previous: dict[str, Any], recipe_path: Path, recipe_index: in
     return result
 
 
-def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float, sdk_threads: int = 1) -> dict[str, Any]:
+def run_one(
+    runner: Path,
+    recipe_path: Path,
+    out_root: Path,
+    timeout: float,
+    sdk_threads: int = 1,
+    capture_flat_topotrack: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
     state_path, run_state = initialize_run_state(runner, recipe_path, out_root)
     cmd = [
@@ -347,6 +359,8 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float, sdk
         "--sdk-threads",
         str(sdk_threads),
     ]
+    if capture_flat_topotrack:
+        cmd.append("--capture-flat-topotrack")
     try:
         completed = subprocess.run(
             cmd,
@@ -483,6 +497,7 @@ def write_manifest(
         "limit": args.limit,
         "jobs": args.jobs,
         "sdk_threads": args.sdk_threads,
+        "capture_flat_topotrack": args.capture_flat_topotrack,
         "resume": args.resume,
         "resume_mode": args.resume_mode,
         "shard_count": args.shard_count,
@@ -685,7 +700,14 @@ def main() -> int:
                 record_result(skipped_result(previous[key], recipe_path, index - 1))
                 continue
             print(f"[{index}/{len(selected_recipes)}] {recipe_path}")
-            result = run_one(runner, recipe_path, out_root, args.timeout, args.sdk_threads)
+            result = run_one(
+                runner,
+                recipe_path,
+                out_root,
+                args.timeout,
+                args.sdk_threads,
+                args.capture_flat_topotrack,
+            )
             result["recipe_index"] = index - 1
             record_result(result)
             if result["returncode"] != 0 and args.fail_fast:
@@ -707,7 +729,15 @@ def main() -> int:
                     record_result(skipped_result(previous[key], recipe_path, index - 1))
                     continue
                 print(f"[{index}/{len(selected_recipes)}] {recipe_path}")
-                future = executor.submit(run_one, runner, recipe_path, out_root, args.timeout, args.sdk_threads)
+                future = executor.submit(
+                    run_one,
+                    runner,
+                    recipe_path,
+                    out_root,
+                    args.timeout,
+                    args.sdk_threads,
+                    args.capture_flat_topotrack,
+                )
                 future.recipe_index = index - 1  # type: ignore[attr-defined]
                 pending.add(future)
 

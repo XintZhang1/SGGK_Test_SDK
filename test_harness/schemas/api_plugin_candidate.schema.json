@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sggk://schemas/api_plugin_candidate.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "api",
+    "description",
+    "adapter_spec",
+    "recipe_schema",
+    "smoke_recipe",
+    "negative_recipe",
+    "capability",
+    "topotrack"
+  ],
+  "properties": {
+    "kind": {
+      "const": "api_plugin_candidate"
+    },
+    "api": {
+      "type": "string",
+      "pattern": "^api_[a-z][a-z0-9_]{1,63}$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "adapter_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archetype",
+        "function_name",
+        "sdk_header",
+        "sdk_modules",
+        "clone_field"
+      ],
+      "properties": {
+        "archetype": {
+          "const": "body_list_to_body"
+        },
+        "function_name": {
+          "type": "string",
+          "pattern": "^api_[a-z][a-z0-9_]{1,63}$"
+        },
+        "sdk_header": {
+          "type": "string",
+          "pattern": "^(?!\\.{1,2}/)(?!.*?/\\.{1,2}(/|$))[A-Za-z0-9_+.-]+(/[A-Za-z0-9_+.-]+)+\\.h(pp)?$"
+        },
+        "sdk_modules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]{1,31}$"
+          }
+        },
+        "clone_field": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,63}$"
+        }
+      }
+    },
+    "recipe_schema": {
+      "type": "object"
+    },
+    "smoke_recipe": {
+      "type": "object"
+    },
+    "negative_recipe": {
+      "type": "object"
+    },
+    "capability": {
+      "type": "object"
+    },
+    "topotrack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "reason"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "unavailable",
+            "status_only"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    }
+  }
+}

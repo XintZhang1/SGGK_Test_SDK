@@ -20,7 +20,14 @@ from campaign_profiles import FORBIDDEN_CANDIDATE_FIELDS, validate_campaign_requ
 from validate_harness_extension import normalize_extension_request
 from validate_recipe import safe_source_asset_path
 
-SUPPORTED_KINDS = {"attack_dsl", "flat_recipe", "cluster_seed", "needs_harness_extension", "campaign_request"}
+SUPPORTED_KINDS = {
+    "api_plugin_candidate",
+    "attack_dsl",
+    "flat_recipe",
+    "cluster_seed",
+    "needs_harness_extension",
+    "campaign_request",
+}
 SUPPORTED_BOOLEAN_TYPES = {
     "subtract": "SUBTRACTION",
     "subtraction": "SUBTRACTION",
@@ -483,7 +490,7 @@ def normalize_loaded(loaded: Any, request_id: str, root: Path, explicit_out: str
                 "UNSUPPORTED_MODEL_KIND",
                 "$.kind",
                 f"Unsupported model output kind: {kind!r}.",
-                "Use attack_dsl, flat_recipe, cluster_seed, needs_harness_extension, or campaign_request.",
+                "Use api_plugin_candidate, attack_dsl, flat_recipe, cluster_seed, needs_harness_extension, or campaign_request.",
             )
         )
         return report

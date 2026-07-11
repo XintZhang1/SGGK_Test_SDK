@@ -2,6 +2,42 @@
 
 This is the current main testing direction for the SGGK SDK harness.
 
+## Message Harness Readiness Gate
+
+Do not fan out a large campaign until the current commit proves all of the
+following:
+
+- full pytest, Ruff, compileall, JSON/schema/form validation;
+- Release runner build and self-contained API smoke suite;
+- compiled adapter registry agrees with every plugin manifest hash/version;
+- parallel candidate E2E rejects a bad candidate, promotes an SDK-proven good
+  candidate, de-duplicates canonical repeats, and selects deterministically;
+- new API intake -> `api_plugin_candidate` -> isolated Release build ->
+  positive/negative schema -> runtime registry -> three equal semantic hashes;
+- known-invalid generated geometry is excluded by deterministic failure
+  qualification while SDK status/crash and ambiguous oracles remain candidates;
+- eligible candidates complete three-attempt replay, signature-preserving
+  reduction, and paired isolated TopoTrack capture/control;
+- at least one real Qwen investigation returns a schema-valid candidate-only
+  report with multiple hypotheses, evidence/counter-evidence, possible source
+  locations or `source_unavailable`, registered falsification tools, and a
+  stable reproduction reference.
+
+SiliconFlow and intranet runs must consume the same manifest and fixed gates;
+the simulator proves protocol equivalence, not identical token sampling.
+
+Scale in explicit stages: one Message task, all API smokes, 100 cases, 1,000
+cases in one shard, multi-shard merge/resume, then 100k+. Each stage requires
+zero harness/infrastructure errors and a passing artifact verifier. SDK/test
+failures may remain only if qualification, replay, and candidate reporting
+finish successfully. Preflight SDK/license availability, dataset hashes, disk
+space, Windows path length, timeout/jobs, and resume metadata before every fan
+out.
+
+The Message pipeline's `failure_registry/` contains unconfirmed discovery
+candidates. Historical campaign `bug_registry/` outputs remain a separate
+known/regression workflow and must not be treated as the same trust level.
+
 ## Goal
 
 Use the ABC dataset as a broad and difficult modeling corpus. Prioritize:

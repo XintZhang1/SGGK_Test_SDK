@@ -1,8 +1,13 @@
 # Recipe Schema
 
-Use this reference for compiled SGGK harness recipes. Model-generated attacks should normally emit the higher-level DSL in `attack-dsl.md`; `compile_attack_dsl.py` translates that DSL into this flat shape.
+Use this reference for the fixed flat-recipe schema. A Message API task may
+allow `flat_recipe` or `attack_dsl`; only the integrated pipeline may accept
+that untrusted candidate. For DSL, the pipeline invokes
+`compile_attack_dsl.py` to translate it into this flat shape.
 
-Before running model-generated recipes, validate them:
+The pipeline validates candidates automatically. This direct command is only
+for host-side diagnosis of checked-in deterministic fixtures or a pipeline gate
+artifact; it must not consume captured model output:
 
 ```powershell
 python .\test_harness\tools\validate_recipe.py .\path\to\recipes

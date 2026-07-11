@@ -21,7 +21,13 @@ def load_capabilities(path: str | Path | None = None) -> dict[str, Any]:
         raise ValueError("interface capabilities registry must be a JSON object")
     if not isinstance(loaded.get("apis"), dict):
         raise ValueError("interface capabilities registry must contain an apis object")
-    return loaded
+    if path is not None:
+        return loaded
+    try:
+        from plugin_catalog import merge_capabilities
+    except ModuleNotFoundError:  # pragma: no cover - package import fallback
+        from test_harness.tools.plugin_catalog import merge_capabilities
+    return merge_capabilities(loaded)
 
 
 def _string_keys(value: Any) -> list[str]:

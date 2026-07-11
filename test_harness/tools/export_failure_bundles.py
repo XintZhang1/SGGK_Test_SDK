@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
 from typing import Any
+
+from failure_predicate import signatures_match
+from reduce_replay_failures import preserved_from_summary
 
 
 KEY_REPORTS = [
@@ -25,6 +29,7 @@ KEY_REPORTS = [
     "properties.json",
     "roundtrip_comparison.json",
 ]
+MIN_ROOT_CAUSE_REPLAYS = 3
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,6 +46,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reductions",
         help="Optional reduction_index.json or reductions directory; matching reduced recipes become canonical reproducers.",
+    )
+    parser.add_argument(
+        "--topotrack-probe",
+        help=(
+            "Optional topotrack_probe_summary.json or probe directory; paired capture evidence "
+            "is bound by case id plus source artifact/recipe identity."
+        ),
     )
     parser.add_argument(
         "--preview-dir",
@@ -71,6 +83,14 @@ def write_json(path: Path, value: Any) -> None:
 def write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value, encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve_summary_path(raw: str, filename: str) -> Path:
@@ -200,12 +220,233 @@ def seed_by_fingerprint(triage_summary: dict[str, Any]) -> dict[str, dict[str, A
     return result
 
 
+def verified_reproduction(
+    replay: dict[str, Any],
+    trusted_signature: Any,
+) -> dict[str, Any]:
+    """Derive root-cause eligibility only from exact host replay evidence."""
+
+    attempts = replay.get("attempts") if isinstance(replay.get("attempts"), list) else []
+    expected = replay.get("expected_failure_signature")
+    declared_attempt_count = replay.get("attempt_count")
+    matching = []
+    if isinstance(expected, dict) and expected.get("kind"):
+        for item in attempts:
+            observed = item.get("failure_signature") if isinstance(item, dict) else None
+            if (
+                isinstance(item, dict)
+                and item.get("matches_expected") is True
+                and isinstance(observed, dict)
+                and signatures_match(expected, observed)[0]
+            ):
+                matching.append(item)
+    status = as_str(replay.get("status"))
+    signature_bound = (
+        isinstance(trusted_signature, dict)
+        and bool(trusted_signature.get("kind"))
+        and isinstance(expected, dict)
+        and expected == trusted_signature
+    )
+    count_bound = (
+        isinstance(declared_attempt_count, int)
+        and not isinstance(declared_attempt_count, bool)
+        and declared_attempt_count == len(attempts)
+        and len(attempts) >= MIN_ROOT_CAUSE_REPLAYS
+    )
+    eligible = (
+        status == "stable_same_failure"
+        and signature_bound
+        and count_bound
+        and len(matching) == len(attempts)
+    )
+    return {
+        "eligible": eligible,
+        "status": status,
+        "attempt_count": len(attempts),
+        "declared_attempt_count": declared_attempt_count,
+        "signature_bound_to_seed": signature_bound,
+        "stable_attempts": len(matching) if eligible else 0,
+        "reason": (
+            "verified_stable_same_failure"
+            if eligible
+            else "root-cause assets require the seed signature, stable_same_failure, "
+            f"and at least {MIN_ROOT_CAUSE_REPLAYS} declared attempts all matching that signature"
+        ),
+    }
+
+
+def verified_reduction(
+    reduction: dict[str, Any],
+    reproduction: dict[str, Any],
+    trusted_signature: Any,
+) -> dict[str, Any]:
+    """Revalidate a reduced recipe before it can replace the replay recipe."""
+
+    base = {"eligible": False, "reason": "reduction_not_verified"}
+    if (
+        reproduction.get("eligible") is not True
+        or reduction.get("status") != "preserved"
+        or reduction.get("ok") is not True
+        or reduction.get("signature_verified") is not True
+        or reduction.get("replay_status") != "stable_same_failure"
+        or reduction.get("stable_attempts") != reproduction.get("stable_attempts")
+        or not isinstance(trusted_signature, dict)
+        or reduction.get("trusted_replay_signature") != trusted_signature
+    ):
+        return base
+    recipe_path = Path(as_str(reduction.get("reduced_recipe")))
+    summary_path = Path(as_str(reduction.get("summary_path")))
+    if not recipe_path.is_file() or not summary_path.is_file():
+        return {**base, "reason": "reduction_artifact_missing"}
+    if (
+        reduction.get("reduced_recipe_sha256") != sha256_file(recipe_path)
+        or reduction.get("reduction_summary_sha256") != sha256_file(summary_path)
+    ):
+        return {**base, "reason": "reduction_artifact_hash_mismatch"}
+    try:
+        summary = read_json(summary_path)
+    except (OSError, json.JSONDecodeError):
+        return {**base, "reason": "reduction_summary_unreadable"}
+    if not isinstance(summary, dict):
+        return {**base, "reason": "reduction_summary_invalid"}
+    preserved, reason = preserved_from_summary(summary, trusted_signature)
+    if not preserved:
+        return {**base, "reason": reason}
+    return {
+        "eligible": True,
+        "reason": "signature_and_hash_verified_reduction",
+        "reduced_recipe": str(recipe_path),
+        "reduced_recipe_sha256": reduction["reduced_recipe_sha256"],
+        "reduction_summary_sha256": reduction["reduction_summary_sha256"],
+    }
+
+
 def reduction_by_fingerprint(reduction_index: dict[str, Any]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for item in reduction_index.get("reductions", []):
         if isinstance(item, dict) and as_str(item.get("fingerprint")):
             result[as_str(item["fingerprint"])] = item
     return result
+
+
+def topotrack_probe_by_case(probe_summary: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for item in probe_summary.get("results", []):
+        if isinstance(item, dict) and as_str(item.get("case_id")):
+            result.setdefault(as_str(item["case_id"]), []).append(item)
+    return result
+
+
+def normalized_path_identity(value: Any) -> str:
+    raw = as_str(value)
+    if not raw:
+        return ""
+    try:
+        return str(Path(raw).resolve()).casefold()
+    except OSError:
+        return str(Path(raw)).casefold()
+
+
+def select_topotrack_probe(
+    lookup: dict[str, list[dict[str, Any]]],
+    case_id: str,
+    failure: dict[str, Any],
+    group: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind a probe to the representative failure without trusting case_id alone."""
+
+    candidates = lookup.get(case_id, [])
+    if not candidates:
+        return {}
+    if len(candidates) == 1:
+        return {
+            **candidates[0],
+            "identity_status": "case_id_unique",
+            "identity_candidate_count": 1,
+        }
+
+    artifact_identities = {
+        normalized_path_identity(failure.get("case_dir")),
+        normalized_path_identity(group.get("representative_case_dir")),
+    }
+    artifact_identities.discard("")
+    recipe_identities = {normalized_path_identity(failure.get("recipe_path"))}
+    group_recipes = group.get("recipe_paths")
+    if not recipe_identities - {""} and isinstance(group_recipes, list) and len(group_recipes) == 1:
+        recipe_identities.add(normalized_path_identity(group_recipes[0]))
+    recipe_identities.discard("")
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for candidate in candidates:
+        artifact_match = normalized_path_identity(candidate.get("source_artifact_dir")) in artifact_identities
+        recipe_match = normalized_path_identity(candidate.get("source_recipe")) in recipe_identities
+        scored.append(((2 if artifact_match else 0) + (1 if recipe_match else 0), candidate))
+    best_score = max(score for score, _candidate in scored)
+    best = [candidate for score, candidate in scored if score == best_score and score > 0]
+    if len(best) == 1:
+        return {
+            **best[0],
+            "identity_status": "source_bound",
+            "identity_candidate_count": len(candidates),
+        }
+
+    return {
+        "case_id": case_id,
+        "classification": "ambiguous_probe_identity",
+        "evidence_quality": "inconclusive_identity_collision",
+        "identity_status": "ambiguous",
+        "identity_candidate_count": len(candidates),
+        "campaign_lanes": sorted(
+            {
+                as_str(candidate.get("campaign_lane"))
+                for candidate in candidates
+                if as_str(candidate.get("campaign_lane"))
+            }
+        ),
+    }
+
+
+def qualify_reproduction_with_topotrack(
+    reproduction: dict[str, Any],
+    topotrack_probe: dict[str, Any],
+) -> dict[str, Any]:
+    classification = as_str(topotrack_probe.get("classification"))
+    if classification == "topotrack_only_modeling_ok":
+        return {
+            **reproduction,
+            "eligible": False,
+            "stable_attempts": 0,
+            "reason": "TopoTrack-disabled paired probe succeeds; route to harness instrumentation triage",
+        }
+    if classification == "ambiguous_probe_identity":
+        return {
+            **reproduction,
+            "eligible": False,
+            "stable_attempts": 0,
+            "reason": "TopoTrack probe identity is ambiguous across campaign lanes; route to inconclusive triage",
+        }
+    return reproduction
+
+
+def compact_topotrack_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    capture = probe.get("capture_topotrack") if isinstance(probe.get("capture_topotrack"), dict) else {}
+    return {
+        "classification": probe.get("classification"),
+        "evidence_quality": probe.get("evidence_quality"),
+        "source_returncode": probe.get("source_returncode"),
+        "capture_returncode": probe.get("capture_returncode"),
+        "disabled_returncode": probe.get("probe_returncode"),
+        "campaign_lane": probe.get("campaign_lane"),
+        "identity_status": probe.get("identity_status", ""),
+        "identity_candidate_count": probe.get("identity_candidate_count", 0),
+        "capture_topotrack": {
+            "available": capture.get("available", False),
+            "item_count": capture.get("item_count", 0),
+            "ancestor_count": capture.get("ancestor_count", 0),
+            "resolved_ancestor_count": capture.get("resolved_ancestor_count", 0),
+            "reason": capture.get("reason", ""),
+        },
+    }
 
 
 def format_ref(ref: Any) -> str:
@@ -320,15 +561,25 @@ def copy_bundle_files(
     seed: dict[str, Any],
     replay: dict[str, Any],
     reduction: dict[str, Any],
+    topotrack_probe: dict[str, Any],
     preview_dirs: list[str],
     include_full_artifact: bool,
 ) -> dict[str, Any]:
     copied: dict[str, Any] = {"reports": {}, "inputs": {}, "recipes": {}}
+    reproduction = qualify_reproduction_with_topotrack(
+        verified_reproduction(replay, seed.get("failure_signature")),
+        topotrack_probe,
+    )
+    reduction_verification = verified_reduction(
+        reduction,
+        reproduction,
+        seed.get("failure_signature"),
+    )
     case_id = as_str(group.get("representative_case_id")) or as_str(failure.get("case_id"))
     case_dir = Path(as_str(group.get("representative_case_dir")) or as_str(failure.get("case_dir")))
 
     recipe_paths = group.get("recipe_paths") if isinstance(group.get("recipe_paths"), list) else []
-    if recipe_paths:
+    if reproduction["eligible"] and recipe_paths:
         copied["recipes"]["original"] = copy_file(as_str(recipe_paths[0]), bundle_dir / "recipes" / "original_recipe.json")
 
     artifact_inputs = seed.get("artifact_inputs") if isinstance(seed.get("artifact_inputs"), dict) else {}
@@ -337,13 +588,13 @@ def copy_bundle_files(
             copied["inputs"][key] = copy_file(src, bundle_dir / "input" / Path(src).name)
 
     attempts = replay.get("attempts") if isinstance(replay.get("attempts"), list) else []
-    if attempts:
+    if reproduction["eligible"] and attempts:
         first_attempt = attempts[0] if isinstance(attempts[0], dict) else {}
         copied["recipes"]["replay"] = copy_file(as_str(first_attempt.get("recipe")), bundle_dir / "recipes" / "replay_recipe.json")
         rewrite_replay_recipe_inputs(copied["recipes"]["replay"], copied["inputs"])
 
-    reduced_recipe = as_str(reduction.get("reduced_recipe"))
-    if reduced_recipe:
+    reduced_recipe = as_str(reduction_verification.get("reduced_recipe"))
+    if reduction_verification["eligible"] and reduced_recipe:
         copied["recipes"]["reduced"] = copy_file(reduced_recipe, bundle_dir / "recipes" / "reduced_recipe.json")
         rewrite_replay_recipe_inputs(copied["recipes"]["reduced"], copied["inputs"])
 
@@ -352,6 +603,15 @@ def copy_bundle_files(
         copied_path = copy_file(report_dir / name, bundle_dir / "report" / name)
         if copied_path:
             copied["reports"][name] = copied_path
+
+    capture_dir = Path(as_str(topotrack_probe.get("capture_artifact_dir")))
+    for name in ("topo_track_summary.json", "topo_track.json", "validation.json"):
+        copied_path = copy_file(
+            capture_dir / "report" / name,
+            bundle_dir / "topotrack_probe" / name,
+        )
+        if copied_path:
+            copied.setdefault("topotrack_probe", {})[name] = copied_path
 
     preview = find_preview(case_id, preview_dirs)
     if preview:
@@ -365,10 +625,11 @@ def copy_bundle_files(
         copied["full_artifact"] = copy_optional_tree(case_dir, bundle_dir / "full_artifact")
 
     recipes = copied.get("recipes") if isinstance(copied.get("recipes"), dict) else {}
-    copied["reproduce_script"] = write_reproduce_script(
-        bundle_dir,
-        as_str(recipes.get("reduced") or recipes.get("replay") or recipes.get("original")),
-    )
+    if reproduction["eligible"]:
+        copied["reproduce_script"] = write_reproduce_script(
+            bundle_dir,
+            as_str(recipes.get("reduced") or recipes.get("replay") or recipes.get("original")),
+        )
 
     return copied
 
@@ -379,11 +640,21 @@ def build_manifest(
     seed: dict[str, Any],
     replay: dict[str, Any],
     reduction: dict[str, Any],
+    topotrack_probe: dict[str, Any],
     copied: dict[str, Any],
 ) -> dict[str, Any]:
     attempts = replay.get("attempts") if isinstance(replay.get("attempts"), list) else []
     status = failure.get("status") if isinstance(failure.get("status"), dict) else {}
     runner = failure.get("corpus") if isinstance(failure.get("corpus"), dict) else {}
+    reproduction = qualify_reproduction_with_topotrack(
+        verified_reproduction(replay, seed.get("failure_signature")),
+        topotrack_probe,
+    )
+    reduction_verification = verified_reduction(
+        reduction,
+        reproduction,
+        seed.get("failure_signature"),
+    )
     return {
         "fingerprint": group.get("fingerprint"),
         "representative_case_id": group.get("representative_case_id"),
@@ -391,7 +662,9 @@ def build_manifest(
         "api": failure.get("api"),
         "reasons": group.get("reasons", []),
         "status": status,
-        "failure_signature": seed.get("failure_signature", {}),
+        "failure_signature": (
+            seed.get("failure_signature", {})
+        ),
         "runner": {
             "summary_path": runner.get("summary_path"),
             "returncode": runner.get("returncode"),
@@ -403,15 +676,28 @@ def build_manifest(
         "replay": {
             "status": replay.get("status"),
             "attempt_count": replay.get("attempt_count", len(attempts)),
+            "stable_attempts": reproduction["stable_attempts"],
+            "signature_verified": reproduction["eligible"],
             "returncodes": [item.get("returncode") for item in attempts if isinstance(item, dict)],
             "first_artifact_dir": as_str(attempts[0].get("artifact_dir")) if attempts and isinstance(attempts[0], dict) else "",
         },
         "reduction": {
             "status": reduction.get("status"),
+            "signature_verified": reduction_verification["eligible"],
+            "verification_reason": reduction_verification["reason"],
+            "reduced_recipe_sha256": reduction_verification.get(
+                "reduced_recipe_sha256",
+                "",
+            ),
             "accepted_reductions": reduction.get("accepted_reductions"),
             "trials": reduction.get("trials"),
             "summary_path": reduction.get("summary_path"),
             "final_artifact_dir": reduction.get("final_artifact_dir"),
+        },
+        "topotrack_probe": compact_topotrack_probe(topotrack_probe),
+        "investigation_eligibility": {
+            "root_cause": reproduction["eligible"],
+            "reason": reproduction["reason"],
         },
         "recipe_paths": group.get("recipe_paths", []),
         "case_dirs": group.get("case_dirs", []),
@@ -430,6 +716,12 @@ def write_bug_report(manifest: dict[str, Any], path: Path) -> None:
     status = manifest.get("status") if isinstance(manifest.get("status"), dict) else {}
     runner = manifest.get("runner") if isinstance(manifest.get("runner"), dict) else {}
     replay = manifest.get("replay") if isinstance(manifest.get("replay"), dict) else {}
+    reduction = manifest.get("reduction") if isinstance(manifest.get("reduction"), dict) else {}
+    topotrack_probe = (
+        manifest.get("topotrack_probe")
+        if isinstance(manifest.get("topotrack_probe"), dict)
+        else {}
+    )
     dsl = manifest.get("dsl") if isinstance(manifest.get("dsl"), dict) else {}
     copied = manifest.get("copied") if isinstance(manifest.get("copied"), dict) else {}
     lines: list[str] = [
@@ -437,10 +729,13 @@ def write_bug_report(manifest: dict[str, Any], path: Path) -> None:
         "",
         f"- Fingerprint: `{manifest.get('fingerprint')}`",
         f"- API: `{manifest.get('api')}`",
+        "- Assessment: `candidate_only`",
         f"- Reasons: {', '.join(manifest.get('reasons', []))}",
         f"- SDK status: succeeded={status.get('succeeded')} error_code={status.get('error_code')} error_message=`{status.get('error_message', '')}`",
         f"- Runner: returncode={runner.get('returncode')} timed_out={runner.get('timed_out')} elapsed={runner.get('elapsed_seconds')}",
         f"- Replay: `{replay.get('status', '')}` attempts={replay.get('attempt_count', 0)} returncodes={replay.get('returncodes', [])}",
+        f"- Reduction: `{reduction.get('status', '')}` trials={reduction.get('trials', 0)} accepted={reduction.get('accepted_reductions', 0)}",
+        f"- Isolated TopoTrack probe: `{topotrack_probe.get('classification', '')}` quality=`{topotrack_probe.get('evidence_quality', '')}`",
     ]
     if dsl:
         lines.extend(
@@ -560,18 +855,24 @@ def main() -> int:
         if isinstance(reductions_value, dict):
             reductions = reductions_value
 
+    topotrack_probe: dict[str, Any] = {}
+    if args.topotrack_probe:
+        probe_path = resolve_summary_path(args.topotrack_probe, "topotrack_probe_summary.json")
+        probe_value = read_json(probe_path)
+        if isinstance(probe_value, dict):
+            topotrack_probe = probe_value
+
     replay_lookup = replay_by_fingerprint(replay)
     reduction_lookup = reduction_by_fingerprint(reductions)
+    topotrack_probe_lookup = topotrack_probe_by_case(topotrack_probe)
     seed_lookup = seed_by_fingerprint(triage)
     failures = triage.get("failures") if isinstance(triage.get("failures"), list) else []
     groups = triage.get("failure_groups") if isinstance(triage.get("failure_groups"), list) else []
-    if args.limit:
-        groups = groups[: args.limit]
-
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     index: list[dict[str, Any]] = []
+    inconclusive: list[dict[str, Any]] = []
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -581,6 +882,35 @@ def main() -> int:
         seed = seed_lookup.get(fingerprint, {})
         replay_result = replay_lookup.get(fingerprint, {})
         reduction_result = reduction_lookup.get(fingerprint, {})
+        topotrack_probe_result = select_topotrack_probe(
+            topotrack_probe_lookup,
+            case_id,
+            failure,
+            group,
+        )
+        reproduction = qualify_reproduction_with_topotrack(
+            verified_reproduction(
+                replay_result,
+                seed.get("failure_signature") if isinstance(seed, dict) else None,
+            ),
+            topotrack_probe_result,
+        )
+        probe_classification = as_str(topotrack_probe_result.get("classification"))
+        if not reproduction["eligible"]:
+            inconclusive.append(
+                {
+                    "fingerprint": fingerprint,
+                    "representative_case_id": case_id,
+                    "replay_status": reproduction["status"],
+                    "stable_attempts": 0,
+                    "investigation_lane": "inconclusive_triage",
+                    "reason": reproduction["reason"],
+                    "topotrack_probe_classification": probe_classification,
+                }
+            )
+            continue
+        if args.limit and len(index) >= args.limit:
+            break
         bundle_dir = out_dir / f"{sanitize_name(fingerprint)}_{sanitize_name(case_id)}"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         copied = copy_bundle_files(
@@ -590,10 +920,19 @@ def main() -> int:
             seed,
             replay_result,
             reduction_result,
+            topotrack_probe_result,
             args.preview_dir,
             args.include_full_artifact,
         )
-        manifest = build_manifest(group, failure, seed, replay_result, reduction_result, copied)
+        manifest = build_manifest(
+            group,
+            failure,
+            seed,
+            replay_result,
+            reduction_result,
+            topotrack_probe_result,
+            copied,
+        )
         manifest_path = bundle_dir / "bundle_manifest.json"
         report_path = bundle_dir / "bug_report.md"
         localization_path = bundle_dir / "localization_summary.json"
@@ -614,6 +953,9 @@ def main() -> int:
                 "fingerprint": fingerprint,
                 "representative_case_id": case_id,
                 "replay_status": replay_result.get("status", ""),
+                "stable_attempts": reproduction["stable_attempts"],
+                "investigation_eligible": True,
+                "investigation_lane": "stable_root_cause",
                 "bundle_dir": str(bundle_dir),
                 "bundle_manifest": str(manifest_path),
                 "localization_summary": str(localization_path),
@@ -625,7 +967,16 @@ def main() -> int:
 
     write_json(
         out_dir / "bundle_index.json",
-        {"triage": str(triage_path), "replay": args.replay or "", "reductions": args.reductions or "", "bundles": index},
+        {
+            "triage": str(triage_path),
+            "replay": args.replay or "",
+            "reductions": args.reductions or "",
+            "topotrack_probe": args.topotrack_probe or "",
+            "bundles": index,
+            "inconclusive_triage": inconclusive,
+            "stable_root_cause_count": len(index),
+            "inconclusive_count": len(inconclusive),
+        },
     )
     write_index_report(index, out_dir / "bundle_report.md")
     print(f"index={out_dir / 'bundle_index.json'}")

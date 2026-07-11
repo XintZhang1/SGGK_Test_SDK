@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(SGGKTestHarness LANGUAGES CXX)
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -15,6 +17,33 @@ if(NOT EXISTS "${SGGK_SDK_DIR}/include/Foundation/init.h")
     )
 endif()
 
+set(SGGK_PLUGIN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_plugins")
+file(GLOB_RECURSE SGGK_PLUGIN_INPUTS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/api_plugins/*"
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_plugin_registry.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/plugin_catalog.py"
+)
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_plugin_registry.py"
+        --plugin-root "${CMAKE_CURRENT_SOURCE_DIR}/api_plugins"
+        --out "${SGGK_PLUGIN_GENERATED_DIR}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    RESULT_VARIABLE SGGK_PLUGIN_GENERATOR_RESULT
+    OUTPUT_VARIABLE SGGK_PLUGIN_GENERATOR_STDOUT
+    ERROR_VARIABLE SGGK_PLUGIN_GENERATOR_STDERR
+)
+if(NOT SGGK_PLUGIN_GENERATOR_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "SGGK plugin registry generation failed (${SGGK_PLUGIN_GENERATOR_RESULT}).\n"
+        "stdout: ${SGGK_PLUGIN_GENERATOR_STDOUT}\n"
+        "stderr: ${SGGK_PLUGIN_GENERATOR_STDERR}"
+    )
+endif()
+include("${SGGK_PLUGIN_GENERATED_DIR}/generated_plugins.cmake")
+
 add_executable(sggk_case_runner
     src/sggk_case_runner.cpp
 )
@@ -25,6 +54,8 @@ add_executable(sggk_topology_extract
 
 target_include_directories(sggk_case_runner PRIVATE
     "${SGGK_SDK_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${SGGK_PLUGIN_GENERATED_DIR}"
 )
 
 target_include_directories(sggk_topology_extract PRIVATE
@@ -66,6 +97,7 @@ target_link_libraries(sggk_case_runner PRIVATE
     SGGK_Boolean
     SGGK_Offset
     SGGK_HLR
+    ${SGGK_PLUGIN_LIBRARIES}
 )
 
 target_link_libraries(sggk_topology_extract PRIVATE

@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from plugin_catalog import merge_capabilities, plugin_map
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REGISTRY = REPO_ROOT / "test_harness" / "interface_capabilities.json"
@@ -51,6 +53,7 @@ def validate_registry(
     implemented_recipe_apis: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
+    plugins = plugin_map()
     if registry.get("schema_version") != 2:
         errors.append("schema_version must be 2")
 
@@ -96,7 +99,13 @@ def validate_registry(
         if record.get("runner_recipe_api") is True:
             if api not in implemented_recipe_apis:
                 errors.append(f"apis.{api} claims runner_recipe_api but Python validator does not implement it")
-            if not runner_dispatches(api, runner_source):
+            if api in plugins:
+                plugin = plugins[api]
+                symbol = str(plugin.manifest.get("adapter_symbol") or "")
+                adapter_source = plugin.adapter_path.read_text(encoding="utf-8-sig")
+                if not re.search(rf"\b{re.escape(symbol)}\s*\(", adapter_source):
+                    errors.append(f"apis.{api} plugin adapter does not define {symbol}")
+            elif not runner_dispatches(api, runner_source):
                 errors.append(f"apis.{api} claims runner_recipe_api but C++ runner has no dispatch")
 
     for family, record in registry["interface_families"].items():
@@ -137,7 +146,7 @@ def main() -> int:
     args = parser.parse_args()
     path = Path(args.registry)
     try:
-        registry = read_object(path)
+        registry = merge_capabilities(read_object(path))
         errors = validate_registry(registry)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         errors = [str(exc)]

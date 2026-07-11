@@ -1,0 +1,186 @@
+{
+  "kind": "api_plugin_candidate",
+  "api": "api_combine_bodies",
+  "description": "Adapt ModelingBase api_combine_bodies through the fixed body_list_to_body archetype.",
+  "adapter_spec": {
+    "archetype": "body_list_to_body",
+    "function_name": "api_combine_bodies",
+    "sdk_header": "ModelingBase/API.h",
+    "sdk_modules": [
+      "ModelingBase",
+      "Topology"
+    ],
+    "clone_field": "combine_clone"
+  },
+  "recipe_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "api",
+      "case_id",
+      "target_kind",
+      "target_radius",
+      "tool_kind",
+      "tool_radius",
+      "expectations"
+    ],
+    "properties": {
+      "api": {
+        "const": "api_combine_bodies"
+      },
+      "case_id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+      },
+      "combine_clone": {
+        "type": "boolean"
+      },
+      "modeling_tol": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "check_valid": {
+        "type": "boolean"
+      },
+      "topo_track": {
+        "type": "boolean"
+      },
+      "target_kind": {
+        "const": "solid_sphere"
+      },
+      "target_radius": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "target_translate_x": {
+        "type": "number"
+      },
+      "tool_kind": {
+        "const": "solid_sphere"
+      },
+      "tool_radius": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "tool_translate_x": {
+        "type": "number"
+      },
+      "expectations": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result_bodies",
+          "require_property_calculations",
+          "require_finite_properties",
+          "require_nonnegative_volume"
+        ],
+        "properties": {
+          "result_bodies": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "min",
+              "max"
+            ],
+            "properties": {
+              "min": {
+                "const": 1
+              },
+              "max": {
+                "const": 1
+              }
+            }
+          },
+          "require_property_calculations": {
+            "const": true
+          },
+          "require_finite_properties": {
+            "const": true
+          },
+          "require_nonnegative_volume": {
+            "const": true
+          }
+        }
+      }
+    }
+  },
+  "smoke_recipe": {
+    "api": "api_combine_bodies",
+    "case_id": "generated_combine_bodies_smoke",
+    "combine_clone": true,
+    "modeling_tol": 0.01,
+    "check_valid": true,
+    "topo_track": false,
+    "target_kind": "solid_sphere",
+    "target_radius": 10.0,
+    "target_translate_x": 0.0,
+    "tool_kind": "solid_sphere",
+    "tool_radius": 5.0,
+    "tool_translate_x": 30.0,
+    "expectations": {
+      "result_bodies": {
+        "min": 1,
+        "max": 1
+      },
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_volume": true
+    }
+  },
+  "negative_recipe": {
+    "api": "api_combine_bodies",
+    "case_id": "generated_combine_bodies_smoke",
+    "combine_clone": true,
+    "modeling_tol": 0.01,
+    "check_valid": true,
+    "topo_track": false,
+    "target_kind": "solid_sphere",
+    "target_radius": 10.0,
+    "target_raduis": 10.0,
+    "target_translate_x": 0.0,
+    "tool_kind": "solid_sphere",
+    "tool_radius": 5.0,
+    "tool_translate_x": 30.0,
+    "expectations": {
+      "result_bodies": {
+        "min": 1,
+        "max": 1
+      },
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "require_nonnegative_volume": true
+    }
+  },
+  "capability": {
+    "preferred_format": "flat_recipe",
+    "runner_recipe_api": true,
+    "body_required": [
+      "target",
+      "tool"
+    ],
+    "required_fields": [
+      "api",
+      "case_id",
+      "target_kind",
+      "target_radius",
+      "tool_kind",
+      "tool_radius"
+    ],
+    "supported_body_builders": [
+      "solid_sphere"
+    ],
+    "supported_oracles": [
+      "result_bodies",
+      "properties",
+      "topocheck"
+    ],
+    "notes": [
+      "Generated from a fixed body_list_to_body adapter archetype."
+    ]
+  },
+  "topotrack": {
+    "mode": "unavailable",
+    "reason": "api_combine_bodies returns BodyPtr rather than ModelingRet topology tracking"
+  }
+}

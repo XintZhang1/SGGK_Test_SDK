@@ -1,21 +1,35 @@
 # Attack DSL
 
-Use this reference when emitting model-generated SGGK attacks. Prefer this DSL over hand-writing flat runner recipes for source-specific hypotheses. Use `generate_boolean_matrix.py` when the task is broad OCC-style boolean baseline generation rather than a narrow source-directed attack. Treat the DSL as a compact parameterized-modeling IR for tests, with stable operation IDs for provenance.
+This reference defines the untrusted `attack_dsl` candidate shape supplied to a
+Message API task. The integrated pipeline is the only production consumer of a
+model candidate: it reads `message.content`, runs the fixed DSL gate, executes
+in isolation, selects, and promotes with provenance. Use
+`generate_boolean_matrix.py` for host-generated broad baseline coverage rather
+than asking a candidate to enumerate a matrix. Treat the DSL as a compact
+parameterized-modeling IR with stable operation IDs.
 
-Run supported DSL directly:
+For checked-in deterministic fixtures only, a developer may run supported DSL
+directly to diagnose the runner:
 
 ```powershell
 .\build\test_harness\Release\sggk_case_runner.exe --recipe .\path\to\attack.json --out .\artifacts
 ```
 
-Optionally compile DSL into flat recipes for debugging:
+Likewise, these compiler commands are fixed-gate debugging aids for checked-in
+fixtures or pipeline gate artifacts, not model-output acceptance commands:
 
 ```powershell
 python .\test_harness\tools\compile_attack_dsl.py .\path\to\attack.json --check --report .\artifacts\dsl_checks\attack_check.json
 python .\test_harness\tools\compile_attack_dsl.py .\path\to\attack.json --out .\artifacts\compiled_recipes
 ```
 
-Use `--check` first for model-generated DSL. It expands variants/sweeps/chains and validates the compiled flat recipes without writing them; keep `--report` outside the compiled recipe directory. Then run the compiled recipes with `sggk_case_runner`. Compiled recipes keep `dsl_source`, `dsl_case_id`, `dsl_variant`, `target_operations`, and `tool_operations` so batch artifacts remain localizable to the original DSL operation IDs.
+The pipeline invokes `--check` first for every model candidate. It expands
+variants/sweeps/chains and validates the compiled flat recipes without writing
+them, then runs eligible recipes in an isolated candidate directory. Never
+copy/paste a response into the direct commands above. Compiled recipes keep
+`dsl_source`, `dsl_case_id`, `dsl_variant`, `target_operations`, and
+`tool_operations` so artifacts remain localizable to the original DSL
+operation IDs.
 
 ## Shape
 
@@ -228,7 +242,7 @@ Native DSL runs and compiled flat recipe lanes preserve modeling provenance in:
 
 ## Guidance
 
-- Emit DSL when the attack is runnable with current body builders.
+- The task contract may select `attack_dsl` when the attack is runnable with current body builders.
 - Use `sweeps` for below/exactly/above threshold families. For topology-building APIs, prefer exact contact plus `+/- geom_tol` and `+/- topo_tol`; for pure geometry APIs, focus on `geom_tol`.
 - Remember the current SGGK scale contract: topology/modeling APIs use `topo_tol = 1e-2`; pure geometry queries use `geom_tol = 1e-5`; generated large-coordinate cases should remain within `max_model_size = 5e5`.
 - Use `hypothesis` to capture the source-level suspicion.
