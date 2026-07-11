@@ -7,7 +7,6 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess

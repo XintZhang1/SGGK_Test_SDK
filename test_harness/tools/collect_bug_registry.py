@@ -485,6 +485,7 @@ def collect_from_bundle_indices(entries: dict[str, dict[str, Any]], bundle_paths
                     "debug_geometry_index": resolve_existing_path(reports.get("debug_geometry_index.json"), index_base),
                     "reproduce_script": resolve_existing_path(copied.get("reproduce_script"), index_base) if isinstance(copied, dict) else "",
                     "original_recipe": resolve_existing_path(recipes.get("original"), index_base),
+                    "reduced_recipe": resolve_existing_path(recipes.get("reduced"), index_base),
                     "replay_recipe": resolve_existing_path(recipes.get("replay"), index_base),
                     **input_paths,
                 },
@@ -494,11 +495,15 @@ def collect_from_bundle_indices(entries: dict[str, dict[str, Any]], bundle_paths
 
 def status_rank(status: str) -> int:
     order = {
-        "stable_failure": 0,
-        "flaky": 1,
-        "unreplayed": 2,
-        "not_reproduced": 3,
-        "unavailable": 4,
+        "stable_same_failure": 0,
+        "stable_failure": 1,
+        "flaky_same_failure": 2,
+        "flaky": 3,
+        "changed_failure": 4,
+        "unverified_failure": 5,
+        "unreplayed": 6,
+        "not_reproduced": 7,
+        "unavailable": 8,
     }
     return order.get(status, 9)
 

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pack_id": "oracle_calibration",
+  "title": "api_boolean oracle calibration",
+  "interface_family": "oracle_calibration",
+  "markdown_path": "test_harness/interface_example_packs/oracle_calibration.md",
+  "contract_kinds": ["attack_dsl"],
+  "positive_example_paths": [
+    "test_harness/dsl/oracle_checks_smoke.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["api_boolean"],
+  "geometry_families": ["primitive"],
+  "oracles_any": ["point_relation", "face_point_relation", "clash", "distance", "plane_extreme"],
+  "fallback": "Return needs_harness_extension for oracle families not listed in interface_capabilities.json."
+}

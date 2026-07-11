@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "pack_id": "step_import_iges_import",
+  "title": "STEP/IGES import flat recipes",
+  "interface_family": "exchange_import",
+  "markdown_path": "test_harness/interface_example_packs/step_import_iges_import.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/step_import.example_recipe.json",
+    "test_harness/interface_example_packs/iges_import.example_recipe.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["step_import", "iges_import"],
+  "geometry_families": ["corpus", "exchange_file"],
+  "builder_terms": ["STEP", "IGES", "import", "ABC"],
+  "fallback": "Return needs_harness_extension for exchange formats, import modes, or corpus handling not represented by the flat recipes."
+}

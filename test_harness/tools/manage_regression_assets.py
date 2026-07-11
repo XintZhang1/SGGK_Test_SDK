@@ -37,6 +37,13 @@ def parse_args() -> argparse.Namespace:
     snapshot.add_argument("--asset-id", default="", help="Stable asset id; defaults to output directory name")
     snapshot.add_argument("--sdk-version", default="", help="SDK/kernel version label for the baseline")
     snapshot.add_argument("--dataset-label", default="", help="Dataset label/path used by this run")
+    snapshot.add_argument("--source-type", default="", help="Registered provenance source type from interface_capabilities.json")
+    snapshot.add_argument("--source-label", default="", help="Human-readable source/run label")
+    snapshot.add_argument("--model", default="", help="Model label that produced the saved JSON, if applicable")
+    snapshot.add_argument("--form", default="", help="Interface form path or id that led to this asset")
+    snapshot.add_argument("--prompt-pack", default="", help="Prompt pack or prompt path used to produce the saved JSON")
+    snapshot.add_argument("--model-output", default="", help="Saved model-output JSON path used for the run")
+    snapshot.add_argument("--fingerprint", action="append", default=[], help="Known bug/failure fingerprint associated with this asset")
     snapshot.add_argument("--max-cases", type=int, default=5000, help="Maximum recipes to copy; 0 means no cap")
     snapshot.add_argument("--pass-sample", type=int, default=2000, help="Maximum passed cases to keep; 0 keeps none")
     snapshot.add_argument(
@@ -63,6 +70,28 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Additional unsupported-message pattern for the new run.",
     )
+
+    annotate = subparsers.add_parser("annotate", help="Add or update provenance metadata on an existing asset pack")
+    annotate.add_argument("--asset", required=True, help="Asset pack directory or asset_manifest.json")
+    annotate.add_argument("--source-type", default="", help="Registered provenance source type from interface_capabilities.json")
+    annotate.add_argument("--source-label", default="", help="Human-readable source/run label")
+    annotate.add_argument("--model", default="", help="Model label that produced the saved JSON, if applicable")
+    annotate.add_argument("--form", default="", help="Interface form path or id that led to this asset")
+    annotate.add_argument("--prompt-pack", default="", help="Prompt pack or prompt path used to produce the saved JSON")
+    annotate.add_argument("--model-output", default="", help="Saved model-output JSON path used for the run")
+    annotate.add_argument("--fingerprint", action="append", default=[], help="Known bug/failure fingerprint associated with this asset")
+    annotate.add_argument("--note", action="append", default=[], help="Human-reviewed provenance note")
+
+    plan = subparsers.add_parser("plan-replay", help="Write a deterministic replay/compare plan for an asset")
+    plan.add_argument("--asset", required=True, help="Asset pack directory or asset_manifest.json")
+    plan.add_argument("--out", required=True, help="Output directory for replay_plan.json/md")
+    plan.add_argument("--runner", default=".\\build\\test_harness\\Release\\sggk_case_runner.exe", help="Runner path for the replay command")
+    plan.add_argument("--replay-out", default="", help="Replay run output directory; defaults under --out")
+    plan.add_argument("--triage-out", default="", help="Replay triage output directory; defaults under --out")
+    plan.add_argument("--compare-out", default="", help="Regression compare output directory; defaults under --out")
+    plan.add_argument("--new-sdk-version", default="", help="SDK/kernel version label for replay comparison")
+    plan.add_argument("--jobs", type=int, default=1)
+    plan.add_argument("--timeout", type=float, default=180.0)
     return parser.parse_args()
 
 
@@ -86,12 +115,21 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+
+
 def as_str(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
 def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def clean_string_list(value: Any) -> list[str]:
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def as_dict(value: Any) -> dict[str, Any]:
@@ -415,6 +453,29 @@ def source_code_refs() -> dict[str, Any]:
     }
 
 
+def provenance_from_args(args: argparse.Namespace, *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    existing = existing or {}
+    fingerprints = clean_string_list([*as_list(existing.get("fingerprints")), *getattr(args, "fingerprint", [])])
+    result = {
+        "schema_version": 1,
+        "updated_at": now_iso_like(),
+        "source_type": getattr(args, "source_type", "") or existing.get("source_type", ""),
+        "source_label": getattr(args, "source_label", "") or existing.get("source_label", ""),
+        "model": getattr(args, "model", "") or existing.get("model", ""),
+        "form": getattr(args, "form", "") or existing.get("form", ""),
+        "prompt_pack": getattr(args, "prompt_pack", "") or existing.get("prompt_pack", ""),
+        "model_output": getattr(args, "model_output", "") or existing.get("model_output", ""),
+        "fingerprints": sorted(dict.fromkeys(fingerprints)),
+        "notes": clean_string_list([*as_list(existing.get("notes")), *getattr(args, "note", [])]),
+        "boundary": {
+            "model_calls": False,
+            "direct_api_calls": False,
+            "production_flow": "saved_json_or_run_artifacts_to_regression_asset",
+        },
+    }
+    return {key: value for key, value in result.items() if value not in ("", [], {})}
+
+
 def build_bug_registry(asset_id: str, cases: list[dict[str, Any]], groups: dict[str, dict[str, Any]]) -> dict[str, Any]:
     bugs: dict[str, dict[str, Any]] = {}
     for case in cases:
@@ -465,6 +526,13 @@ def snapshot_report(manifest: dict[str, Any], bug_registry: dict[str, Any]) -> s
     lines.append(f"- Generated: `{manifest.get('generated_at')}`")
     lines.append(f"- SDK baseline: `{manifest.get('sdk_version')}`")
     lines.append(f"- Dataset: `{manifest.get('dataset_label')}`")
+    provenance = as_dict(manifest.get("provenance"))
+    if provenance:
+        lines.append(f"- Source type: `{provenance.get('source_type', '')}`")
+        lines.append(f"- Model: `{provenance.get('model', '')}`")
+        lines.append(f"- Form: `{provenance.get('form', '')}`")
+        lines.append(f"- Prompt/model output: `{provenance.get('prompt_pack', '')}` / `{provenance.get('model_output', '')}`")
+        lines.append(f"- Known fingerprints: `{provenance.get('fingerprints', [])}`")
     lines.append(f"- Campaign root: `{manifest.get('campaign', {}).get('campaign_root')}`")
     lines.append(f"- Source commit: `{manifest.get('source_code', {}).get('git_commit_short')}`")
     lines.append(f"- Preserved cases: `{manifest.get('case_count')}`")
@@ -583,6 +651,7 @@ def run_snapshot(args: argparse.Namespace) -> int:
         "generated_at": now_iso_like(),
         "sdk_version": args.sdk_version,
         "dataset_label": args.dataset_label,
+        "provenance": provenance_from_args(args),
         "source_code": source_code_refs(),
         "campaign": paths,
         "recipe_summary": str(recipe_summary_path),
@@ -601,6 +670,7 @@ def run_snapshot(args: argparse.Namespace) -> int:
     }
     bug_registry = build_bug_registry(asset_id, cases, groups_by_fingerprint)
     write_json(out_dir / "asset_manifest.json", manifest)
+    write_json(out_dir / "asset_provenance.json", manifest.get("provenance", {}))
     write_json(out_dir / "bug_registry.json", bug_registry)
     (out_dir / "asset_report.md").write_text(snapshot_report(manifest, bug_registry), encoding="utf-8")
     print(f"asset={out_dir / 'asset_manifest.json'}")
@@ -826,12 +896,142 @@ def run_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_asset_manifest(raw: str) -> tuple[Path, dict[str, Any]]:
+    asset_path = normalize_asset_path(raw).resolve()
+    manifest = load_json(asset_path)
+    if not isinstance(manifest, dict):
+        raise ValueError(f"invalid asset manifest: {asset_path}")
+    return asset_path, manifest
+
+
+def run_annotate(args: argparse.Namespace) -> int:
+    try:
+        asset_path, manifest = load_asset_manifest(args.asset)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    provenance = provenance_from_args(args, existing=as_dict(manifest.get("provenance")))
+    manifest["provenance"] = provenance
+    write_json(asset_path, manifest)
+    write_json(asset_path.parent / "asset_provenance.json", provenance)
+    bug_registry = load_json(asset_path.parent / "bug_registry.json")
+    if not isinstance(bug_registry, dict):
+        bug_registry = {"bugs": []}
+    write_text(asset_path.parent / "asset_report.md", snapshot_report(manifest, bug_registry))
+    print(f"asset={asset_path}")
+    print(f"provenance={asset_path.parent / 'asset_provenance.json'}")
+    print(f"source_type={provenance.get('source_type', '')} model={provenance.get('model', '')} fingerprints={provenance.get('fingerprints', [])}")
+    return 0
+
+
+def powershell_command(command: list[str]) -> str:
+    lines: list[str] = []
+    for index, item in enumerate(command):
+        suffix = " `" if index < len(command) - 1 else ""
+        lines.append(f"  {item}{suffix}" if index else f"{item}{suffix}")
+    return "\n".join(lines)
+
+
+def replay_plan_report(plan: dict[str, Any]) -> str:
+    lines = [
+        "# Regression Asset Replay Plan",
+        "",
+        f"- asset_id: `{plan.get('asset_id')}`",
+        f"- asset_manifest: `{plan.get('asset_manifest')}`",
+        f"- source_type: `{as_dict(plan.get('provenance')).get('source_type', '')}`",
+        f"- model: `{as_dict(plan.get('provenance')).get('model', '')}`",
+        f"- new_sdk_version: `{plan.get('new_sdk_version')}`",
+        "",
+        "## Replay",
+        "",
+        "```powershell",
+        powershell_command(as_list(plan.get("replay_command"))),
+        "```",
+        "",
+        "## Compare",
+        "",
+        "```powershell",
+        powershell_command(as_list(plan.get("compare_command"))),
+        "```",
+        "",
+        "The plan is deterministic metadata only; generating it does not run the SDK.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def run_plan_replay(args: argparse.Namespace) -> int:
+    try:
+        asset_path, manifest = load_asset_manifest(args.asset)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    recipe_list = as_str(as_dict(manifest.get("paths")).get("regression_recipe_list"))
+    if not recipe_list:
+        print("asset manifest has no paths.regression_recipe_list")
+        return 1
+    out_dir = Path(args.out).resolve()
+    replay_out = args.replay_out or str(out_dir / "run")
+    triage_out = args.triage_out or str(out_dir / "triage")
+    compare_out = args.compare_out or str(out_dir / "compare")
+    replay_command = [
+        "python .\\test_harness\\tools\\run_recipes.py",
+        f"--runner {args.runner}",
+        f"--recipe-list {recipe_list}",
+        f"--out {replay_out}",
+        f"--triage-out {triage_out}",
+        f"--jobs {args.jobs}",
+        f"--timeout {args.timeout:g}",
+    ]
+    compare_command = [
+        "python .\\test_harness\\tools\\manage_regression_assets.py compare",
+        f"--asset {asset_path}",
+        f"--new-run {Path(replay_out) / 'recipe_summary.json'}",
+        f"--new-triage {Path(triage_out) / 'triage_summary.json'}",
+        f"--out {compare_out}",
+    ]
+    if args.new_sdk_version:
+        compare_command.append(f"--new-sdk-version {args.new_sdk_version}")
+    plan = {
+        "schema": "sggk.regression_replay_plan.v1",
+        "generated_at": now_iso_like(),
+        "asset_id": manifest.get("asset_id"),
+        "asset_manifest": str(asset_path),
+        "provenance": manifest.get("provenance", {}),
+        "recipe_list": recipe_list,
+        "runner": args.runner,
+        "replay_out": replay_out,
+        "triage_out": triage_out,
+        "compare_out": compare_out,
+        "new_sdk_version": args.new_sdk_version,
+        "replay_command": replay_command,
+        "compare_command": compare_command,
+        "boundary": {
+            "model_calls": False,
+            "direct_api_calls": False,
+            "runs_sdk": False,
+            "applies_patches": False,
+            "commits_changes": False,
+        },
+    }
+    write_json(out_dir / "replay_plan.json", plan)
+    write_text(out_dir / "replay_plan.md", replay_plan_report(plan))
+    print(f"plan={out_dir / 'replay_plan.json'}")
+    print(f"report={out_dir / 'replay_plan.md'}")
+    print(f"asset_id={plan['asset_id']} runs_sdk={plan['boundary']['runs_sdk']}")
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     if args.command == "snapshot":
         return run_snapshot(args)
     if args.command == "compare":
         return run_compare(args)
+    if args.command == "annotate":
+        return run_annotate(args)
+    if args.command == "plan-replay":
+        return run_plan_replay(args)
     return 1
 
 

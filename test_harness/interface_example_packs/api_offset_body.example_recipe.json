@@ -1,0 +1,30 @@
+{
+  "case_id": "api_offset_body_smoke_001",
+  "api": "api_offset_body",
+  "source_kind": "solid_cylinder",
+  "source_radius": 10.0,
+  "source_height": 25.0,
+  "source_angle": 6.283185307179586,
+  "offset_distance": 0.05,
+  "modeling_tol": 0.01,
+  "source_g1_tol": 0.1,
+  "expectations": {
+    "result_bodies": {
+      "min": 1,
+      "max": 1
+    },
+    "require_property_calculations": true,
+    "require_finite_properties": true,
+    "require_nonnegative_length_area": true,
+    "total_abs_volume": {
+      "expected": 7964.448671054499,
+      "abs_tol": 0.1
+    },
+    "plane_extreme_checks": [
+      {"id": "offset_x_min", "role": "result", "axis": "x", "side": "min", "expected": -10.05, "tolerance": 0.02},
+      {"id": "offset_x_max", "role": "result", "axis": "x", "side": "max", "expected": 10.05, "tolerance": 0.02},
+      {"id": "offset_z_min", "role": "result", "axis": "z", "side": "min", "expected": -0.05, "tolerance": 0.02},
+      {"id": "offset_z_max", "role": "result", "axis": "z", "side": "max", "expected": 25.05, "tolerance": 0.02}
+    ]
+  }
+}

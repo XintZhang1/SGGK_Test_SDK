@@ -1,0 +1,28 @@
+{
+  "request_id": "iface_18_offset2d_status_matrix",
+  "owner": "kernel-dev",
+  "target_api": "api_offset2d",
+  "sdk_source_refs": [
+    "SGGK GeomAlgo/Offset2D/Offset2D.h: Offset2D::Perform"
+  ],
+  "test_goal": "Generate one simple line-path offset recipe with an exact Success status and result-path count oracle.",
+  "risk_summary": "A 2D offset can report a status that disagrees with its output-path structure; both must be asserted.",
+  "geometry": {
+    "family": "line2d",
+    "target_builder": "one line2d path segment",
+    "tool_builder": "none",
+    "parameter_notes": "Use one non-degenerate line segment and a uniform distance with exact Success and one result path."
+  },
+  "tolerance_focus": [
+    "distance_tolerance"
+  ],
+  "oracles": [
+    "offset2d_status",
+    "offset2d_result_paths"
+  ],
+  "expected_behavior": "The recipe matches Offset2DStatus Success and returns exactly one non-empty result path.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return exactly one flat_recipe object, not a cases or recipes array."
+}

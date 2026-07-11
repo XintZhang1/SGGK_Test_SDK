@@ -1,0 +1,17 @@
+{
+  "case_id": "api_offset2d_invalid_ambiguous_distance",
+  "api": "api_offset2d",
+  "offset2d_distance": 10.0,
+  "offset2d_distances": [10.0],
+  "offset2d_path": [
+    {
+      "kind": "line",
+      "start": [0.0, 0.0],
+      "end": [0.0, 0.0]
+    }
+  ],
+  "expectations": {
+    "offset2d_status": "Maybe",
+    "offset2d_result_paths": {"min": 2, "max": 1}
+  }
+}

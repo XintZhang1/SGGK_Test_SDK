@@ -10,7 +10,7 @@ The model may use intranet source code during test-case authoring. It must still
 
 ## Campaign Driver
 
-Prefer the integrated driver for repeatable distillation runs:
+Use the offline driver only to evaluate already accepted outputs or deterministic fixtures:
 
 ```powershell
 python .\test_harness\tools\run_interface_distillation.py `
@@ -21,8 +21,8 @@ python .\test_harness\tools\run_interface_distillation.py `
   --execute `
   --api-smoke `
   --abc-sample-smoke `
-  --abc-fetch-root C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
-  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --abc-fetch-root $env:SGGK_DATA_ROOT `
+  --source-root $env:SGGK_SOURCE_ROOT `
   --jobs 1 `
   --timeout 180
 ```
@@ -31,9 +31,9 @@ Use the wrapper for a Windows one-command replay:
 
 ```powershell
 .\test_harness\scripts\run_interface_distillation_windows.ps1 `
-  -SdkDir C:\Develop\SGGK_Agent\SGK1.4.10\SGGK `
-  -AbcFetchRoot C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
-  -SourceRoot C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  -SdkDir $env:SGGK_SDK_DIR `
+  -AbcFetchRoot $env:SGGK_DATA_ROOT `
+  -SourceRoot $env:SGGK_SOURCE_ROOT `
   -SeedExampleModelOutputs `
   -Jobs 1 `
   -Timeout 180
@@ -41,19 +41,25 @@ Use the wrapper for a Windows one-command replay:
 
 Omit `--seed-example-model-outputs` / `-SeedExampleModelOutputs` when `--model-output-root` already contains real intranet model responses.
 
-When the intranet model is accessed through Qoder only, first build a paste-in prompt pack instead of trying to keep one long chat alive:
+Build a provider-neutral prompt pack and run it through the integrated Message API pipeline. Each task is isolated and must return one JSON object in `message.content`:
 
 ```powershell
-python .\test_harness\tools\build_qoder_prompt_pack.py `
-  --out .\artifacts\qoder_prompt_pack `
-  --model-output-root .\artifacts\model_outputs `
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack `
   --source-task-dir .\artifacts\interface_distillation_windows_full_40chunk_v2\source_attack_tasks `
   --source-task-limit 80 `
   --max-prompt-chars 60000 `
   --run-tag abc40_v2
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id abc40_v2 `
+  --execute `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-Paste `qoder_resume_prompt.md` plus exactly one task prompt into a fresh Qoder session. Save the JSON response to the prompt's `expected_output_path`, then run the fixed harness commands. Do not rely on Qoder's automatic context compression.
+Use `--profile siliconflow-test` only for the explicit external simulation lane. The pipeline stages candidates, applies fixed gates and bounded repair, accepts only passing JSON/provenance pairs, and optionally executes the SDK. The low-level gateway is transport debugging only.
 
 ## Evidence To Inspect
 
@@ -75,7 +81,7 @@ Treat command return code 0 as "workflow completed", not as "all test cases pass
 
 ## Small-Model Review Rules
 
-When reviewing generated model output:
+The automatic acceptance path enforces these rules:
 
 - `cluster_seed` is not directly runnable. Expand it with `build_source_guided_cluster.py`, then check and compile the emitted DSL.
 - `attack_dsl` must pass `compile_attack_dsl.py --check --report` before execution.
@@ -98,12 +104,12 @@ The source scan output is a prioritization aid. The small model must still read 
 
 ## ABC Boolean 100k Mass Recut Lane
 
-Use this after the `loaded_sgt` ABC recut form has been reviewed. The model or operator should not enumerate 100k cases by hand; it emits or confirms a `campaign_command`, then fixed code expands and runs the campaign:
+Use this after the `loaded_sgt` ABC recut form has passed fixed gates. The model must not enumerate 100k cases. It emits a typed `campaign_request`; fixed code validates the profile and bounded arguments, binds local runner/data/output paths, and resolves an argv list executed with `shell=False`:
 
 ```powershell
 python .\test_harness\tools\run_abc_boolean_mass_recut.py `
   --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --dataset C:\Develop\SGGK_Agent\artifacts\<imported-sgt-root> `
+  --dataset $env:SGGK_DATA_ROOT `
   --out .\artifacts\abc_boolean_mass_recut `
   --target-cases 100000 `
   --preset stress `

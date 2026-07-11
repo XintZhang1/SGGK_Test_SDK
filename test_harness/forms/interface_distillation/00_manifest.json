@@ -20,19 +20,19 @@
       "order": 2,
       "form": "02_step_import_abc_complex.json",
       "covers": ["step_import", "ABC STEP corpus"],
-      "expected_model_output": "flat_recipe or corpus command"
+      "expected_model_output": "flat_recipe or typed campaign_request"
     },
     {
       "order": 3,
       "form": "14_iges_import_abc_complex.json",
       "covers": ["iges_import", "ABC IGES corpus"],
-      "expected_model_output": "flat_recipe or corpus command"
+      "expected_model_output": "flat_recipe or typed campaign_request"
     },
     {
       "order": 4,
       "form": "03_loaded_sgt_abc_recut_boolean.json",
       "covers": ["api_boolean", "loaded_sgt", "ABC imported SGT recut"],
-      "expected_model_output": "attack_dsl or generated recut recipe command"
+      "expected_model_output": "attack_dsl or typed campaign_request"
     },
     {
       "order": 5,
@@ -98,7 +98,49 @@
       "order": 15,
       "form": "15_boolean_abc_mass_recut.json",
       "covers": ["api_boolean", "loaded_sgt", "ABC imported SGT recut", "100k mass campaign"],
-      "expected_model_output": "generated recut campaign command"
+      "expected_model_output": "typed campaign_request"
+    },
+    {
+      "order": 16,
+      "form": "16_boolean_split_plane.json",
+      "covers": ["api_boolean_split", "plane_sheet", "classified split body counts"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 17,
+      "form": "17_boolean_slice_primitives.json",
+      "covers": ["api_boolean_slice", "wire body results", "slice body counts"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 18,
+      "form": "18_offset2d_status_matrix.json",
+      "covers": ["api_offset2d", "line path", "typed Success status"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 19,
+      "form": "19_offset_body_analytic.json",
+      "covers": ["api_offset_body", "analytic properties", "coordinate extrema"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 20,
+      "form": "20_topology_section_spheres.json",
+      "covers": ["api_topology_section", "Edge and Vertex artifacts", "section counts"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 21,
+      "form": "21_offset2d_cannot_connect.json",
+      "covers": ["api_offset2d", "disconnected line path", "CanNotConnect status"],
+      "expected_model_output": "flat_recipe"
+    },
+    {
+      "order": 22,
+      "form": "22_offset2d_degenerate.json",
+      "covers": ["api_offset2d", "degenerate arc", "CrvDegenToPoint status"],
+      "expected_model_output": "flat_recipe"
     }
   ],
   "task_build_command": "python .\\test_harness\\tools\\build_api_test_task.py .\\test_harness\\forms\\interface_distillation\\<form>.json --out .\\artifacts\\interface_distillation_tasks\\<request_id>.json",

@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 import struct
-import sys
 import time
 from typing import Any
 

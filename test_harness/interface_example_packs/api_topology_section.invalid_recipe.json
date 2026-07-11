@@ -1,0 +1,13 @@
+{
+  "case_id": "api_topology_section_invalid",
+  "api": "api_topology_section",
+  "modeling_tol": 0.01,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_raduis": 10.0,
+  "tool_translate_x": 10.0,
+  "expectations": {
+    "topology_section_edegs": {"min": 1}
+  }
+}

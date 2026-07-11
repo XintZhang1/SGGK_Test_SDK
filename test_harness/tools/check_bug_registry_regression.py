@@ -10,6 +10,8 @@ from pathlib import Path
 import time
 from typing import Any
 
+from failure_predicate import signature_from_artifact, signatures_match
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -165,6 +167,7 @@ def classify_bug(bug: dict[str, Any], result: dict[str, Any] | None) -> dict[str
     expected_returncode = expected.get("returncode") if isinstance(expected.get("returncode"), int) else None
     expected_timeout = bool(expected.get("runner_timeout", False))
     expected_status = as_str(bug.get("replay_status"))
+    expected_signature = bug.get("expected_failure_signature") if isinstance(bug.get("expected_failure_signature"), dict) else {}
     topo_policy = as_str(bug.get("topo_track_policy")) or "diagnostic_when_modeling_fails"
     recipe = expected_recipe_path(bug)
     base = {
@@ -176,6 +179,7 @@ def classify_bug(bug: dict[str, Any], result: dict[str, Any] | None) -> dict[str
         "expected_runner_timeout": expected_timeout,
         "expected_validation_failures": expected_failures,
         "expected_roundtrip_failures": expected_roundtrip_failures,
+        "expected_failure_signature": expected_signature,
         "topo_track_policy": topo_policy,
         "topo_track_required": bool(bug.get("topo_track_required", False)),
         "recipe": recipe,
@@ -189,6 +193,12 @@ def classify_bug(bug: dict[str, Any], result: dict[str, Any] | None) -> dict[str
     actual_roundtrip_failures = roundtrip_failures_from_artifact(artifact_dir)
     actual_all_failures = actual_failures + actual_roundtrip_failures
     topo_diagnostic = topo_track_diagnostic_from_artifact(artifact_dir)
+    actual_signature = signature_from_artifact(
+        artifact_dir,
+        returncode=as_int(returncode, 1),
+        timed_out=bool(result.get("timed_out")),
+        stderr=as_str(result.get("stderr")),
+    )
     result_patch = {
         "result_case_id": result.get("case_id"),
         "artifact_dir": artifact_dir,
@@ -198,7 +208,33 @@ def classify_bug(bug: dict[str, Any], result: dict[str, Any] | None) -> dict[str
         "actual_roundtrip_failures": actual_roundtrip_failures,
         "topo_track_diagnostic": topo_diagnostic,
         "topo_track_note": topo_track_note(topo_policy, topo_diagnostic, actual_all_failures, returncode),
+        "actual_failure_signature": actual_signature,
     }
+    if expected_signature:
+        matched, match_reason = signatures_match(expected_signature, actual_signature)
+        if matched:
+            return {
+                **base,
+                **result_patch,
+                "status": "still_failing",
+                "reason": "same structured failure signature reproduced",
+                "signature_match_reason": match_reason,
+            }
+        if returncode == 0:
+            return {
+                **base,
+                **result_patch,
+                "status": "fixed_or_not_reproduced",
+                "reason": "runner returned success",
+                "signature_match_reason": match_reason,
+            }
+        return {
+            **base,
+            **result_patch,
+            "status": "changed_failure",
+            "reason": "structured failure signature changed",
+            "signature_match_reason": match_reason,
+        }
     if result.get("timed_out"):
         if expected_timeout:
             return {**base, **result_patch, "status": "still_failing", "reason": "expected runner timeout reproduced"}

@@ -1,5 +1,5 @@
 {
   "case_id": "check_sgt_sample",
   "api": "check_sgt",
-  "source_file": "artifacts/boolean_smoke/output/result_1.sgt"
+  "source_file": "test_harness/fixtures/bug_records/freecad_e67361f3777637c2/target.sgt"
 }

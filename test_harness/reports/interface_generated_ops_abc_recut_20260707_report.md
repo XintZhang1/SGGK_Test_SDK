@@ -195,7 +195,7 @@ This means the current reusable asset set now covers:
 
 ## Distillation Notes
 
-- For a Qoder/small-model workflow, keep generated DSL compact and rely on fixed
+- For a Message API small-model workflow, keep generated DSL compact and rely on fixed
   code for expansion. This run compiled 7 DSL files into 66 recipes without the
   model seeing the whole repository or artifacts.
 - For ABC recut, freeze path lists. The pure `check_sgt` lane must use an

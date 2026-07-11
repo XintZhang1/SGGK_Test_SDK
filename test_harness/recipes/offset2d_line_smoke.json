@@ -1,0 +1,17 @@
+{
+  "case_id": "offset2d_line_smoke",
+  "api": "api_offset2d",
+  "offset2d_distance": 10.0,
+  "offset2d_connect_type": "ByLineSeg",
+  "offset2d_path": [
+    {
+      "kind": "line",
+      "start": [0.0, 0.0],
+      "end": [100.0, 0.0]
+    }
+  ],
+  "expectations": {
+    "offset2d_status": "Success",
+    "offset2d_result_paths": {"min": 1}
+  }
+}

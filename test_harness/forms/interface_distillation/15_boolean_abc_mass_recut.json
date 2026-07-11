@@ -34,9 +34,10 @@
   "expected_behavior": "Candidate bugs exclude explicit unsupported/not-allowed kernel messages. Remaining failures must include a triage fingerprint, representative case, validation/status evidence, and ABC source path.",
   "case_count": 100,
   "run_profile": "corpus",
+  "campaign_profile": "abc_boolean_mass_recut",
   "input_assets": {
     "dataset_root": "artifacts/interface_distillation_windows_full_40chunk_v2/abc_sample_smoke/top_complex_import",
     "dataset_index": "artifacts/interface_distillation_windows_full_40chunk_v2/abc_sample_smoke/top_complex_import/corpus_summary.json"
   },
-  "notes": "Use run_abc_boolean_mass_recut.py with --target-cases 100000 --preset stress and a shard-count suitable for the machine. Start with one shard smoke, then fan out shards."
+  "notes": "Use the typed abc_boolean_mass_recut campaign profile. Start with one bounded shard, then fan out shards through fixed local orchestration."
 }

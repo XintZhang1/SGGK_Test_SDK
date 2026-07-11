@@ -17,7 +17,7 @@ Require JSON only, with one of these top-level `kind` values:
 - `attack_dsl`: reviewed or draft SGGK attack DSL.
 - `flat_recipe`: one or more direct runner recipes for supported non-DSL APIs.
 - `cluster_seed`: a compact seed for `build_source_guided_cluster.py`.
-- `campaign_command`: a fixed-code large campaign command, used when the model should not enumerate every generated case.
+- `campaign_request`: a fixed-profile large campaign request, used when the model should not enumerate every generated case.
 - `needs_harness_extension`: unsupported API/body builder with proposed runner fields and validation oracle.
 
 ## Required Fields
@@ -49,16 +49,21 @@ For `needs_harness_extension`, include:
 
 - `api`
 - `why_needed`
+- `extension_summary`
 - `proposed_recipe_fields`
 - `proposed_artifacts`
+- `validation_oracle`
 - `minimum_smoke_case`
+- `patch_plan` with schema, validator, normalizer, runner, and tests steps
 
-For `campaign_command`, include:
+For `campaign_request`, include:
 
-- `command`
-- `why_this_fixed_campaign_matches`
+- `profile_id`
+- bounded `args`
+- optional short `notes`
 - `expected_artifacts`
-- `unsupported_filter_policy`
+
+Executable names, commands, runner/data/output paths, cwd, environment, and shell mode are forbidden. Fixed code owns those bindings and resolves argv with `shell=False`.
 
 ## Post-Checks
 
@@ -68,6 +73,7 @@ Run these before trusting generated output:
 python .\test_harness\tools\compile_attack_dsl.py <dsl.json> --check --report <check.json>
 python .\test_harness\tools\compile_attack_dsl.py <dsl.json> --out <recipes-dir>
 python .\test_harness\tools\validate_recipe.py <recipes-dir>
+python .\test_harness\tools\validate_harness_extension.py <extension.json> --model-diagnostics <extension-diagnostics.json>
 python .\test_harness\tools\run_recipes.py --runner .\build\test_harness\Release\sggk_case_runner.exe --recipe <recipes-dir> --out <run-dir> --triage-out <triage-dir> --preview-out <preview-dir> --geometry-audit-out <audit-dir>
 ```
 

@@ -13,6 +13,7 @@ import subprocess
 import time
 from typing import Any
 
+from failure_predicate import build_failure_signature, signatures_match
 from validate_recipe import validate_recipe
 
 
@@ -54,6 +55,7 @@ class Predicate:
     error_code: int | None
     validation_failures: tuple[str, ...]
     topo_failures: tuple[str, ...]
+    failure_signature: dict[str, Any]
 
 
 @dataclass
@@ -70,6 +72,7 @@ class Observation:
     status: dict[str, Any]
     validation: dict[str, Any]
     topo_check: dict[str, Any]
+    run_state: dict[str, Any]
 
 
 @dataclass
@@ -210,6 +213,7 @@ def run_recipe(
         status=load_json_or_empty(artifact_path / "report" / "status.json"),
         validation=load_json_or_empty(artifact_path / "report" / "validation.json"),
         topo_check=load_json_or_empty(artifact_path / "report" / "topo_check.json"),
+        run_state=load_json_or_empty(artifact_path / "run_state.json"),
     )
 
 
@@ -267,35 +271,33 @@ def build_predicate(observation: Observation) -> Predicate:
         error_code=error_code,
         validation_failures=validation_failure_keys(observation.validation),
         topo_failures=topo_keys,
+        failure_signature=build_failure_signature(
+            returncode=observation.returncode,
+            timed_out=observation.timed_out,
+            stderr=observation.stderr,
+            status=observation.status,
+            validation=observation.validation,
+            topo_check=observation.topo_check,
+            run_state=observation.run_state,
+        ),
     )
 
 
 def observation_preserves(observation: Observation, predicate: Predicate, match_error_code: bool) -> bool:
-    if observation.returncode == 0:
-        return False
-    if "timed_out" in predicate.reasons and not observation.timed_out:
-        return False
-    if "api_failed" in predicate.reasons:
-        if observation.status.get("succeeded") is not False:
-            return False
-        if match_error_code and predicate.error_code is not None:
-            if observation.status.get("error_code") != predicate.error_code:
-                return False
-    if "validation_failed" in predicate.reasons:
-        if observation.validation.get("ok") is not False:
-            return False
-        baseline = set(predicate.validation_failures)
-        current = set(validation_failure_keys(observation.validation))
-        if baseline and not baseline.issubset(current):
-            return False
-    if "topology_invalid" in predicate.reasons:
-        current = set(topo_failure_keys(observation.topo_check))
-        if not current:
-            return False
-        baseline = set(predicate.topo_failures)
-        if baseline and not baseline.intersection(current):
-            return False
-    return True
+    expected = dict(predicate.failure_signature)
+    if not match_error_code and expected.get("kind") == "sdk_api_error":
+        expected["sdk_error_code"] = None
+    observed = build_failure_signature(
+        returncode=observation.returncode,
+        timed_out=observation.timed_out,
+        stderr=observation.stderr,
+        status=observation.status,
+        validation=observation.validation,
+        topo_check=observation.topo_check,
+        run_state=observation.run_state,
+    )
+    matched, _ = signatures_match(expected, observed)
+    return matched
 
 
 def is_number(value: Any) -> bool:
@@ -692,6 +694,7 @@ def observation_json(observation: Observation | None) -> dict[str, Any] | None:
         "status": observation.status,
         "validation": observation.validation,
         "topo_check": observation.topo_check,
+        "run_state": observation.run_state,
         "stderr": observation.stderr,
     }
 
@@ -823,6 +826,7 @@ def main() -> int:
             "validation_failures": list(predicate.validation_failures),
             "topo_failures": list(predicate.topo_failures),
             "match_error_code": args.match_error_code,
+            "failure_signature": predicate.failure_signature,
         },
         "baseline_observation": observation_json(baseline),
         "final_observation": observation_json(final_observation),
@@ -837,7 +841,8 @@ def main() -> int:
     print(f"report={out_root / 'reduction_report.md'}")
     print(f"reduced_recipe={reduced_path}")
     print(f"trials={trial_index} accepted={accepted_count} final_rc={final_observation.returncode}")
-    return 0 if final_observation.returncode != 0 else 2
+    final_preserved = observation_preserves(final_observation, predicate, args.match_error_code)
+    return 0 if final_preserved else 2
 
 
 if __name__ == "__main__":

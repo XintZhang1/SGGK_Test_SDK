@@ -810,7 +810,15 @@ def run_replay(
         "ok": record["ok"],
     }
     if isinstance(replay_summary, dict):
-        for key in ("total", "stable_failure", "flaky", "not_reproduced", "unavailable"):
+        for key in (
+            "total",
+            "stable_same_failure",
+            "flaky_same_failure",
+            "changed_failure",
+            "unverified_failure",
+            "not_reproduced",
+            "unavailable",
+        ):
             result[key] = replay_summary.get(key)
     return result
 
@@ -994,7 +1002,7 @@ def run_reductions(
         return {"skipped": True, "reason": "replay summary missing"}
     candidates: list[dict[str, Any]] = []
     for result in replay_summary.get("results", []):
-        if not isinstance(result, dict) or result.get("status") != "stable_failure":
+        if not isinstance(result, dict) or result.get("status") not in {"stable_same_failure", "stable_failure"}:
             continue
         seed = result.get("seed")
         if not isinstance(seed, dict):
@@ -1083,6 +1091,7 @@ def run_bundle_export(
     out_root: Path,
     aggregate: dict[str, Any] | None,
     replay: dict[str, Any] | None,
+    reductions: dict[str, Any] | None,
     lanes: list[dict[str, Any]],
     command_records: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -1107,6 +1116,8 @@ def run_bundle_export(
         "--out",
         str(bundle_out),
     ]
+    if isinstance(reductions, dict) and reductions.get("summary_path"):
+        cmd.extend(["--reductions", str(reductions["summary_path"])])
     for lane in lanes:
         preview_out = lane.get("preview_out") if isinstance(lane, dict) else ""
         if preview_out:
@@ -1937,7 +1948,15 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
         if replay.get("skipped"):
             lines.append(f"- Skipped: {replay.get('reason')}")
         else:
-            for key in ("total", "stable_failure", "flaky", "not_reproduced", "unavailable"):
+            for key in (
+                "total",
+                "stable_same_failure",
+                "flaky_same_failure",
+                "changed_failure",
+                "unverified_failure",
+                "not_reproduced",
+                "unavailable",
+            ):
                 if key in replay:
                     lines.append(f"- {key}: `{replay[key]}`")
             lines.append(f"- Report: `{replay.get('report_path', '')}`")
@@ -2247,7 +2266,7 @@ def main() -> int:
     aggregate = run_aggregate_triage(args, script_dir, out_root, lanes, command_records)
     replay = run_replay(args, script_dir, runner, out_root, aggregate, command_records)
     reductions = run_reductions(args, script_dir, runner, out_root, replay, command_records)
-    bundles = run_bundle_export(args, script_dir, out_root, aggregate, replay, lanes, command_records)
+    bundles = run_bundle_export(args, script_dir, out_root, aggregate, replay, reductions, lanes, command_records)
     bug_registry = run_bug_registry(args, script_dir, out_root, aggregate, replay, bundles, command_records)
     debug_handoff = run_debug_handoff(args, script_dir, out_root, aggregate, bug_registry, lanes, command_records)
     bug_record_drafts = run_bug_record_drafts(args, script_dir, out_root, aggregate, replay, bundles, debug_handoff, command_records)
@@ -2317,7 +2336,9 @@ def main() -> int:
         aggregate_failed = isinstance(aggregate, dict) and (
             int(aggregate.get("failed_cases") or 0) > 0 or int(aggregate.get("command_failures") or 0) > 0
         )
-        stable_replay = isinstance(replay, dict) and int(replay.get("stable_failure") or 0) > 0
+        stable_replay = isinstance(replay, dict) and int(
+            replay.get("stable_same_failure") or replay.get("stable_failure") or 0
+        ) > 0
         if aggregate_failed or stable_replay:
             return 2
     if isinstance(artifact_verification, dict) and not artifact_verification.get("skipped") and not artifact_verification.get("ok"):

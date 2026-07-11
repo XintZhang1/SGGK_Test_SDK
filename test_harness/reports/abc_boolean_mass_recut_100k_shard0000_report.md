@@ -9,7 +9,7 @@
 
 ## Scope
 
-This run exercises the new fixed-code `campaign_command` flow for the `iface_15_boolean_abc_mass_recut` form. The harness generated a 100k-scale ABC loaded-SGT boolean recut corpus, then executed shard `0/1000`.
+This run exercises the fixed-profile `campaign_request` flow for the `iface_15_boolean_abc_mass_recut` form. The harness generated a 100k-scale ABC loaded-SGT boolean recut corpus, then executed shard `0/1000`.
 
 - Preset: `stress`
 - Recipes per usable source: `75`

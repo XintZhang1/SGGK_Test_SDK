@@ -1,0 +1,29 @@
+{
+  "request_id": "iface_17_boolean_slice_primitives",
+  "owner": "kernel-dev",
+  "target_api": "api_boolean_slice",
+  "sdk_source_refs": [
+    "SGGK Boolean/API.h: api_boolean_slice"
+  ],
+  "test_goal": "Generate intersecting primitive slice recipes and verify the number and type of returned wire bodies.",
+  "risk_summary": "Slice output uses wire-body semantics that can be accidentally treated as solid boolean output, hiding missing or invalid section wires.",
+  "geometry": {
+    "family": "primitive",
+    "target_builder": "solid_cylinder",
+    "tool_builder": "solid_sphere or solid_cylinder",
+    "parameter_notes": "Use one clearly intersecting pair with an explicit wire-body count oracle."
+  },
+  "tolerance_focus": [
+    "interior_intersection"
+  ],
+  "oracles": [
+    "slice_body_counts",
+    "result_bodies",
+    "topocheck"
+  ],
+  "expected_behavior": "Intersecting inputs return the calibrated wire-body count.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return flat_recipe only; do not substitute api_boolean result-body semantics for slice wire counts."
+}

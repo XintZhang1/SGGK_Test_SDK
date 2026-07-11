@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from failure_predicate import build_failure_signature
+
 
 CASE_ID_RE = re.compile(r"^case_id=(?P<case_id>.+)$", re.MULTILINE)
 ARTIFACT_DIR_RE = re.compile(r"^artifact_dir=(?P<artifact_dir>.+)$", re.MULTILINE)
@@ -107,7 +109,9 @@ def iter_roots(inputs: list[str]) -> list[Path]:
 
 
 def is_case_dir(path: Path) -> bool:
-    return (path / "manifest.json").is_file() and (path / "report" / "status.json").is_file()
+    return (
+        (path / "manifest.json").is_file() and (path / "report" / "status.json").is_file()
+    ) or (path / "run_state.json").is_file()
 
 
 def iter_case_dirs(roots: list[Path]) -> list[Path]:
@@ -120,12 +124,13 @@ def iter_case_dirs(roots: list[Path]) -> list[Path]:
             root = root.parent
         if not root.is_dir():
             continue
-        for manifest in root.rglob("manifest.json"):
-            case_dir = manifest.parent
-            if "_recipes" in case_dir.parts:
-                continue
-            if is_case_dir(case_dir):
-                case_dirs.add(case_dir.resolve())
+        for marker_name in ("manifest.json", "run_state.json"):
+            for marker in root.rglob(marker_name):
+                case_dir = marker.parent
+                if "_recipes" in case_dir.parts:
+                    continue
+                if is_case_dir(case_dir):
+                    case_dirs.add(case_dir.resolve())
     return sorted(case_dirs, key=lambda item: str(item).lower())
 
 
@@ -634,6 +639,23 @@ def command_record_summary(record: Any) -> dict[str, Any]:
     }
 
 
+def semantic_status_succeeded(status: Any, validation: Any) -> bool:
+    """Recognize an explicitly matched typed SDK result enum."""
+
+    for payload in (status, validation):
+        if not isinstance(payload, dict):
+            continue
+        if (
+            isinstance(payload.get("status_semantics"), str)
+            and payload.get("expected_status_matched") is True
+            and payload.get("test_outcome_succeeded") is True
+            and isinstance(payload.get("expected_status"), str)
+            and isinstance(payload.get("actual_status"), str)
+        ):
+            return True
+    return False
+
+
 def build_failure_fingerprint(case: dict[str, Any]) -> dict[str, Any]:
     status = case.get("status") if isinstance(case.get("status"), dict) else {}
     topo_summary = (
@@ -648,6 +670,7 @@ def build_failure_fingerprint(case: dict[str, Any]) -> dict[str, Any]:
     )
     dsl = case.get("dsl") if isinstance(case.get("dsl"), dict) else {}
     runner = command_record_summary(case.get("corpus"))
+    semantic_success = case.get("status_semantic_success") is True
     components = {
         "api": as_str(case.get("api")),
         "reasons": case.get("reasons", []),
@@ -655,8 +678,8 @@ def build_failure_fingerprint(case: dict[str, Any]) -> dict[str, Any]:
             "returncode": runner.get("returncode"),
             "timed_out": runner.get("timed_out"),
         },
-        "error_code": as_int(status.get("error_code")),
-        "error_message": normalize_text(status.get("error_message")),
+        "error_code": 0 if semantic_success else as_int(status.get("error_code")),
+        "error_message": "" if semantic_success else normalize_text(status.get("error_message")),
         "topo_check": topo_check_signature(case.get("topo_check_failures", [])),
         "data_exchange": {
             "failed_item_count": as_int(data_exchange.get("failed_item_count")),
@@ -702,6 +725,8 @@ def classify_case(
     data_exchange = load_json(report_dir / "data_exchange.json")
     validation = load_json(report_dir / "validation.json")
     roundtrip = load_json(report_dir / "roundtrip_comparison.json")
+    run_state = load_json(case_dir / "run_state.json")
+    status_semantic_success = semantic_status_succeeded(status, validation)
 
     reasons: list[str] = []
     warnings: list[str] = []
@@ -713,9 +738,9 @@ def classify_case(
         reasons.append("invalid_status_json")
     else:
         succeeded = as_bool(status.get("succeeded"))
-        if succeeded is False:
+        if succeeded is False and not status_semantic_success:
             reasons.append("api_failed")
-        if as_int(status.get("error_code")) != 0:
+        if as_int(status.get("error_code")) != 0 and not status_semantic_success:
             reasons.append("api_error")
         if as_int(status.get("error_entity_count")) > 0:
             warnings.append("error_entities_present")
@@ -765,6 +790,11 @@ def classify_case(
             reasons.append("runner_timeout")
         if as_int(corpus_record.get("returncode")) != 0:
             reasons.append("runner_nonzero_exit")
+    elif isinstance(run_state, dict):
+        if run_state.get("timed_out"):
+            reasons.append("runner_timeout")
+        if as_int(run_state.get("returncode")) != 0:
+            reasons.append("runner_nonzero_exit")
 
     case_id = case_dir.name
     api = ""
@@ -775,6 +805,10 @@ def classify_case(
         api = as_str(manifest.get("api"))
         recipe_path = as_str(manifest.get("recipe_path"))
         dsl = manifest.get("dsl") if isinstance(manifest.get("dsl"), dict) else {}
+    elif isinstance(run_state, dict):
+        case_id = as_str(run_state.get("case_id")) or case_id
+        api = as_str(run_state.get("api"))
+        recipe_path = as_str(run_state.get("recipe_path"))
 
     localized = summarize_localized_topologies(topo_track, input_index, max_localized)
     contact_candidates = summarize_input_contact_candidates(input_index, max_contact_candidates)
@@ -784,6 +818,7 @@ def classify_case(
         "api": api,
         "recipe_path": recipe_path,
         "status": status,
+        "status_semantic_success": status_semantic_success,
         "reasons": sorted(set(reasons)),
         "warnings": sorted(set(warnings)),
         "failed": bool(reasons),
@@ -804,6 +839,19 @@ def classify_case(
     if isinstance(data_exchange, dict):
         result["data_exchange"] = data_exchange
     if result["failed"]:
+        runner_record = corpus_record if isinstance(corpus_record, dict) else (run_state if isinstance(run_state, dict) else {})
+        signature_status = dict(status) if isinstance(status, dict) else {}
+        if status_semantic_success:
+            signature_status.update({"succeeded": True, "error_code": 0, "error_message": ""})
+        result["failure_signature"] = build_failure_signature(
+            returncode=as_int(runner_record.get("returncode"), 2),
+            timed_out=bool(runner_record.get("timed_out")),
+            stderr=as_str(runner_record.get("stderr")),
+            status=signature_status,
+            validation=validation if isinstance(validation, dict) else {},
+            topo_check=topo_check if isinstance(topo_check, dict) else {},
+            run_state=run_state if isinstance(run_state, dict) else {},
+        )
         fingerprint = build_failure_fingerprint(result)
         result["fingerprint"] = fingerprint["id"]
         result["fingerprint_components"] = fingerprint["components"]
@@ -819,6 +867,57 @@ def command_failures(corpus_records: list[dict[str, Any]], case_dirs: set[str]) 
         if failed and not has_case_artifact:
             failures.append(record)
     return failures
+
+
+def classify_command_failure(record: dict[str, Any]) -> dict[str, Any]:
+    """Turn a pre-artifact runner failure into a normal triage case.
+
+    Crashes and timeouts can happen before manifest/status creation.  Keeping
+    them outside ``failures`` made the most valuable kernel failures impossible
+    to group, replay, or reduce.
+    """
+
+    recipe_path = as_str(record.get("recipe"))
+    recipe = load_json(Path(recipe_path)) if recipe_path else None
+    recipe_object = recipe if isinstance(recipe, dict) else {}
+    case_id = as_str(record.get("case_id")) or as_str(recipe_object.get("case_id"))
+    if not case_id and recipe_path:
+        case_id = Path(recipe_path).stem
+    returncode = as_int(record.get("returncode"), 1)
+    timed_out = bool(record.get("timed_out"))
+    reasons = ["runner_timeout" if timed_out else "runner_nonzero_exit", "missing_case_artifact"]
+    signature = build_failure_signature(
+        returncode=returncode,
+        timed_out=timed_out,
+        stderr=as_str(record.get("stderr")),
+    )
+    result: dict[str, Any] = {
+        "case_id": case_id or "pre_artifact_failure",
+        "case_dir": as_str(record.get("artifact_dir")),
+        "api": as_str(recipe_object.get("api")),
+        "recipe_path": recipe_path,
+        "status": {},
+        "reasons": sorted(reasons),
+        "warnings": [],
+        "failed": True,
+        "topo_check_failures": [],
+        "validation": {},
+        "validation_failures": [],
+        "validation_oracle_details": [],
+        "roundtrip_comparison": {},
+        "roundtrip_failures": [],
+        "roundtrip_oracle_details": [],
+        "topo_track_summary": {},
+        "localized_inputs": [],
+        "input_contact_candidates": [],
+        "dsl": {},
+        "corpus": record,
+        "failure_signature": signature,
+    }
+    fingerprint = build_failure_fingerprint(result)
+    result["fingerprint"] = fingerprint["id"]
+    result["fingerprint_components"] = fingerprint["components"]
+    return result
 
 
 def build_failure_groups(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -849,6 +948,7 @@ def build_failure_groups(failures: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "representative_validation_oracle_details": case.get("validation_oracle_details", []),
                 "representative_roundtrip_failures": case.get("roundtrip_failures", []),
                 "representative_roundtrip_oracle_details": case.get("roundtrip_oracle_details", []),
+                "representative_failure_signature": case.get("failure_signature", {}),
                 "fingerprint_components": case.get("fingerprint_components", {}),
             },
         )
@@ -910,6 +1010,7 @@ def build_regression_seeds(groups: list[dict[str, Any]]) -> list[dict[str, Any]]
             "validation_oracle_details": group.get("representative_validation_oracle_details", [])[:8],
             "roundtrip_failures": group.get("representative_roundtrip_failures", [])[:8],
             "roundtrip_oracle_details": group.get("representative_roundtrip_oracle_details", [])[:8],
+            "failure_signature": group.get("representative_failure_signature", {}),
             "notes": "Use recipe_paths when present. Use artifact input SGT files as load_sgt/check_sgt seeds when the original corpus or DSL context is unavailable.",
         }
         seed["artifact_inputs"] = {
@@ -1196,12 +1297,16 @@ def main() -> int:
     failures = [case for case in cases if case["failed"]]
     warning_cases = [case for case in cases if case["warnings"]]
     command_failure_records = command_failures(command_records_by_run, case_dir_keys)
+    pre_artifact_failures = [classify_command_failure(record) for record in command_failure_records]
+    failures.extend(pre_artifact_failures)
     failure_groups = build_failure_groups(failures)
     regression_seeds = build_regression_seeds(failure_groups)
 
     summary: dict[str, Any] = {
         "roots": [path_for_json(root) for root in roots],
-        "total_cases": len(cases),
+        "total_cases": len(cases) + len(pre_artifact_failures),
+        "artifact_cases": len(cases),
+        "pre_artifact_failure_cases": len(pre_artifact_failures),
         "passed_cases": sum(1 for case in cases if not case["failed"]),
         "failed_cases": len(failures),
         "failure_group_count": len(failure_groups),
@@ -1211,6 +1316,7 @@ def main() -> int:
         "failure_groups": failure_groups,
         "regression_seeds": regression_seeds,
         "command_failure_records": command_failure_records,
+        "pre_artifact_failures": pre_artifact_failures,
     }
     if args.include_passed:
         summary["cases"] = cases

@@ -27,5 +27,5 @@
   "input_assets": {
     "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json"
   },
-  "notes": "This form may produce corpus run commands rather than one flat recipe because step_import over ABC is dataset-driven."
+  "notes": "This form may produce a typed campaign_request rather than one flat recipe because step_import over ABC is dataset-driven; executable and path bindings remain in fixed code."
 }

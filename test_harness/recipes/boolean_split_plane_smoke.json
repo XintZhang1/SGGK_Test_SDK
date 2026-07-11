@@ -1,0 +1,27 @@
+{
+  "case_id": "boolean_split_plane_smoke",
+  "api": "api_boolean_split",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": true,
+  "non_destructive": true,
+  "split_target_add_face": true,
+  "split_strict_split": false,
+  "split_merge_imprint": false,
+  "target_kind": "solid_wedge",
+  "target_length": 100.0,
+  "target_width": 100.0,
+  "target_height": 100.0,
+  "tool_kind": "plane_sheet",
+  "tool_length": 600.0,
+  "tool_width": 600.0,
+  "tool_translate_z": 50.0,
+  "expectations": {
+    "result_bodies": {"min": 2},
+    "require_property_calculations": false,
+    "split_outer_bodies": {"min": 1},
+    "split_inner_bodies": {"min": 1},
+    "split_wire_bodies": {"min": 1},
+    "split_total_bodies": {"min": 2}
+  }
+}

@@ -309,14 +309,35 @@ When source inspection points to an unsupported operation, output:
 {
   "kind": "needs_harness_extension",
   "api": "api_offset_body",
-  "why": "Source branch depends on near-zero offset compared with Precision::MinLocalTol.",
-  "minimal_extension": "Add offset_body recipe with source_file or primitive body plus offset distance.",
-  "proposed_recipe": {
+  "why_needed": "Source branch depends on near-zero offset compared with Precision::MinLocalTol.",
+  "extension_summary": "Add offset_body recipe with source_file or primitive body plus offset distance.",
+  "proposed_recipe_fields": {
+    "source_body": "primitive or loaded_sgt body spec",
+    "offset": "number or numeric expression",
+    "modeling_tol": "positive number"
+  },
+  "proposed_artifacts": [
+    "recipe_summary.json",
+    "validation.json",
+    "triage_report.md"
+  ],
+  "validation_oracle": {
+    "require_topocheck": true,
+    "require_finite_properties": true
+  },
+  "minimum_smoke_case": {
     "case_id": "offset_near_min_local_tol_001",
     "api": "api_offset_body",
     "source_body": {"kind": "solid_cylinder", "radius": 100.0, "height": 100.0},
     "offset": 0.000025
-  }
+  },
+  "patch_plan": [
+    {"layer": "schema", "change": "Add offset recipe fields.", "files": []},
+    {"layer": "validator", "change": "Validate source and offset fields.", "files": []},
+    {"layer": "normalizer", "change": "Normalize safe aliases only.", "files": []},
+    {"layer": "runner", "change": "Add fixed runner route.", "files": []},
+    {"layer": "tests", "change": "Add smoke and negative validator cases.", "files": []}
+  ]
 }
 ```
 

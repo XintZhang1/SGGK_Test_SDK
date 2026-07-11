@@ -3,9 +3,13 @@
 #include <GeomBase/BndBox.h>
 #include <Foundation/SGGK_Version.h>
 #include <Foundation/init.h>
+#include <GeomAlgo/Offset2D/Offset2D.h>
 #include <GeomBase/BndBox2D.h>
 #include <GeomBase/Matrix4.h>
 #include <GeomBase/Point2D.h>
+#include <Geometry/2D/Circle2D.h>
+#include <Geometry/2D/Line2D.h>
+#include <Geometry/2D/TrimmedCurve2D.h>
 #include <Geometry/3D/Curve/BoundedCurve3D.h>
 #include <Geometry/3D/Curve/Circle3D.h>
 #include <Geometry/3D/Surface/BSplineSurface.h>
@@ -109,6 +113,41 @@ struct BooleanRecipe
         tool.width = 200.0;
         tool.height = 150.0;
     }
+};
+
+struct Offset2DSegmentSpec
+{
+    std::string kind = "line";
+    bool sense = true;
+    double x1 = 0.0;
+    double y1 = 0.0;
+    double x2 = 100.0;
+    double y2 = 0.0;
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double radius = 10.0;
+    double startAngle = 0.0;
+    double endAngle = sggk::PI2;
+    bool ccw = true;
+};
+
+struct Offset2DRecipe
+{
+    double distance = 1.0;
+    std::vector<double> distances;
+    std::vector<Offset2DSegmentSpec> path;
+    double distTol = sggk::Precision::DefModelingTol;
+    double angleTol = sggk::Toler::DefAngleTol();
+    std::string connectType = "ByLineSeg";
+    bool allowCrvDegenerated = true;
+    bool allowCrvReversed = true;
+    bool allowSelfIntersections = false;
+    std::string extendType = "NatruralExtend";
+    std::string expectedStatus = "Success";
+    bool resultPathCountMinSet = false;
+    int resultPathCountMin = 0;
+    bool resultPathCountMaxSet = false;
+    int resultPathCountMax = 0;
 };
 
 struct NumericExpectation
@@ -233,12 +272,45 @@ struct ValidationExpectations
     std::vector<PlaneExtremeExpectation> planeExtremeChecks;
 };
 
+struct CountExpectation
+{
+    bool minSet = false;
+    int min = 0;
+    bool maxSet = false;
+    int max = 0;
+};
+
+struct SplitRecipe
+{
+    bool targetAddFace = false;
+    bool strictSplit = false;
+    bool mergeImprint = false;
+    CountExpectation outerBodies;
+    CountExpectation innerBodies;
+    CountExpectation wireBodies;
+    CountExpectation totalBodies;
+};
+
+struct SliceRecipe
+{
+    CountExpectation resultBodies;
+    CountExpectation wireBodies;
+};
+
+struct TopologySectionRecipe
+{
+    CountExpectation edges;
+    CountExpectation vertices;
+    CountExpectation total;
+};
+
 struct CaseRecipe
 {
     std::string caseId = "boolean_smoke";
     std::string api = "api_boolean";
     std::string booleanType = "SUBTRACTION";
     double modelingTol = sggk::Precision::DefModelingTol;
+    double offsetDistance = 0.05;
     double maxModelSize = kDefaultMaxModelSize;
     bool checkValid = true;
     bool topoTrack = true;
@@ -246,6 +318,7 @@ struct CaseRecipe
 
     fs::path sourceFile;
     int sourceBodyIndex = 0;
+    BodySpec offsetSource;
     std::string stepAppProtocol = "AP203";
     bool stepSurfaceToBSpline = false;
     bool stepCurveToBSpline = false;
@@ -255,6 +328,10 @@ struct CaseRecipe
     double roundtripAbsTol = sggk::Precision::DefModelingTol;
     double roundtripRelTol = 1e-5;
     BooleanRecipe boolean;
+    SplitRecipe split;
+    SliceRecipe slice;
+    TopologySectionRecipe topologySection;
+    Offset2DRecipe offset2d;
     std::string dslSource;
     std::string dslCaseId;
     std::string dslVariant;
@@ -293,6 +370,31 @@ struct CliOptions
     fs::path recipePath;
     fs::path outRoot = "artifacts";
     std::string caseIdOverride;
+    int sdkThreads = 1;
+};
+
+class SggkSession
+{
+public:
+    explicit SggkSession(int threadCount)
+    {
+        sggk::init(nullptr, threadCount);
+        m_initialized = true;
+    }
+
+    SggkSession(const SggkSession&) = delete;
+    SggkSession& operator=(const SggkSession&) = delete;
+
+    ~SggkSession()
+    {
+        if (m_initialized)
+        {
+            sggk::fini();
+        }
+    }
+
+private:
+    bool m_initialized = false;
 };
 
 struct TopologyRef
@@ -889,6 +991,21 @@ std::array<double, 3> JsonPoint3Array(
         JsonNumber(value.arrayValue[0], symbols, label + ".0"),
         JsonNumber(value.arrayValue[1], symbols, label + ".1"),
         JsonNumber(value.arrayValue[2], symbols, label + ".2"),
+    };
+}
+
+std::array<double, 2> JsonPoint2Array(
+    const JsonValue& value,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!value.IsArray() || value.arrayValue.size() != 2)
+    {
+        throw std::runtime_error(label + " must be a two-number array");
+    }
+    return {
+        JsonNumber(value.arrayValue[0], symbols, label + ".0"),
+        JsonNumber(value.arrayValue[1], symbols, label + ".1"),
     };
 }
 
@@ -1677,6 +1794,189 @@ void ApplyValidationExpectations(
     }
 }
 
+void ApplyCountExpectation(
+    CountExpectation& expectation,
+    const JsonValue& value,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (value.IsObject())
+    {
+        if (const auto minValue = JsonFind(value, "min"))
+        {
+            expectation.minSet = true;
+            expectation.min = JsonInteger(*minValue, symbols, label + ".min");
+        }
+        if (const auto maxValue = JsonFind(value, "max"))
+        {
+            expectation.maxSet = true;
+            expectation.max = JsonInteger(*maxValue, symbols, label + ".max");
+        }
+    }
+    else
+    {
+        expectation.minSet = true;
+        expectation.maxSet = true;
+        expectation.min = JsonInteger(value, symbols, label);
+        expectation.max = expectation.min;
+    }
+    if (expectation.minSet && expectation.min < 0)
+    {
+        throw std::runtime_error(label + ".min must be >= 0");
+    }
+    if (expectation.maxSet && expectation.max < 0)
+    {
+        throw std::runtime_error(label + ".max must be >= 0");
+    }
+    if (expectation.minSet && expectation.maxSet && expectation.max < expectation.min)
+    {
+        throw std::runtime_error(label + ".max must be >= min");
+    }
+}
+
+void LoadSplitExpectations(
+    SplitRecipe& split,
+    const JsonValue& object,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!object.IsObject())
+    {
+        throw std::runtime_error(label + " must be an object");
+    }
+    const std::array<std::pair<const char*, CountExpectation*>, 8> fields = {{
+        {"split_outer_body_count", &split.outerBodies},
+        {"split_inner_body_count", &split.innerBodies},
+        {"split_wire_body_count", &split.wireBodies},
+        {"split_total_body_count", &split.totalBodies},
+        {"split_outer_bodies", &split.outerBodies},
+        {"split_inner_bodies", &split.innerBodies},
+        {"split_wire_bodies", &split.wireBodies},
+        {"split_total_bodies", &split.totalBodies},
+    }};
+    for (const auto& field : fields)
+    {
+        if (const auto value = JsonFind(object, field.first))
+        {
+            ApplyCountExpectation(*field.second, *value, symbols, label + "." + field.first);
+        }
+    }
+}
+
+void LoadSplitRecipe(CaseRecipe& recipe, const JsonValue& root)
+{
+    const std::map<std::string, double> symbols = {{"pi", sggk::PI}, {"tau", sggk::PI2}};
+    if (const auto field = JsonFind(root, "split_target_add_face"))
+    {
+        recipe.split.targetAddFace = JsonBool(*field, "split_target_add_face");
+    }
+    if (const auto field = JsonFind(root, "split_strict_split"))
+    {
+        recipe.split.strictSplit = JsonBool(*field, "split_strict_split");
+    }
+    if (const auto field = JsonFind(root, "split_merge_imprint"))
+    {
+        recipe.split.mergeImprint = JsonBool(*field, "split_merge_imprint");
+    }
+    LoadSplitExpectations(recipe.split, root, symbols, "recipe");
+    if (const auto expectations = JsonFind(root, "expectations"))
+    {
+        LoadSplitExpectations(recipe.split, *expectations, symbols, "recipe.expectations");
+    }
+    if (const auto expectations = JsonFind(root, "split_expectations"))
+    {
+        LoadSplitExpectations(recipe.split, *expectations, symbols, "recipe.split_expectations");
+    }
+}
+
+void LoadSliceExpectations(
+    SliceRecipe& slice,
+    const JsonValue& object,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!object.IsObject())
+    {
+        throw std::runtime_error(label + " must be an object");
+    }
+    const std::array<std::pair<const char*, CountExpectation*>, 4> fields = {{
+        {"slice_result_body_count", &slice.resultBodies},
+        {"slice_wire_body_count", &slice.wireBodies},
+        {"slice_result_bodies", &slice.resultBodies},
+        {"slice_wire_bodies", &slice.wireBodies},
+    }};
+    for (const auto& field : fields)
+    {
+        if (const auto value = JsonFind(object, field.first))
+        {
+            ApplyCountExpectation(*field.second, *value, symbols, label + "." + field.first);
+        }
+    }
+}
+
+void LoadSliceRecipe(CaseRecipe& recipe, const JsonValue& root)
+{
+    const std::map<std::string, double> symbols = {{"pi", sggk::PI}, {"tau", sggk::PI2}};
+    LoadSliceExpectations(recipe.slice, root, symbols, "recipe");
+    if (const auto expectations = JsonFind(root, "expectations"))
+    {
+        LoadSliceExpectations(recipe.slice, *expectations, symbols, "recipe.expectations");
+    }
+    if (const auto expectations = JsonFind(root, "slice_expectations"))
+    {
+        LoadSliceExpectations(recipe.slice, *expectations, symbols, "recipe.slice_expectations");
+    }
+}
+
+void LoadTopologySectionExpectations(
+    TopologySectionRecipe& section,
+    const JsonValue& object,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!object.IsObject())
+    {
+        throw std::runtime_error(label + " must be an object");
+    }
+    const std::array<std::pair<const char*, CountExpectation*>, 6> fields = {{
+        {"topology_section_edge_count", &section.edges},
+        {"topology_section_vertex_count", &section.vertices},
+        {"topology_section_total_count", &section.total},
+        {"topology_section_edges", &section.edges},
+        {"topology_section_vertices", &section.vertices},
+        {"topology_section_total", &section.total},
+    }};
+    for (const auto& field : fields)
+    {
+        if (const auto value = JsonFind(object, field.first))
+        {
+            ApplyCountExpectation(*field.second, *value, symbols, label + "." + field.first);
+        }
+    }
+}
+
+void LoadTopologySectionRecipe(CaseRecipe& recipe, const JsonValue& root)
+{
+    const std::map<std::string, double> symbols = {{"pi", sggk::PI}, {"tau", sggk::PI2}};
+    LoadTopologySectionExpectations(recipe.topologySection, root, symbols, "recipe");
+    if (const auto expectations = JsonFind(root, "expectations"))
+    {
+        LoadTopologySectionExpectations(
+            recipe.topologySection,
+            *expectations,
+            symbols,
+            "recipe.expectations");
+    }
+    if (const auto expectations = JsonFind(root, "topology_section_expectations"))
+    {
+        LoadTopologySectionExpectations(
+            recipe.topologySection,
+            *expectations,
+            symbols,
+            "recipe.topology_section_expectations");
+    }
+}
+
 bool FindString(const std::string& json, const std::string& key, std::string& value)
 {
     const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
@@ -1783,6 +2083,252 @@ void LoadBodySpec(const std::string& json, const JsonValue& root, const std::str
     LoadBodyOperations(root, prefix, spec);
 }
 
+void LoadOffset2DSegment(
+    Offset2DSegmentSpec& segment,
+    const JsonValue& value,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!value.IsObject())
+    {
+        throw std::runtime_error(label + " must be an object");
+    }
+    if (const auto field = JsonFind(value, "kind"))
+    {
+        segment.kind = JsonString(*field, label + ".kind");
+    }
+    if (const auto field = JsonFind(value, "sense"))
+    {
+        segment.sense = JsonBool(*field, label + ".sense");
+    }
+    if (const auto field = JsonFind(value, "start"))
+    {
+        const auto point = JsonPoint2Array(*field, symbols, label + ".start");
+        segment.x1 = point[0];
+        segment.y1 = point[1];
+    }
+    if (const auto field = JsonFind(value, "end"))
+    {
+        const auto point = JsonPoint2Array(*field, symbols, label + ".end");
+        segment.x2 = point[0];
+        segment.y2 = point[1];
+    }
+    if (const auto field = JsonFind(value, "center"))
+    {
+        const auto point = JsonPoint2Array(*field, symbols, label + ".center");
+        segment.centerX = point[0];
+        segment.centerY = point[1];
+    }
+    if (const auto field = JsonFind(value, "radius"))
+    {
+        segment.radius = JsonNumber(*field, symbols, label + ".radius");
+    }
+    if (const auto field = JsonFind(value, "start_angle"))
+    {
+        segment.startAngle = JsonNumber(*field, symbols, label + ".start_angle");
+    }
+    if (const auto field = JsonFind(value, "end_angle"))
+    {
+        segment.endAngle = JsonNumber(*field, symbols, label + ".end_angle");
+    }
+    if (const auto field = JsonFind(value, "ccw"))
+    {
+        segment.ccw = JsonBool(*field, label + ".ccw");
+    }
+    if (segment.kind != "line" && segment.kind != "arc")
+    {
+        throw std::runtime_error(label + ".kind must be line or arc");
+    }
+    if (segment.kind == "arc" && segment.radius <= 0.0)
+    {
+        throw std::runtime_error(label + ".radius must be > 0");
+    }
+    if (segment.kind == "line" && segment.x1 == segment.x2 && segment.y1 == segment.y2)
+    {
+        throw std::runtime_error(label + " line start and end must differ");
+    }
+}
+
+void LoadOffset2DExpectations(
+    Offset2DRecipe& offset,
+    const JsonValue& object,
+    const std::map<std::string, double>& symbols,
+    const std::string& label)
+{
+    if (!object.IsObject())
+    {
+        throw std::runtime_error(label + " must be an object");
+    }
+    if (const auto field = JsonFind(object, "offset2d_status"))
+    {
+        offset.expectedStatus = JsonString(*field, label + ".offset2d_status");
+    }
+    if (const auto field = JsonFind(object, "offset2d_result_path_count"))
+    {
+        offset.resultPathCountMinSet = true;
+        offset.resultPathCountMaxSet = true;
+        offset.resultPathCountMin = JsonInteger(*field, symbols, label + ".offset2d_result_path_count");
+        offset.resultPathCountMax = offset.resultPathCountMin;
+    }
+    if (const auto field = JsonFind(object, "offset2d_result_paths"))
+    {
+        if (!field->IsObject())
+        {
+            throw std::runtime_error(label + ".offset2d_result_paths must be an object");
+        }
+        if (const auto minValue = JsonFind(*field, "min"))
+        {
+            offset.resultPathCountMinSet = true;
+            offset.resultPathCountMin = JsonInteger(*minValue, symbols, label + ".offset2d_result_paths.min");
+        }
+        if (const auto maxValue = JsonFind(*field, "max"))
+        {
+            offset.resultPathCountMaxSet = true;
+            offset.resultPathCountMax = JsonInteger(*maxValue, symbols, label + ".offset2d_result_paths.max");
+        }
+    }
+    if (offset.resultPathCountMinSet && offset.resultPathCountMin < 0)
+    {
+        throw std::runtime_error(label + ".offset2d_result_paths.min must be >= 0");
+    }
+    if (offset.resultPathCountMaxSet && offset.resultPathCountMax < 0)
+    {
+        throw std::runtime_error(label + ".offset2d_result_paths.max must be >= 0");
+    }
+    if (offset.resultPathCountMinSet && offset.resultPathCountMaxSet &&
+        offset.resultPathCountMax < offset.resultPathCountMin)
+    {
+        throw std::runtime_error(label + ".offset2d_result_paths.max must be >= min");
+    }
+}
+
+void LoadOffset2DRecipe(CaseRecipe& recipe, const JsonValue& root)
+{
+    const std::map<std::string, double> symbols = {{"pi", sggk::PI}, {"tau", sggk::PI2}};
+    if (const auto field = JsonFind(root, "offset2d_distance"))
+    {
+        recipe.offset2d.distance = JsonNumber(*field, symbols, "offset2d_distance");
+    }
+    if (const auto field = JsonFind(root, "offset2d_distances"))
+    {
+        if (!field->IsArray())
+        {
+            throw std::runtime_error("offset2d_distances must be an array");
+        }
+        recipe.offset2d.distances.clear();
+        for (size_t i = 0; i < field->arrayValue.size(); ++i)
+        {
+            recipe.offset2d.distances.push_back(
+                JsonNumber(field->arrayValue[i], symbols, "offset2d_distances." + std::to_string(i)));
+        }
+    }
+    if (const auto field = JsonFind(root, "offset2d_dist_tol"))
+    {
+        recipe.offset2d.distTol = JsonNumber(*field, symbols, "offset2d_dist_tol");
+    }
+    if (const auto field = JsonFind(root, "offset2d_angle_tol"))
+    {
+        recipe.offset2d.angleTol = JsonNumber(*field, symbols, "offset2d_angle_tol");
+    }
+    if (const auto field = JsonFind(root, "offset2d_connect_type"))
+    {
+        recipe.offset2d.connectType = JsonString(*field, "offset2d_connect_type");
+    }
+    if (const auto field = JsonFind(root, "offset2d_allow_crv_degenerated"))
+    {
+        recipe.offset2d.allowCrvDegenerated = JsonBool(*field, "offset2d_allow_crv_degenerated");
+    }
+    if (const auto field = JsonFind(root, "offset2d_allow_crv_reversed"))
+    {
+        recipe.offset2d.allowCrvReversed = JsonBool(*field, "offset2d_allow_crv_reversed");
+    }
+    if (const auto field = JsonFind(root, "offset2d_allow_self_intersections"))
+    {
+        recipe.offset2d.allowSelfIntersections = JsonBool(*field, "offset2d_allow_self_intersections");
+    }
+    if (const auto field = JsonFind(root, "offset2d_extend_type"))
+    {
+        recipe.offset2d.extendType = JsonString(*field, "offset2d_extend_type");
+    }
+
+    const JsonValue* path = JsonFind(root, "offset2d_path");
+    if (!path)
+    {
+        path = JsonFind(root, "offset2d_segments");
+    }
+    if (path)
+    {
+        if (!path->IsArray() || path->arrayValue.empty())
+        {
+            throw std::runtime_error("offset2d_path must be a non-empty array");
+        }
+        recipe.offset2d.path.clear();
+        for (size_t i = 0; i < path->arrayValue.size(); ++i)
+        {
+            Offset2DSegmentSpec segment;
+            LoadOffset2DSegment(segment, path->arrayValue[i], symbols, "offset2d_path." + std::to_string(i));
+            recipe.offset2d.path.push_back(segment);
+        }
+    }
+    if (recipe.offset2d.path.empty())
+    {
+        throw std::runtime_error("api_offset2d requires offset2d_path");
+    }
+    if (!recipe.offset2d.distances.empty() && recipe.offset2d.distances.size() != recipe.offset2d.path.size())
+    {
+        throw std::runtime_error("offset2d_distances size must match offset2d_path size");
+    }
+    if (recipe.offset2d.distTol <= 0.0)
+    {
+        throw std::runtime_error("offset2d_dist_tol must be > 0");
+    }
+    if (recipe.offset2d.angleTol <= 0.0)
+    {
+        throw std::runtime_error("offset2d_angle_tol must be > 0");
+    }
+    LoadOffset2DExpectations(recipe.offset2d, root, symbols, "recipe");
+    if (const auto expectations = JsonFind(root, "expectations"))
+    {
+        LoadOffset2DExpectations(recipe.offset2d, *expectations, symbols, "recipe.expectations");
+    }
+    if (const auto expectations = JsonFind(root, "offset2d_expectations"))
+    {
+        LoadOffset2DExpectations(recipe.offset2d, *expectations, symbols, "recipe.offset2d_expectations");
+    }
+}
+
+bool IsSafeCaseId(const std::string& value)
+{
+    if (value.empty() || value.size() > 128 || !std::isalnum(static_cast<unsigned char>(value.front())))
+    {
+        return false;
+    }
+    return std::all_of(value.begin(), value.end(), [](const char ch) {
+        const auto uch = static_cast<unsigned char>(ch);
+        return std::isalnum(uch) || ch == '_' || ch == '-';
+    });
+}
+
+void RequireSafeCaseId(const std::string& value)
+{
+    if (!IsSafeCaseId(value))
+    {
+        throw std::runtime_error("case_id must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$");
+    }
+}
+
+fs::path CaseDirectory(const fs::path& outRoot, const std::string& caseId)
+{
+    RequireSafeCaseId(caseId);
+    const fs::path root = fs::absolute(outRoot).lexically_normal();
+    const fs::path candidate = (root / caseId).lexically_normal();
+    if (candidate.parent_path() != root)
+    {
+        throw std::runtime_error("case output escaped --out root");
+    }
+    return candidate;
+}
+
 CaseRecipe LoadRecipe(const fs::path& path)
 {
     CaseRecipe recipe;
@@ -1799,6 +2345,7 @@ CaseRecipe LoadRecipe(const fs::path& path)
         throw std::runtime_error("recipe root must be an object");
     }
     FindString(json, "case_id", recipe.caseId);
+    RequireSafeCaseId(recipe.caseId);
     FindString(json, "api", recipe.api);
     FindString(json, "hypothesis", recipe.hypothesis);
     FindString(json, "dsl_source", recipe.dslSource);
@@ -1810,8 +2357,13 @@ CaseRecipe LoadRecipe(const fs::path& path)
     FindString(json, "source_risk_id", recipe.sourceRiskId);
     FindString(json, "source_risk_family", recipe.sourceRiskFamily);
     FindString(json, "source_risk_categories", recipe.sourceRiskCategories);
-    FindString(json, "boolean_type", recipe.booleanType);
+    const bool booleanTypeProvided = FindString(json, "boolean_type", recipe.booleanType);
+    if (recipe.api == "api_boolean_slice" && !booleanTypeProvided)
+    {
+        recipe.booleanType = "UNION";
+    }
     FindDouble(json, "modeling_tol", recipe.modelingTol);
+    FindDouble(json, "offset_distance", recipe.offsetDistance);
     FindDouble(json, "max_model_size", recipe.maxModelSize);
     if (recipe.maxModelSize <= 0.0)
     {
@@ -1822,6 +2374,7 @@ CaseRecipe LoadRecipe(const fs::path& path)
     FindBool(json, "non_destructive", recipe.nonDestructive);
     LoadBodySpec(json, root, "target", recipe.boolean.target);
     LoadBodySpec(json, root, "tool", recipe.boolean.tool);
+    LoadBodySpec(json, root, "source", recipe.offsetSource);
     std::string sourceFile;
     if (FindString(json, "source_file", sourceFile))
     {
@@ -1829,6 +2382,11 @@ CaseRecipe LoadRecipe(const fs::path& path)
     }
     FindInt(json, "body_index", recipe.sourceBodyIndex);
     FindInt(json, "source_body_index", recipe.sourceBodyIndex);
+    if (!recipe.sourceFile.empty() && recipe.offsetSource.sourceFile.empty())
+    {
+        recipe.offsetSource.sourceFile = recipe.sourceFile;
+    }
+    recipe.offsetSource.bodyIndex = recipe.sourceBodyIndex;
     FindString(json, "step_app_protocol", recipe.stepAppProtocol);
     FindBool(json, "step_surface_to_bspline", recipe.stepSurfaceToBSpline);
     FindBool(json, "step_curve_to_bspline", recipe.stepCurveToBSpline);
@@ -1838,6 +2396,22 @@ CaseRecipe LoadRecipe(const fs::path& path)
     FindDouble(json, "roundtrip_abs_tol", recipe.roundtripAbsTol);
     FindDouble(json, "roundtrip_rel_tol", recipe.roundtripRelTol);
     ApplyValidationExpectations(recipe, root, {}, {}, "recipe");
+    if (recipe.api == "api_boolean_split")
+    {
+        LoadSplitRecipe(recipe, root);
+    }
+    else if (recipe.api == "api_boolean_slice")
+    {
+        LoadSliceRecipe(recipe, root);
+    }
+    else if (recipe.api == "api_offset2d")
+    {
+        LoadOffset2DRecipe(recipe, root);
+    }
+    else if (recipe.api == "api_topology_section")
+    {
+        LoadTopologySectionRecipe(recipe, root);
+    }
     return recipe;
 }
 
@@ -2805,10 +3379,28 @@ CliOptions ParseCli(int argc, char** argv)
         else if (arg == "--case-id")
         {
             opts.caseIdOverride = needValue(arg);
+            RequireSafeCaseId(opts.caseIdOverride);
+        }
+        else if (arg == "--sdk-threads")
+        {
+            const std::string raw = needValue(arg);
+            try
+            {
+                size_t consumed = 0;
+                opts.sdkThreads = std::stoi(raw, &consumed);
+                if (consumed != raw.size() || opts.sdkThreads < 1 || opts.sdkThreads > 64)
+                {
+                    throw std::runtime_error("range");
+                }
+            }
+            catch (const std::exception&)
+            {
+                throw std::runtime_error("--sdk-threads must be an integer in [1, 64]");
+            }
         }
         else if (arg == "--help" || arg == "-h")
         {
-            std::cout << "Usage: sggk_case_runner [--recipe file.json] [--out artifacts] [--case-id id]\n";
+            std::cout << "Usage: sggk_case_runner [--recipe file.json] [--out artifacts] [--case-id id] [--sdk-threads 1]\n";
             std::exit(0);
         }
         else
@@ -3541,6 +4133,27 @@ bool IsPrimitiveKind(const std::string& kind)
            kind == "solid_torus";
 }
 
+sggk::BodyPtr MakePlaneSheetBody(const BodySpec& spec, const std::string& role)
+{
+    RequirePositive(spec.length, role + "_length");
+    RequirePositive(spec.width, role + "_width");
+    auto plane = std::make_shared<sggk::Plane>(
+        sggk::Point3D(0.0, 0.0, 0.0),
+        sggk::Dir3D(0.0, 0.0, 1.0));
+    auto face = sggk::api_create_face(
+        plane,
+        sggk::UVRange(
+            sggk::Interval(-0.5 * spec.length, 0.5 * spec.length),
+            sggk::Interval(-0.5 * spec.width, 0.5 * spec.width)));
+    auto body = sggk::api_topo_to_body(face);
+    if (!body)
+    {
+        throw std::runtime_error(role + " plane_sheet failed to create body");
+    }
+    ApplyBodyTransform(spec, body);
+    return body;
+}
+
 std::vector<sggk::BodyPtr> LoadSgtBodiesFromFile(const fs::path& sourceFile, const std::string& role)
 {
     if (sourceFile.empty())
@@ -3977,6 +4590,10 @@ sggk::BodyPtr MakeBodyFromSpec(const BodySpec& spec, const std::string& role)
     {
         return MakeLoadedSgtBody(spec, role);
     }
+    if (spec.kind == "plane_sheet")
+    {
+        return MakePlaneSheetBody(spec, role);
+    }
     if (spec.kind == "extrude_rect")
     {
         return MakeExtrudedRectBody(spec, role);
@@ -4065,6 +4682,200 @@ std::string BodySummaryJson(const sggk::BodyPtr& body)
     return os.str();
 }
 
+std::string Offset2DStatusName(sggk::Offset2DStatus status)
+{
+    switch (status)
+    {
+    case sggk::Offset2DStatus::Success: return "Success";
+    case sggk::Offset2DStatus::EmptyPath: return "EmptyPath";
+    case sggk::Offset2DStatus::CanNotConnect: return "CanNotConnect";
+    case sggk::Offset2DStatus::CrvReversed: return "CrvReversed";
+    case sggk::Offset2DStatus::CrvDegenToPoint: return "CrvDegenToPoint";
+    case sggk::Offset2DStatus::UnexpectedFailure: return "UnexpectedFailure";
+    default: return "Unknown";
+    }
+}
+
+sggk::Offset2DConnType ParseOffset2DConnType(const std::string& value)
+{
+    if (value == "DoNotConnect")
+    {
+        return sggk::Offset2DConnType::DoNotConnect;
+    }
+    if (value == "ByLineSeg")
+    {
+        return sggk::Offset2DConnType::ByLineSeg;
+    }
+    if (value == "ByArc")
+    {
+        return sggk::Offset2DConnType::ByArc;
+    }
+    throw std::runtime_error("unsupported offset2d_connect_type: " + value);
+}
+
+sggk::Offset2DExtendType ParseOffset2DExtendType(const std::string& value)
+{
+    if (value == "TangentExtend")
+    {
+        return sggk::Offset2DExtendType::TangentExtend;
+    }
+    if (value == "NatruralExtend" || value == "NaturalExtend")
+    {
+        return sggk::Offset2DExtendType::NatruralExtend;
+    }
+    throw std::runtime_error("unsupported offset2d_extend_type: " + value);
+}
+
+sggk::Point2D PointOnCircle(const Offset2DSegmentSpec& segment, double angle)
+{
+    return sggk::Point2D(
+        segment.centerX + segment.radius * std::cos(angle),
+        segment.centerY + segment.radius * std::sin(angle));
+}
+
+sggk::CoBoundedCrv2D MakeOffset2DSegment(const Offset2DSegmentSpec& segment)
+{
+    sggk::BoundedCurve2DPtr curve;
+    if (segment.kind == "line")
+    {
+        curve = std::make_shared<sggk::TrimmedCurve2D>(
+            sggk::Point2D(segment.x1, segment.y1),
+            sggk::Point2D(segment.x2, segment.y2));
+    }
+    else if (segment.kind == "arc")
+    {
+        sggk::Ucs2D ucs(sggk::Point2D(segment.centerX, segment.centerY), sggk::Dir2D::UnitX);
+        auto circle = std::make_shared<sggk::Circle2D>(ucs, segment.radius, segment.ccw);
+        curve = std::make_shared<sggk::TrimmedCurve2D>(
+            circle,
+            PointOnCircle(segment, segment.startAngle),
+            PointOnCircle(segment, segment.endAngle),
+            sggk::Toler::Global());
+    }
+    else
+    {
+        throw std::runtime_error("unsupported offset2d segment kind: " + segment.kind);
+    }
+    return sggk::CoBoundedCrv2D(curve, segment.sense);
+}
+
+std::vector<sggk::CoBoundedCrv2D> MakeOffset2DPath(const Offset2DRecipe& recipe)
+{
+    std::vector<sggk::CoBoundedCrv2D> path;
+    path.reserve(recipe.path.size());
+    for (const auto& segment : recipe.path)
+    {
+        path.push_back(MakeOffset2DSegment(segment));
+    }
+    return path;
+}
+
+std::string Offset2DSegmentJson(const Offset2DSegmentSpec& segment)
+{
+    const sggk::Point2D start = segment.kind == "arc"
+        ? PointOnCircle(segment, segment.startAngle)
+        : sggk::Point2D(segment.x1, segment.y1);
+    const sggk::Point2D end = segment.kind == "arc"
+        ? PointOnCircle(segment, segment.endAngle)
+        : sggk::Point2D(segment.x2, segment.y2);
+    auto pointJson = [](const sggk::Point2D& point) {
+        std::ostringstream pointOs;
+        pointOs << "[" << std::setprecision(17) << point.X()
+                << "," << std::setprecision(17) << point.Y() << "]";
+        return pointOs.str();
+    };
+    std::ostringstream os;
+    os << "{"
+       << "\"kind\":\"" << EscapeJson(segment.kind) << "\""
+       << ",\"sense\":" << (segment.sense ? "true" : "false")
+       << ",\"start\":" << pointJson(start)
+       << ",\"end\":" << pointJson(end)
+       << ",\"center\":[" << std::setprecision(17) << segment.centerX << "," << segment.centerY << "]"
+       << ",\"radius\":" << std::setprecision(17) << segment.radius
+       << ",\"start_angle\":" << std::setprecision(17) << segment.startAngle
+       << ",\"end_angle\":" << std::setprecision(17) << segment.endAngle
+       << ",\"ccw\":" << (segment.ccw ? "true" : "false")
+       << "}";
+    return os.str();
+}
+
+std::string Offset2DRecipeJson(const Offset2DRecipe& recipe)
+{
+    std::ostringstream os;
+    os << "{"
+       << "\"distance\":" << std::setprecision(17) << recipe.distance
+       << ",\"distances\":[";
+    for (size_t i = 0; i < recipe.distances.size(); ++i)
+    {
+        if (i != 0)
+        {
+            os << ",";
+        }
+        os << std::setprecision(17) << recipe.distances[i];
+    }
+    os << "]"
+       << ",\"dist_tol\":" << std::setprecision(17) << recipe.distTol
+       << ",\"angle_tol\":" << std::setprecision(17) << recipe.angleTol
+       << ",\"connect_type\":\"" << EscapeJson(recipe.connectType) << "\""
+       << ",\"allow_crv_degenerated\":" << (recipe.allowCrvDegenerated ? "true" : "false")
+       << ",\"allow_crv_reversed\":" << (recipe.allowCrvReversed ? "true" : "false")
+       << ",\"allow_self_intersections\":" << (recipe.allowSelfIntersections ? "true" : "false")
+       << ",\"extend_type\":\"" << EscapeJson(recipe.extendType) << "\""
+       << ",\"expected_status\":\"" << EscapeJson(recipe.expectedStatus) << "\""
+       << ",\"result_path_count_min_set\":" << (recipe.resultPathCountMinSet ? "true" : "false")
+       << ",\"result_path_count_min\":" << recipe.resultPathCountMin
+       << ",\"result_path_count_max_set\":" << (recipe.resultPathCountMaxSet ? "true" : "false")
+       << ",\"result_path_count_max\":" << recipe.resultPathCountMax
+       << ",\"path\":[";
+    for (size_t i = 0; i < recipe.path.size(); ++i)
+    {
+        if (i != 0)
+        {
+            os << ",";
+        }
+        os << Offset2DSegmentJson(recipe.path[i]);
+    }
+    os << "]}";
+    return os.str();
+}
+
+std::string CountExpectationJson(const CountExpectation& expectation)
+{
+    std::ostringstream os;
+    os << "{"
+       << "\"min_set\":" << (expectation.minSet ? "true" : "false")
+       << ",\"min\":" << expectation.min
+       << ",\"max_set\":" << (expectation.maxSet ? "true" : "false")
+       << ",\"max\":" << expectation.max
+       << "}";
+    return os.str();
+}
+
+std::string SplitRecipeJson(const SplitRecipe& recipe)
+{
+    std::ostringstream os;
+    os << "{"
+       << "\"target_add_face\":" << (recipe.targetAddFace ? "true" : "false")
+       << ",\"strict_split\":" << (recipe.strictSplit ? "true" : "false")
+       << ",\"merge_imprint\":" << (recipe.mergeImprint ? "true" : "false")
+       << ",\"outer_bodies\":" << CountExpectationJson(recipe.outerBodies)
+       << ",\"inner_bodies\":" << CountExpectationJson(recipe.innerBodies)
+       << ",\"wire_bodies\":" << CountExpectationJson(recipe.wireBodies)
+       << ",\"total_bodies\":" << CountExpectationJson(recipe.totalBodies)
+       << "}";
+    return os.str();
+}
+
+std::string SliceRecipeJson(const SliceRecipe& recipe)
+{
+    std::ostringstream os;
+    os << "{"
+       << "\"result_bodies\":" << CountExpectationJson(recipe.resultBodies)
+       << ",\"wire_bodies\":" << CountExpectationJson(recipe.wireBodies)
+       << "}";
+    return os.str();
+}
+
 std::string DslProvenanceJson(const CaseRecipe& recipe, int indent = 4)
 {
     const std::string pad(indent, ' ');
@@ -4097,6 +4908,7 @@ void WriteManifest(const CaseRecipe& recipe, const CliOptions& cli, const fs::pa
        << "  \"options\": {\n"
        << "    \"boolean_type\": \"" << EscapeJson(recipe.booleanType) << "\",\n"
        << "    \"modeling_tol\": " << std::setprecision(17) << recipe.modelingTol << ",\n"
+       << "    \"offset_distance\": " << std::setprecision(17) << recipe.offsetDistance << ",\n"
        << "    \"max_model_size\": " << std::setprecision(17) << recipe.maxModelSize << ",\n"
        << "    \"check_valid\": " << (recipe.checkValid ? "true" : "false") << ",\n"
        << "    \"topo_track\": " << (recipe.topoTrack ? "true" : "false") << ",\n"
@@ -4112,9 +4924,13 @@ void WriteManifest(const CaseRecipe& recipe, const CliOptions& cli, const fs::pa
        << "    \"roundtrip_rel_tol\": " << std::setprecision(17) << recipe.roundtripRelTol << "\n"
        << "  },\n"
        << "  \"expectations\": " << ValidationExpectationsJson(recipe.expectations) << ",\n"
+       << "  \"split\": " << SplitRecipeJson(recipe.split) << ",\n"
+       << "  \"slice\": " << SliceRecipeJson(recipe.slice) << ",\n"
+       << "  \"offset2d\": " << Offset2DRecipeJson(recipe.offset2d) << ",\n"
        << "  \"inputs\": {\n"
        << "    \"target\": " << BodySpecJson(recipe.boolean.target) << ",\n"
-       << "    \"tool\": " << BodySpecJson(recipe.boolean.tool);
+       << "    \"tool\": " << BodySpecJson(recipe.boolean.tool) << ",\n"
+       << "    \"source\": " << BodySpecJson(recipe.offsetSource);
     if (!recipe.sourceFile.empty())
     {
         os << ",\n    \"source_file\": \"" << EscapeJson(recipe.sourceFile.string()) << "\",\n"
@@ -4281,6 +5097,280 @@ void WriteStatus(const sggk::ModelingRetPtr& ret, const fs::path& caseDir)
         status.ErrorEntities().size(),
         ret->ResultBodies().size(),
         caseDir);
+}
+
+std::string Point2DValueJson(const sggk::Point2D& point)
+{
+    std::ostringstream os;
+    os << "[" << std::setprecision(17) << point.X()
+       << "," << std::setprecision(17) << point.Y() << "]";
+    return os.str();
+}
+
+std::string Offset2DPathSegmentJson(const sggk::CoBoundedCrv2D& segment, size_t index)
+{
+    std::ostringstream os;
+    os << "{"
+       << "\"index\":" << index
+       << ",\"sense\":" << (segment.Sense() ? "true" : "false");
+    try
+    {
+        os << ",\"start\":" << Point2DValueJson(segment.CalcStart())
+           << ",\"end\":" << Point2DValueJson(segment.CalcEnd());
+    }
+    catch (const std::exception& ex)
+    {
+        os << ",\"point_error\":\"" << EscapeJson(ex.what()) << "\"";
+    }
+    catch (...)
+    {
+        os << ",\"point_error\":\"unknown\"";
+    }
+    if (segment.BoundedCurve())
+    {
+        os << ",\"curve_type\":" << static_cast<int>(segment.BoundedCurve()->CurveType());
+    }
+    os << "}";
+    return os.str();
+}
+
+std::string Offset2DIndexMapJson(const std::vector<std::vector<sggk::Integer>>& indexMap)
+{
+    std::ostringstream os;
+    os << "[";
+    for (size_t i = 0; i < indexMap.size(); ++i)
+    {
+        if (i != 0)
+        {
+            os << ",";
+        }
+        os << "[";
+        for (size_t j = 0; j < indexMap[i].size(); ++j)
+        {
+            if (j != 0)
+            {
+                os << ",";
+            }
+            os << indexMap[i][j];
+        }
+        os << "]";
+    }
+    os << "]";
+    return os.str();
+}
+
+void WriteOffset2DResult(const sggk::Offset2DResult& result, const fs::path& caseDir)
+{
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"status\": \"" << Offset2DStatusName(result.status) << "\",\n"
+       << "  \"status_code\": " << static_cast<unsigned int>(result.status) << ",\n"
+       << "  \"result_path_count\": " << result.resultPaths.size() << ",\n"
+       << "  \"paths\": [";
+    for (size_t i = 0; i < result.resultPaths.size(); ++i)
+    {
+        if (i != 0)
+        {
+            os << ",";
+        }
+        os << "\n    {\"index\":" << i
+           << ",\"segment_count\":" << result.resultPaths[i].size()
+           << ",\"segments\":[";
+        for (size_t j = 0; j < result.resultPaths[i].size(); ++j)
+        {
+            if (j != 0)
+            {
+                os << ",";
+            }
+            os << Offset2DPathSegmentJson(result.resultPaths[i][j], j);
+        }
+        os << "]}";
+    }
+    os << "\n  ],\n"
+       << "  \"index_map\": " << Offset2DIndexMapJson(result.indexMap) << "\n"
+       << "}\n";
+    WriteTextFile(caseDir / "report" / "offset2d_result.json", os.str());
+}
+
+void WriteOffset2DStatus(
+    const CaseRecipe& recipe,
+    const sggk::Offset2DResult& result,
+    const fs::path& caseDir)
+{
+    const std::string actualStatus = Offset2DStatusName(result.status);
+    const bool apiSucceeded = result.status == sggk::Offset2DStatus::Success;
+    const bool expectedStatusMatched = actualStatus == recipe.offset2d.expectedStatus;
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"succeeded\": " << (apiSucceeded ? "true" : "false") << ",\n"
+       << "  \"error_code\": " << static_cast<unsigned int>(result.status) << ",\n"
+       << "  \"error_message\": \"" << EscapeJson(actualStatus) << "\",\n"
+       << "  \"error_entity_count\": 0,\n"
+       << "  \"result_body_count\": 0,\n"
+       << "  \"result_topology_count\": " << result.resultPaths.size() << ",\n"
+       << "  \"status_semantics\": \"offset2d_status_enum\",\n"
+       << "  \"expected_status\": \"" << EscapeJson(recipe.offset2d.expectedStatus) << "\",\n"
+       << "  \"actual_status\": \"" << EscapeJson(actualStatus) << "\",\n"
+       << "  \"expected_status_matched\": " << (expectedStatusMatched ? "true" : "false") << ",\n"
+       << "  \"test_outcome_succeeded\": " << (expectedStatusMatched ? "true" : "false") << "\n"
+       << "}\n";
+    WriteTextFile(caseDir / "report" / "status.json", os.str());
+}
+
+bool WriteOffset2DValidation(
+    const CaseRecipe& recipe,
+    const sggk::Offset2DResult& result,
+    const fs::path& caseDir)
+{
+    std::vector<std::string> failures;
+    const auto& expected = recipe.offset2d;
+    const std::string actualStatus = Offset2DStatusName(result.status);
+    if (actualStatus != expected.expectedStatus)
+    {
+        failures.push_back("offset2d_status_mismatch actual=" + actualStatus + " expected=" + expected.expectedStatus);
+    }
+    const int pathCount = static_cast<int>(result.resultPaths.size());
+    if (expected.resultPathCountMinSet && pathCount < expected.resultPathCountMin)
+    {
+        failures.push_back("offset2d_result_path_count_below_min actual=" + std::to_string(pathCount) +
+            " min=" + std::to_string(expected.resultPathCountMin));
+    }
+    if (expected.resultPathCountMaxSet && pathCount > expected.resultPathCountMax)
+    {
+        failures.push_back("offset2d_result_path_count_above_max actual=" + std::to_string(pathCount) +
+            " max=" + std::to_string(expected.resultPathCountMax));
+    }
+
+    std::ostringstream os;
+    os << "{\n"
+       << "  \"ok\": " << (failures.empty() ? "true" : "false") << ",\n"
+       << "  \"status_semantics\": \"offset2d_status_enum\",\n"
+       << "  \"expected_status\": \"" << EscapeJson(expected.expectedStatus) << "\",\n"
+       << "  \"actual_status\": \"" << EscapeJson(actualStatus) << "\",\n"
+       << "  \"expected_status_matched\": " << (actualStatus == expected.expectedStatus ? "true" : "false") << ",\n"
+       << "  \"test_outcome_succeeded\": " << (failures.empty() ? "true" : "false") << ",\n"
+       << "  \"offset2d_expected_status\": \"" << EscapeJson(expected.expectedStatus) << "\",\n"
+       << "  \"offset2d_actual_status\": \"" << EscapeJson(actualStatus) << "\",\n"
+       << "  \"offset2d_result_path_count\": " << pathCount << ",\n"
+       << "  \"offset2d_expectations\": " << Offset2DRecipeJson(expected) << ",\n"
+       << "  \"failures\": " << StringArrayJson(failures) << "\n"
+       << "}\n";
+    WriteTextFile(caseDir / "report" / "validation.json", os.str());
+    return failures.empty();
+}
+
+template <typename BodyRange>
+void AppendBodies(std::vector<sggk::BodyPtr>& output, const BodyRange& bodies)
+{
+    for (const auto& body : bodies)
+    {
+        if (body)
+        {
+            output.push_back(body);
+        }
+    }
+}
+
+bool AddCountExpectationFailures(
+    const std::string& label,
+    int actual,
+    const CountExpectation& expectation,
+    std::vector<std::string>& failures)
+{
+    bool ok = true;
+    if (expectation.minSet && actual < expectation.min)
+    {
+        failures.push_back(label + "_below_min actual=" + std::to_string(actual) +
+            " min=" + std::to_string(expectation.min));
+        ok = false;
+    }
+    if (expectation.maxSet && actual > expectation.max)
+    {
+        failures.push_back(label + "_above_max actual=" + std::to_string(actual) +
+            " max=" + std::to_string(expectation.max));
+        ok = false;
+    }
+    return ok;
+}
+
+std::string CountCheckJson(
+    const std::string& label,
+    int actual,
+    const CountExpectation& expectation,
+    std::vector<std::string>& failures)
+{
+    const bool ok = AddCountExpectationFailures(label, actual, expectation, failures);
+    std::ostringstream os;
+    os << "{"
+       << "\"actual\":" << actual
+       << ",\"expectation\":" << CountExpectationJson(expectation)
+       << ",\"ok\":" << (ok ? "true" : "false")
+       << "}";
+    return os.str();
+}
+
+std::string SplitResultJson(
+    const SplitRecipe& recipe,
+    const sggk::BodyList& outerBodies,
+    const sggk::BodyList& innerBodies,
+    const sggk::BodyList& wireBodies,
+    std::vector<std::string>& failures)
+{
+    const int outerCount = static_cast<int>(outerBodies.size());
+    const int innerCount = static_cast<int>(innerBodies.size());
+    const int wireCount = static_cast<int>(wireBodies.size());
+    const int totalCount = outerCount + innerCount + wireCount;
+    std::ostringstream os;
+    os << "{"
+       << "\"outer_body_count\":" << outerCount
+       << ",\"inner_body_count\":" << innerCount
+       << ",\"wire_body_count\":" << wireCount
+       << ",\"total_body_count\":" << totalCount
+       << ",\"checks\":{"
+       << "\"outer_bodies\":" << CountCheckJson("split_outer_bodies", outerCount, recipe.outerBodies, failures)
+       << ",\"inner_bodies\":" << CountCheckJson("split_inner_bodies", innerCount, recipe.innerBodies, failures)
+       << ",\"wire_bodies\":" << CountCheckJson("split_wire_bodies", wireCount, recipe.wireBodies, failures)
+       << ",\"total_bodies\":" << CountCheckJson("split_total_bodies", totalCount, recipe.totalBodies, failures)
+       << "}}";
+    return os.str();
+}
+
+std::string SliceResultJson(
+    const SliceRecipe& recipe,
+    const std::vector<sggk::BodyPtr>& resultBodies,
+    std::vector<std::string>& failures)
+{
+    const int resultCount = static_cast<int>(resultBodies.size());
+    const int wireCount = resultCount;
+    std::ostringstream os;
+    os << "{"
+       << "\"result_body_count\":" << resultCount
+       << ",\"wire_body_count\":" << wireCount
+       << ",\"checks\":{"
+       << "\"result_bodies\":" << CountCheckJson("slice_result_bodies", resultCount, recipe.resultBodies, failures)
+       << ",\"wire_bodies\":" << CountCheckJson("slice_wire_bodies", wireCount, recipe.wireBodies, failures)
+       << "}}";
+    return os.str();
+}
+
+std::string TopologySectionResultJson(
+    const TopologySectionRecipe& recipe,
+    int edgeCount,
+    int vertexCount,
+    std::vector<std::string>& failures)
+{
+    const int totalCount = edgeCount + vertexCount;
+    std::ostringstream os;
+    os << "{"
+       << "\"edge_count\":" << edgeCount
+       << ",\"vertex_count\":" << vertexCount
+       << ",\"total_count\":" << totalCount
+       << ",\"checks\":{"
+       << "\"edges\":" << CountCheckJson("topology_section_edges", edgeCount, recipe.edges, failures)
+       << ",\"vertices\":" << CountCheckJson("topology_section_vertices", vertexCount, recipe.vertices, failures)
+       << ",\"total\":" << CountCheckJson("topology_section_total", totalCount, recipe.total, failures)
+       << "}}";
+    return os.str();
 }
 
 bool WriteTopoCheck(const std::vector<sggk::BodyPtr>& bodies, const fs::path& caseDir)
@@ -6246,9 +7336,11 @@ bool WriteValidation(
     const std::vector<BodyProperties>& targetProperties,
     const std::vector<sggk::BodyPtr>& toolBodies,
     const std::vector<BodyProperties>& toolProperties,
-    const fs::path& caseDir)
+    const fs::path& caseDir,
+    const std::vector<std::string>& extraFailures = {},
+    const std::string& apiSpecificJson = "{}")
 {
-    std::vector<std::string> failures;
+    std::vector<std::string> failures = extraFailures;
     std::vector<std::string> skippedChecks;
     std::vector<std::string> debugGeometryRecords;
     const auto& expectations = recipe.expectations;
@@ -6383,6 +7475,7 @@ bool WriteValidation(
     os << "{\n"
        << "  \"ok\": " << (failures.empty() ? "true" : "false") << ",\n"
        << "  \"expectations\": " << ValidationExpectationsJson(expectations) << ",\n"
+       << "  \"api_specific\": " << apiSpecificJson << ",\n"
        << "  \"result_body_count\": " << resultCount << ",\n"
        << "  \"totals\": {\n"
        << "    \"length\": " << std::setprecision(17) << totalLength << ",\n"
@@ -7157,6 +8250,77 @@ int FinishRoundtripCapturedBodies(
     return (apiSucceeded && topoOk && validationOk && roundtripOk) ? 0 : 2;
 }
 
+int RunApiOffsetBodyCase(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    if (recipe.offsetSource.kind.empty())
+    {
+        throw std::runtime_error("api_offset_body requires source_kind");
+    }
+    if (std::fabs(recipe.offsetDistance) <= 0.0)
+    {
+        throw std::runtime_error("api_offset_body requires non-zero offset_distance");
+    }
+
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
+    fs::create_directories(caseDir / "input");
+    fs::create_directories(caseDir / "output");
+    fs::create_directories(caseDir / "report");
+    WriteManifest(recipe, cli, caseDir);
+    CopySourceFileIfPresent(recipe.offsetSource.sourceFile, caseDir);
+
+    auto source = MakeBodyFromSpec(recipe.offsetSource, "source");
+    SerializeTopology(source, caseDir / "input" / "source.sgt");
+    const auto sourceProperties = ComputeBodyProperties(
+        std::vector<sggk::BodyPtr>{source},
+        recipe.expectations.sampleInputProperties);
+    WriteInputProperties(sourceProperties, {}, caseDir);
+    WriteSourceProperties(sourceProperties, caseDir);
+
+    sggk::OffsetOpts opts;
+    opts.SetModelingTol(recipe.modelingTol);
+    opts.SetCheckValid(recipe.checkValid);
+    opts.SetToTopoTrack(recipe.topoTrack);
+    opts.SetNearTangentAngle(recipe.offsetSource.g1Tol);
+    opts.SetAllowPartialSuccess(recipe.offsetSource.allowPartialSuccess);
+
+    auto ret = sggk::api_offset_body(source, recipe.offsetDistance, opts);
+    if (!ret)
+    {
+        throw std::runtime_error("api_offset_body returned null");
+    }
+
+    WriteStatus(ret, caseDir);
+    CaptureErrorEntities(ret->Status(), caseDir);
+
+    const auto resultBodies = ToBodyVector(ret->ResultBodies());
+    SerializeResultBodies(resultBodies, caseDir);
+    const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
+    const auto resultProperties = ComputeBodyProperties(resultBodies);
+    WriteProperties(resultProperties, caseDir);
+    const bool validationOk = WriteValidation(
+        recipe,
+        resultBodies,
+        resultProperties,
+        std::vector<sggk::BodyPtr>{source},
+        sourceProperties,
+        {},
+        {},
+        caseDir);
+    const std::string topoTrackReason = recipe.topoTrack
+        ? "api_offset_body flat recipe topology tracking is captured as status/topocheck artifacts only"
+        : "topo_track disabled by recipe";
+    WriteEmptyTopoTrack(caseDir, topoTrackReason);
+    WriteSkippedTopoTrackSummary(recipe, caseDir, topoTrackReason);
+
+    std::cout << "case_id=" << recipe.caseId << "\n"
+              << "succeeded=" << (ret->Succeeded() ? "true" : "false") << "\n"
+              << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
+              << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
+              << "error_code=" << ret->Status().ErrorCode() << "\n"
+              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+    return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
+}
+
 int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
 {
     if (recipe.sourceFile.empty())
@@ -7164,7 +8328,7 @@ int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
         throw std::runtime_error("check_sgt requires source_file");
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7278,7 +8442,7 @@ int RunStepImportCase(const CliOptions& cli, const CaseRecipe& recipe)
         throw std::runtime_error("step_import requires source_file");
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7311,7 +8475,7 @@ int RunIgesImportCase(const CliOptions& cli, const CaseRecipe& recipe)
         throw std::runtime_error("iges_import requires source_file");
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7348,7 +8512,7 @@ int RunStepRoundtripCase(const CliOptions& cli, const CaseRecipe& recipe)
         throw std::runtime_error("step_roundtrip source_body_index must be >= 0");
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7434,7 +8598,7 @@ int RunIgesRoundtripCase(const CliOptions& cli, const CaseRecipe& recipe)
         throw std::runtime_error("iges_roundtrip source_body_index must be >= 0");
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7507,6 +8671,366 @@ int RunIgesRoundtripCase(const CliOptions& cli, const CaseRecipe& recipe)
     return FinishRoundtripCapturedBodies(recipe, resultBodies, sourceProperties, apiOk, caseDir);
 }
 
+fs::path PrepareCaseDirectory(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
+    fs::create_directories(caseDir / "input");
+    fs::create_directories(caseDir / "output");
+    fs::create_directories(caseDir / "report");
+    WriteManifest(recipe, cli, caseDir);
+    return caseDir;
+}
+
+struct BinaryBodyInputs
+{
+    sggk::BodyPtr target;
+    sggk::BodyPtr tool;
+    InputTopologyIndex topologyIndex;
+    std::vector<BodyProperties> targetProperties;
+    std::vector<BodyProperties> toolProperties;
+};
+
+BinaryBodyInputs PrepareBinaryBodyInputs(const CaseRecipe& recipe, const fs::path& caseDir)
+{
+    BinaryBodyInputs inputs;
+    inputs.target = MakeBodyFromSpec(recipe.boolean.target, "target");
+    inputs.tool = MakeBodyFromSpec(recipe.boolean.tool, "tool");
+    SerializeTopology(inputs.target, caseDir / "input" / "target.sgt");
+    SerializeTopology(inputs.tool, caseDir / "input" / "tool.sgt");
+    WriteInputProvenance(recipe, inputs.target, inputs.tool, caseDir);
+    inputs.topologyIndex = BuildInputTopologyIndex(recipe, inputs.target, inputs.tool);
+    WriteInputTopologyIndex(recipe, inputs.topologyIndex, caseDir);
+    const bool sampleInputProperties = recipe.expectations.sampleInputProperties;
+    inputs.targetProperties = ComputeBodyProperties(
+        std::vector<sggk::BodyPtr>{inputs.target},
+        sampleInputProperties);
+    inputs.toolProperties = ComputeBodyProperties(
+        std::vector<sggk::BodyPtr>{inputs.tool},
+        sampleInputProperties);
+    WriteInputProperties(inputs.targetProperties, inputs.toolProperties, caseDir);
+    return inputs;
+}
+
+template <typename ModelingResultPtr>
+void WriteBinaryTopoTracking(
+    const CaseRecipe& recipe,
+    const ModelingResultPtr& ret,
+    const BinaryBodyInputs& inputs,
+    const fs::path& caseDir)
+{
+    if (recipe.topoTrack && !recipe.dslSource.empty())
+    {
+        WriteTopoTrack(recipe, ret, inputs.topologyIndex, caseDir);
+        WriteTopoTrackSummary(recipe, ret, inputs.topologyIndex, caseDir);
+    }
+    else
+    {
+        const std::string reason = recipe.topoTrack
+            ? "SDK topology tracking capture skipped for flat recipes"
+            : "topo_track disabled by recipe";
+        WriteEmptyTopoTrack(caseDir, reason);
+        WriteSkippedTopoTrackSummary(recipe, caseDir, reason);
+    }
+}
+
+int RunOffset2DCase(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    const fs::path caseDir = PrepareCaseDirectory(cli, recipe);
+    WriteTextFile(caseDir / "input" / "offset2d_path.json", Offset2DRecipeJson(recipe.offset2d) + "\n");
+
+    auto path = MakeOffset2DPath(recipe.offset2d);
+    sggk::Offset2DOpts opts;
+    opts.tol = sggk::Toler(recipe.offset2d.distTol, recipe.offset2d.angleTol);
+    opts.connectType = ParseOffset2DConnType(recipe.offset2d.connectType);
+    opts.allowCrvDegenerated = recipe.offset2d.allowCrvDegenerated;
+    opts.allowCrvReversed = recipe.offset2d.allowCrvReversed;
+    opts.allowSelfIntersections = recipe.offset2d.allowSelfIntersections;
+    opts.extendType = ParseOffset2DExtendType(recipe.offset2d.extendType);
+
+    const sggk::Offset2DResult result = recipe.offset2d.distances.empty()
+        ? sggk::Offset2D::Perform(path, recipe.offset2d.distance, opts)
+        : sggk::Offset2D::Perform(path, recipe.offset2d.distances, opts);
+
+    const bool apiSucceeded = result.status == sggk::Offset2DStatus::Success;
+    WriteOffset2DStatus(recipe, result, caseDir);
+    WriteOffset2DResult(result, caseDir);
+    const bool validationOk = WriteOffset2DValidation(recipe, result, caseDir);
+
+    std::cout << "case_id=" << recipe.caseId << "\n"
+              << "succeeded=" << (apiSucceeded ? "true" : "false") << "\n"
+              << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
+              << "offset2d_status=" << Offset2DStatusName(result.status) << "\n"
+              << "result_path_count=" << result.resultPaths.size() << "\n"
+              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+    return validationOk ? 0 : 2;
+}
+
+int RunBooleanSplitCase(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    const fs::path caseDir = PrepareCaseDirectory(cli, recipe);
+    BinaryBodyInputs inputs = PrepareBinaryBodyInputs(recipe, caseDir);
+
+    sggk::SplitOpts opts;
+    opts.SetModelingTol(recipe.modelingTol);
+    opts.SetCheckValid(recipe.checkValid);
+    opts.SetToTopoTrack(recipe.topoTrack);
+    opts.SetNonDestructive(recipe.nonDestructive);
+    opts.SetTargetAddFace(recipe.split.targetAddFace);
+    opts.SetStrictSplit(recipe.split.strictSplit);
+    opts.SetMergeImprint(recipe.split.mergeImprint);
+
+    auto ret = sggk::api_boolean_split(inputs.target, inputs.tool, opts);
+    if (!ret)
+    {
+        throw std::runtime_error("api_boolean_split returned null");
+    }
+
+    const auto& outerBodies = ret->ResOuterBodies();
+    const auto& innerBodies = ret->ResInnerBodies();
+    const auto& wireBodies = ret->ResIntWires();
+    const size_t resultCount = outerBodies.size() + innerBodies.size() + wireBodies.size();
+    const auto& status = ret->Status();
+    WriteStatusGeneric(
+        ret->Succeeded(),
+        status.ErrorCode(),
+        status.ErrorMsg(),
+        status.ErrorEntities().size(),
+        resultCount,
+        caseDir);
+    CaptureErrorEntities(status, caseDir);
+
+    int index = 0;
+    for (const auto& body : outerBodies)
+    {
+        SerializeTopology(body, caseDir / "output" / ("outer_" + std::to_string(++index) + ".sgt"));
+    }
+    index = 0;
+    for (const auto& body : innerBodies)
+    {
+        SerializeTopology(body, caseDir / "output" / ("inner_" + std::to_string(++index) + ".sgt"));
+    }
+    index = 0;
+    for (const auto& body : wireBodies)
+    {
+        SerializeTopology(body, caseDir / "output" / ("wire_" + std::to_string(++index) + ".sgt"));
+    }
+
+    std::vector<sggk::BodyPtr> resultBodies;
+    AppendBodies(resultBodies, outerBodies);
+    AppendBodies(resultBodies, innerBodies);
+    AppendBodies(resultBodies, wireBodies);
+
+    std::vector<std::string> splitFailures;
+    const std::string splitJson = SplitResultJson(
+        recipe.split,
+        outerBodies,
+        innerBodies,
+        wireBodies,
+        splitFailures);
+    WriteTextFile(caseDir / "report" / "split_result.json", splitJson + "\n");
+
+    const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    const auto resultProperties = ComputeBodyProperties(resultBodies);
+    WriteProperties(resultProperties, caseDir);
+    const bool validationOk = WriteValidation(
+        recipe,
+        resultBodies,
+        resultProperties,
+        std::vector<sggk::BodyPtr>{inputs.target},
+        inputs.targetProperties,
+        std::vector<sggk::BodyPtr>{inputs.tool},
+        inputs.toolProperties,
+        caseDir,
+        splitFailures,
+        splitJson);
+
+    std::cout << "case_id=" << recipe.caseId << "\n"
+              << "succeeded=" << (ret->Succeeded() ? "true" : "false") << "\n"
+              << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
+              << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
+              << "outer_body_count=" << outerBodies.size() << "\n"
+              << "inner_body_count=" << innerBodies.size() << "\n"
+              << "wire_body_count=" << wireBodies.size() << "\n"
+              << "error_code=" << status.ErrorCode() << "\n"
+              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+    return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
+}
+
+int RunBooleanSliceCase(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    const fs::path caseDir = PrepareCaseDirectory(cli, recipe);
+    BinaryBodyInputs inputs = PrepareBinaryBodyInputs(recipe, caseDir);
+
+    sggk::BooleanOpts opts(ParseBooleanType(recipe.booleanType));
+    opts.SetModelingTol(recipe.modelingTol);
+    opts.SetCheckValid(recipe.checkValid);
+    opts.SetToTopoTrack(recipe.topoTrack);
+    opts.SetNonDestructive(recipe.nonDestructive);
+    opts.SetVertexTrack(true);
+
+    auto ret = sggk::api_boolean_slice(inputs.target, inputs.tool, opts);
+    if (!ret)
+    {
+        throw std::runtime_error("api_boolean_slice returned null");
+    }
+
+    WriteStatus(ret, caseDir);
+    CaptureErrorEntities(ret->Status(), caseDir);
+
+    std::vector<sggk::BodyPtr> resultBodies;
+    int index = 0;
+    for (const auto& body : ret->ResultBodies())
+    {
+        if (!body)
+        {
+            continue;
+        }
+        resultBodies.push_back(body);
+        SerializeTopology(body, caseDir / "output" / ("slice_" + std::to_string(++index) + ".sgt"));
+    }
+
+    std::vector<std::string> sliceFailures;
+    const std::string sliceJson = SliceResultJson(recipe.slice, resultBodies, sliceFailures);
+    WriteTextFile(caseDir / "report" / "slice_result.json", sliceJson + "\n");
+
+    const bool topoOk = WriteTopoCheck(resultBodies, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    const auto resultProperties = ComputeBodyProperties(resultBodies);
+    WriteProperties(resultProperties, caseDir);
+    const bool validationOk = WriteValidation(
+        recipe,
+        resultBodies,
+        resultProperties,
+        std::vector<sggk::BodyPtr>{inputs.target},
+        inputs.targetProperties,
+        std::vector<sggk::BodyPtr>{inputs.tool},
+        inputs.toolProperties,
+        caseDir,
+        sliceFailures,
+        sliceJson);
+
+    std::cout << "case_id=" << recipe.caseId << "\n"
+              << "succeeded=" << (ret->Succeeded() ? "true" : "false") << "\n"
+              << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
+              << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
+              << "slice_body_count=" << resultBodies.size() << "\n"
+              << "error_code=" << ret->Status().ErrorCode() << "\n"
+              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+    return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
+}
+
+int RunTopologySectionCase(const CliOptions& cli, const CaseRecipe& recipe)
+{
+    const fs::path caseDir = PrepareCaseDirectory(cli, recipe);
+    BinaryBodyInputs inputs = PrepareBinaryBodyInputs(recipe, caseDir);
+
+    sggk::BooleanOpts opts;
+    opts.SetModelingTol(recipe.modelingTol);
+    opts.SetCheckValid(recipe.checkValid);
+    opts.SetToTopoTrack(recipe.topoTrack);
+    opts.SetNonDestructive(recipe.nonDestructive);
+
+    const sggk::TopologyPtr targetTopology = inputs.target;
+    const sggk::TopologyPtr toolTopology = inputs.tool;
+    auto ret = sggk::api_topology_section(targetTopology, toolTopology, opts);
+    if (!ret)
+    {
+        throw std::runtime_error("api_topology_section returned null");
+    }
+
+    const auto& edges = ret->ResultEdges();
+    const auto& vertices = ret->ResultVertices();
+    const size_t edgeCount = static_cast<size_t>(std::count_if(edges.begin(), edges.end(), [](const auto& edge) {
+        return static_cast<bool>(edge);
+    }));
+    const size_t vertexCount = static_cast<size_t>(std::count_if(vertices.begin(), vertices.end(), [](const auto& vertex) {
+        return static_cast<bool>(vertex);
+    }));
+    const size_t resultCount = edgeCount + vertexCount;
+    const auto& status = ret->Status();
+    WriteStatusGeneric(
+        ret->Succeeded(),
+        status.ErrorCode(),
+        status.ErrorMsg(),
+        status.ErrorEntities().size(),
+        0,
+        resultCount,
+        caseDir);
+    CaptureErrorEntities(status, caseDir);
+
+    std::vector<sggk::TopologyPtr> resultTopologies;
+    int index = 0;
+    for (const auto& edge : edges)
+    {
+        if (!edge)
+        {
+            continue;
+        }
+        resultTopologies.push_back(edge);
+        SerializeTopology(edge, caseDir / "output" / ("section_edge_" + std::to_string(++index) + ".sgt"));
+    }
+    index = 0;
+    for (const auto& vertex : vertices)
+    {
+        if (!vertex)
+        {
+            continue;
+        }
+        resultTopologies.push_back(vertex);
+        SerializeTopology(vertex, caseDir / "output" / ("section_vertex_" + std::to_string(++index) + ".sgt"));
+    }
+
+    std::vector<std::string> sectionFailures;
+    const std::string sectionJson = TopologySectionResultJson(
+        recipe.topologySection,
+        static_cast<int>(edgeCount),
+        static_cast<int>(vertexCount),
+        sectionFailures);
+    WriteTextFile(caseDir / "report" / "topology_section_result.json", sectionJson + "\n");
+
+    const bool topoOk = WriteTopoCheckTopologies(resultTopologies, caseDir);
+    WriteBinaryTopoTracking(recipe, ret, inputs, caseDir);
+    const bool validationOk = sectionFailures.empty();
+    std::ostringstream validation;
+    validation << "{\n"
+               << "  \"ok\": " << (validationOk ? "true" : "false") << ",\n"
+               << "  \"oracle_kind\": \"topology_section_counts\",\n"
+               << "  \"topology_section\": " << sectionJson << ",\n"
+               << "  \"failures\": " << StringArrayJson(sectionFailures) << "\n"
+               << "}\n";
+    WriteTextFile(caseDir / "report" / "validation.json", validation.str());
+
+    std::cout << "case_id=" << recipe.caseId << "\n"
+              << "succeeded=" << (ret->Succeeded() ? "true" : "false") << "\n"
+              << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
+              << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
+              << "section_edge_count=" << edgeCount << "\n"
+              << "section_vertex_count=" << vertexCount << "\n"
+              << "error_code=" << status.ErrorCode() << "\n"
+              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+    return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
+}
+
+using CaseAdapter = int (*)(const CliOptions&, const CaseRecipe&);
+
+const std::map<std::string, CaseAdapter>& FlatRecipeAdapters()
+{
+    static const std::map<std::string, CaseAdapter> adapters = {
+        {"check_sgt", &RunSgtCase},
+        {"step_import", &RunStepImportCase},
+        {"iges_import", &RunIgesImportCase},
+        {"step_roundtrip", &RunStepRoundtripCase},
+        {"iges_roundtrip", &RunIgesRoundtripCase},
+        {"api_offset2d", &RunOffset2DCase},
+        {"api_boolean_split", &RunBooleanSplitCase},
+        {"api_boolean_slice", &RunBooleanSliceCase},
+        {"api_offset_body", &RunApiOffsetBodyCase},
+        {"api_topology_section", &RunTopologySectionCase},
+    };
+    return adapters;
+}
+
 int RunCase(const CliOptions& cli, CaseRecipe recipe)
 {
     if (!cli.caseIdOverride.empty())
@@ -7514,32 +9038,17 @@ int RunCase(const CliOptions& cli, CaseRecipe recipe)
         recipe.caseId = cli.caseIdOverride;
     }
 
-    if (recipe.api == "check_sgt")
+    const auto adapter = FlatRecipeAdapters().find(recipe.api);
+    if (adapter != FlatRecipeAdapters().end())
     {
-        return RunSgtCase(cli, recipe);
-    }
-    if (recipe.api == "step_import")
-    {
-        return RunStepImportCase(cli, recipe);
-    }
-    if (recipe.api == "iges_import")
-    {
-        return RunIgesImportCase(cli, recipe);
-    }
-    if (recipe.api == "step_roundtrip")
-    {
-        return RunStepRoundtripCase(cli, recipe);
-    }
-    if (recipe.api == "iges_roundtrip")
-    {
-        return RunIgesRoundtripCase(cli, recipe);
+        return adapter->second(cli, recipe);
     }
     if (recipe.api != "api_boolean")
     {
         throw std::runtime_error("unsupported api: " + recipe.api);
     }
 
-    const fs::path caseDir = cli.outRoot / recipe.caseId;
+    const fs::path caseDir = CaseDirectory(cli.outRoot, recipe.caseId);
     fs::create_directories(caseDir / "input");
     fs::create_directories(caseDir / "output");
     fs::create_directories(caseDir / "report");
@@ -7627,7 +9136,7 @@ int main(int argc, char** argv)
         {
             throw std::runtime_error("--case-id can only override a single-case recipe");
         }
-        sggk::init(nullptr, 16);
+        SggkSession session(cli.sdkThreads);
         int exitCode = 0;
         for (auto& recipe : recipes)
         {
@@ -7637,7 +9146,6 @@ int main(int argc, char** argv)
                 exitCode = caseExit;
             }
         }
-        sggk::fini();
         return exitCode;
     }
     catch (const std::exception& ex)

@@ -485,6 +485,8 @@ def build_bug(
         "topo_track_required": bool(record.get("topo_track_required", defaults.get("topo_track_required", False))),
         "modeling_failure_required": bool(record.get("modeling_failure_required", defaults.get("modeling_failure_required", True))),
         "expected": expected,
+        "expected_failure_signature": as_dict(record.get("expected_failure_signature"))
+        or as_dict(defaults.get("expected_failure_signature")),
         "dsl": dsl,
         "primary_contact": primary_contact,
         "primary_contact_label": first_nonempty(record.get("primary_contact_label"), contact_label(primary_contact)),
@@ -497,12 +499,16 @@ def build_bug(
 
 def status_rank(status: str) -> int:
     order = {
-        "stable_failure": 0,
-        "recorded": 1,
-        "flaky": 2,
-        "unreplayed": 3,
-        "not_reproduced": 4,
-        "unavailable": 5,
+        "stable_same_failure": 0,
+        "stable_failure": 1,
+        "recorded": 2,
+        "flaky_same_failure": 3,
+        "flaky": 4,
+        "changed_failure": 5,
+        "unverified_failure": 6,
+        "unreplayed": 7,
+        "not_reproduced": 8,
+        "unavailable": 9,
     }
     return order.get(status, 9)
 

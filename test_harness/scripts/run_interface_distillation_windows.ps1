@@ -1,6 +1,6 @@
 param(
   [string]$Branch = "codex/abc-dataset-harness",
-  [string]$SdkDir = "C:\Develop\SGGK_Agent\SGK1.4.10\SGGK",
+  [string]$SdkDir = $env:SGGK_SDK_DIR,
   [string]$BuildDir = ".\build\test_harness",
   [string]$Config = "Release",
   [string]$Generator = "Visual Studio 18 2026",
@@ -9,7 +9,7 @@ param(
   [string]$Out = ".\artifacts\interface_distillation_windows",
   [string]$ModelOutputRoot = ".\artifacts\model_outputs",
   [string]$AbcFetchRoot = ".\artifacts\abc_fetch_smoke",
-  [string]$SourceRoot = "C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include",
+  [string]$SourceRoot = $env:SGGK_SOURCE_ROOT,
   [int]$Jobs = 1,
   [int]$Timeout = 180,
   [switch]$SkipGitPull,
@@ -25,6 +25,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $SkipBuild -and [string]::IsNullOrWhiteSpace($SdkDir)) {
+  throw "SdkDir is required for builds. Pass -SdkDir or set SGGK_SDK_DIR."
+}
+if (-not $SkipSourceScan -and [string]::IsNullOrWhiteSpace($SourceRoot)) {
+  if (-not [string]::IsNullOrWhiteSpace($SdkDir)) {
+    $SourceRoot = Join-Path $SdkDir "include"
+  } else {
+    throw "SourceRoot is required for source scans. Pass -SourceRoot or set SGGK_SOURCE_ROOT."
+  }
+}
 
 function Resolve-RepoRoot {
   if ($PSScriptRoot) {

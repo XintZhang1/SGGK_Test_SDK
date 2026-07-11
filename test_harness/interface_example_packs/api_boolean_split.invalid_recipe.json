@@ -1,0 +1,14 @@
+{
+  "case_id": "api_boolean_split_invalid_plane",
+  "api": "api_boolean_split",
+  "modeling_tol": 0.01,
+  "target_kind": "solid_wedge",
+  "target_length": 100.0,
+  "target_width": 100.0,
+  "target_height": 100.0,
+  "tool_kind": "plane_sheet",
+  "tool_length": 600.0,
+  "expectations": {
+    "split_total_bodies": {"min": 3, "max": 1}
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "case_id": "boolean_slice_smoke",
+  "api": "api_boolean_slice",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": true,
+  "non_destructive": true,
+  "target_kind": "solid_cylinder",
+  "target_radius": 200.0,
+  "target_height": 500.0,
+  "target_angle": 1.5707963267948966,
+  "tool_kind": "solid_wedge",
+  "tool_length": 100.0,
+  "tool_width": 200.0,
+  "tool_height": 150.0,
+  "expectations": {
+    "result_bodies": {"min": 1},
+    "require_property_calculations": false,
+    "slice_result_bodies": {"min": 1},
+    "slice_wire_bodies": {"min": 1}
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "case_id": "topology_section_spheres_smoke",
+  "api": "api_topology_section",
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "non_destructive": true,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 10.0,
+  "tool_translate_x": 10.0,
+  "expectations": {
+    "topology_section_edges": {"min": 2, "max": 2},
+    "topology_section_vertices": {"min": 0, "max": 0},
+    "topology_section_total": {"min": 2, "max": 2}
+  }
+}

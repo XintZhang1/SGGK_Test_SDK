@@ -296,8 +296,10 @@ def campaign_info(summary_path: Path) -> dict[str, Any]:
             "summary_path": section_path(summary, root, "replay", "summary_path", root / "replay" / "aggregate" / "replay_summary.json"),
             "report_path": section_path(summary, root, "replay", "report_path", root / "replay" / "aggregate" / "replay_report.md"),
             "total": replay.get("total"),
-            "stable_failure": replay.get("stable_failure"),
-            "flaky": replay.get("flaky"),
+            "stable_same_failure": replay.get("stable_same_failure") or replay.get("stable_failure"),
+            "flaky_same_failure": replay.get("flaky_same_failure") or replay.get("flaky"),
+            "changed_failure": replay.get("changed_failure"),
+            "unverified_failure": replay.get("unverified_failure"),
             "not_reproduced": replay.get("not_reproduced"),
             "unavailable": replay.get("unavailable"),
             "skipped": bool(replay.get("skipped", False)),
@@ -419,7 +421,15 @@ def summarize_campaigns(campaigns: list[dict[str, Any]]) -> dict[str, Any]:
         for key in ("total_cases", "failed_cases", "failure_group_count", "command_failures", "warning_cases"):
             aggregate[key] += as_int(triage.get(key))
         replay_item = campaign.get("replay") if isinstance(campaign.get("replay"), dict) else {}
-        for key in ("total", "stable_failure", "flaky", "not_reproduced", "unavailable"):
+        for key in (
+            "total",
+            "stable_same_failure",
+            "flaky_same_failure",
+            "changed_failure",
+            "unverified_failure",
+            "not_reproduced",
+            "unavailable",
+        ):
             replay[key] += as_int(replay_item.get(key))
         bundles = campaign.get("bundles") if isinstance(campaign.get("bundles"), dict) else {}
         drafts = campaign.get("bug_record_drafts") if isinstance(campaign.get("bug_record_drafts"), dict) else {}
@@ -1825,7 +1835,7 @@ def markdown_report(summary: dict[str, Any]) -> str:
                 cases=cell(triage.get("total_cases", "")),
                 failures=cell(triage.get("failed_cases", "")),
                 groups=cell(triage.get("failure_group_count", "")),
-                stable=cell(replay.get("stable_failure", "")),
+                stable=cell(replay.get("stable_same_failure", replay.get("stable_failure", ""))),
                 reductions=cell(reductions.get("completed_count", "")),
                 bundles=cell(bundles.get("bundle_count", "")),
                 drafts=cell(drafts.get("record_count", "")),

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "pack_id": "step_iges_roundtrip",
+  "title": "STEP/IGES roundtrip flat recipes",
+  "interface_family": "exchange_roundtrip",
+  "markdown_path": "test_harness/interface_example_packs/step_iges_roundtrip.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/step_roundtrip.example_recipe.json",
+    "test_harness/interface_example_packs/iges_roundtrip.example_recipe.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["step_roundtrip", "iges_roundtrip"],
+  "geometry_families": ["exchange_file"],
+  "builder_terms": ["roundtrip", "STEP", "IGES", "export", "import"],
+  "fallback": "Return needs_harness_extension for roundtrip modes or exchange-file assertions outside the current recipe schema."
+}

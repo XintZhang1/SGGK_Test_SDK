@@ -338,7 +338,6 @@ def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, An
 
     img = Image.new("RGB", (CANVAS_W, CANVAS_H), BG)
     draw = ImageDraw.Draw(img)
-    font = load_font(21)
     small = load_font(17)
     tiny = load_font(14)
     title_font = load_font(30, bold=True)

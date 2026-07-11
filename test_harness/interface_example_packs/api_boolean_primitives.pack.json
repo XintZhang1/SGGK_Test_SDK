@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_boolean_primitives",
+  "title": "api_boolean primitive body pairs",
+  "interface_family": "api_boolean_primitives",
+  "markdown_path": "test_harness/interface_example_packs/api_boolean_primitives.md",
+  "contract_kinds": ["attack_dsl"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/api_boolean_primitives.example_dsl.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["api_boolean"],
+  "geometry_families": ["primitive"],
+  "builder_terms": ["solid_cylinder", "solid_wedge", "primitive tolerance"],
+  "fallback": "Return needs_harness_extension for primitive builders or boolean oracles outside the current registry."
+}

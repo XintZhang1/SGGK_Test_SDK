@@ -147,6 +147,30 @@
       "notes": [
         "This is the simplest replay path for saved SGT bodies and topology assets."
       ]
+    },
+    {
+      "request_id": "iface_15_boolean_abc_mass_recut",
+      "kind": "campaign_request",
+      "description": "Typed profile request for the 100k+ ABC loaded-SGT boolean recut campaign.",
+      "profile_id": "abc_boolean_mass_recut",
+      "args": {
+        "target_cases": 100000,
+        "preset": "stress",
+        "shard_count": 100,
+        "shard_index": 0,
+        "jobs": 1,
+        "timeout_seconds": 180,
+        "resume": true
+      },
+      "expected_artifacts": [
+        "artifacts/abc_boolean_mass_recut/campaign_summary.json",
+        "artifacts/abc_boolean_mass_recut/bug_report.md",
+        "artifacts/abc_boolean_mass_recut/triage_report.md"
+      ],
+      "notes": [
+        "Fixed code binds runner, dataset, and output paths after validating this typed request.",
+        "Start with one shard smoke before fanning out shards on a Windows runner."
+      ]
     }
   ]
 }

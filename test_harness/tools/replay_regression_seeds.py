@@ -12,6 +12,8 @@ import sys
 import time
 from typing import Any
 
+from failure_predicate import signature_from_artifact, signatures_match
+
 
 CASE_ID_RE = re.compile(r"^case_id=(?P<case_id>.+)$", re.MULTILINE)
 ARTIFACT_DIR_RE = re.compile(r"^artifact_dir=(?P<artifact_dir>.+)$", re.MULTILINE)
@@ -37,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fail-on-reproduced",
         action="store_true",
-        help="Return exit code 2 when any seed reproduces a failure on every attempt.",
+        help="Return exit code 2 when any seed reproduces the same failure on every attempt.",
     )
     return parser.parse_args()
 
@@ -115,6 +117,10 @@ def seed_api(seed: dict[str, Any]) -> str:
 
 
 def build_replay_recipe(seed: dict[str, Any], case_id: str) -> tuple[dict[str, Any] | None, str]:
+    artifact_inputs = seed.get("artifact_inputs")
+    if not isinstance(artifact_inputs, dict):
+        artifact_inputs = {}
+
     recipe_path = first_existing_recipe(seed)
     if recipe_path:
         try:
@@ -124,11 +130,30 @@ def build_replay_recipe(seed: dict[str, Any], case_id: str) -> tuple[dict[str, A
         if isinstance(recipe, dict):
             replay_recipe = dict(recipe)
             replay_recipe["case_id"] = case_id
+            if replay_recipe.get("api") == "api_boolean":
+                for role in ("target", "tool"):
+                    if replay_recipe.get(f"{role}_kind") != "loaded_sgt":
+                        continue
+                    field = f"{role}_source_file"
+                    current = as_str(replay_recipe.get(field))
+                    frozen = as_str(artifact_inputs.get(f"{role}_sgt"))
+                    if (not current or not Path(current).is_file()) and frozen and Path(frozen).is_file():
+                        replay_recipe[field] = frozen
+            elif replay_recipe.get("api") in {"check_sgt", "step_import", "iges_import", "step_roundtrip", "iges_roundtrip"}:
+                current = as_str(replay_recipe.get("source_file"))
+                if not current or not Path(current).is_file():
+                    api = as_str(replay_recipe.get("api"))
+                    keys = {
+                        "check_sgt": ("source_sgt",),
+                        "step_import": ("source_step", "source_stp"),
+                        "step_roundtrip": ("source_sgt",),
+                        "iges_import": ("source_iges", "source_igs"),
+                        "iges_roundtrip": ("source_sgt",),
+                    }.get(api, ())
+                    frozen = first_existing([as_str(artifact_inputs.get(key)) for key in keys])
+                    if frozen:
+                        replay_recipe["source_file"] = frozen
             return replay_recipe, ""
-
-    artifact_inputs = seed.get("artifact_inputs")
-    if not isinstance(artifact_inputs, dict):
-        artifact_inputs = {}
 
     api = seed_api(seed)
     options = load_manifest_options(as_str(seed.get("representative_case_dir")))
@@ -211,7 +236,7 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             timeout=timeout,
         )
         elapsed = time.perf_counter() - started
-        return {
+        result = {
             "recipe": str(recipe_path),
             "returncode": completed.returncode,
             "elapsed_seconds": elapsed,
@@ -221,9 +246,16 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             "case_id": parse_stdout_field(completed.stdout, CASE_ID_RE, "case_id"),
             "artifact_dir": parse_stdout_field(completed.stdout, ARTIFACT_DIR_RE, "artifact_dir"),
         }
+        result["failure_signature"] = signature_from_artifact(
+            result["artifact_dir"],
+            returncode=completed.returncode,
+            timed_out=False,
+            stderr=completed.stderr,
+        )
+        return result
     except subprocess.TimeoutExpired as exc:
         elapsed = time.perf_counter() - started
-        return {
+        result = {
             "recipe": str(recipe_path),
             "returncode": 124,
             "elapsed_seconds": elapsed,
@@ -233,17 +265,48 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             "case_id": "",
             "artifact_dir": "",
         }
+        result["failure_signature"] = signature_from_artifact(
+            "",
+            returncode=124,
+            timed_out=True,
+            stderr=result["stderr"],
+        )
+        return result
 
 
-def classify_attempts(attempts: list[dict[str, Any]]) -> str:
+def expected_failure_signature(seed: dict[str, Any]) -> dict[str, Any]:
+    explicit = seed.get("failure_signature")
+    if isinstance(explicit, dict) and explicit.get("kind"):
+        return explicit
+    runner = seed.get("runner") if isinstance(seed.get("runner"), dict) else {}
+    case_dir = as_str(seed.get("representative_case_dir"))
+    if case_dir:
+        return signature_from_artifact(
+            case_dir,
+            returncode=int(runner.get("returncode") or 2),
+            timed_out=bool(runner.get("timed_out")),
+            stderr=as_str(runner.get("stderr")),
+        )
+    return {}
+
+
+def classify_attempts(
+    attempts: list[dict[str, Any]],
+    expected: dict[str, Any],
+) -> str:
     if not attempts:
         return "unavailable"
-    failed = sum(1 for item in attempts if item.get("returncode") != 0)
-    if failed == len(attempts):
-        return "stable_failure"
-    if failed == 0:
+    failures = [item for item in attempts if item.get("returncode") != 0]
+    if not failures:
         return "not_reproduced"
-    return "flaky"
+    if not expected:
+        return "unverified_failure" if len(failures) == len(attempts) else "flaky_unverified"
+    matches = sum(1 for item in attempts if item.get("matches_expected") is True)
+    if matches == len(attempts):
+        return "stable_same_failure"
+    if matches:
+        return "flaky_same_failure"
+    return "changed_failure"
 
 
 def replay_seed(
@@ -257,6 +320,7 @@ def replay_seed(
     fingerprint = as_str(seed.get("fingerprint")) or f"seed_{index}"
     seed_id = sanitize_id(fingerprint)
     attempts: list[dict[str, Any]] = []
+    expected_signature = expected_failure_signature(seed)
     recipe_dir = out_root / "_recipes"
 
     for attempt_index in range(1, retries + 1):
@@ -274,14 +338,24 @@ def replay_seed(
         recipe_path = recipe_dir / f"{case_id}.json"
         write_json(recipe_path, recipe)
         print(f"[seed {index + 1}] attempt {attempt_index}/{retries} {fingerprint}")
-        attempts.append(run_one(runner, recipe_path, out_root, timeout))
+        attempt = run_one(runner, recipe_path, out_root, timeout)
+        observed = attempt.get("failure_signature") if isinstance(attempt.get("failure_signature"), dict) else {}
+        if expected_signature:
+            matched, reason = signatures_match(expected_signature, observed)
+            attempt["matches_expected"] = matched
+            attempt["match_reason"] = reason
+        else:
+            attempt["matches_expected"] = None
+            attempt["match_reason"] = "missing_expected_failure_signature"
+        attempts.append(attempt)
 
-    status = classify_attempts(attempts)
+    status = classify_attempts(attempts, expected_signature)
     return {
         "fingerprint": fingerprint,
         "representative_case_id": seed.get("representative_case_id"),
         "representative_case_dir": seed.get("representative_case_dir"),
         "status": status,
+        "expected_failure_signature": expected_signature,
         "attempt_count": len(attempts),
         "failed_attempts": sum(1 for item in attempts if item.get("returncode") != 0),
         "passed_attempts": sum(1 for item in attempts if item.get("returncode") == 0),
@@ -296,8 +370,10 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
         "# SGGK Regression Seed Replay",
         "",
         f"- Seeds: {summary['total']}",
-        f"- Stable failures: {summary['stable_failure']}",
-        f"- Flaky: {summary['flaky']}",
+        f"- Stable same failures: {summary['stable_same_failure']}",
+        f"- Flaky same failures: {summary['flaky_same_failure']}",
+        f"- Changed failures: {summary['changed_failure']}",
+        f"- Unverified failures: {summary['unverified_failure']}",
         f"- Not reproduced: {summary['not_reproduced']}",
         f"- Unavailable: {summary['unavailable']}",
         "",
@@ -360,8 +436,10 @@ def main() -> int:
         "started_at": started_at,
         "updated_at": now_iso_like(),
         "total": len(results),
-        "stable_failure": sum(1 for item in results if item["status"] == "stable_failure"),
-        "flaky": sum(1 for item in results if item["status"] == "flaky"),
+        "stable_same_failure": sum(1 for item in results if item["status"] == "stable_same_failure"),
+        "flaky_same_failure": sum(1 for item in results if item["status"] == "flaky_same_failure"),
+        "changed_failure": sum(1 for item in results if item["status"] == "changed_failure"),
+        "unverified_failure": sum(1 for item in results if item["status"] in {"unverified_failure", "flaky_unverified"}),
         "not_reproduced": sum(1 for item in results if item["status"] == "not_reproduced"),
         "unavailable": sum(1 for item in results if item["status"] == "unavailable"),
         "results": results,
@@ -373,11 +451,12 @@ def main() -> int:
     print(f"summary={summary_path}")
     print(f"report={report_path}")
     print(
-        f"seeds={summary['total']} stable_failure={summary['stable_failure']} "
-        f"flaky={summary['flaky']} not_reproduced={summary['not_reproduced']} "
+        f"seeds={summary['total']} stable_same_failure={summary['stable_same_failure']} "
+        f"flaky_same_failure={summary['flaky_same_failure']} changed_failure={summary['changed_failure']} "
+        f"not_reproduced={summary['not_reproduced']} "
         f"unavailable={summary['unavailable']}"
     )
-    if args.fail_on_reproduced and summary["stable_failure"]:
+    if args.fail_on_reproduced and summary["stable_same_failure"]:
         return 2
     return 0
 

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_offset_body",
+  "title": "api_offset_body flat recipes",
+  "interface_family": "api_offset_body",
+  "markdown_path": "test_harness/interface_example_packs/api_offset_body.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/api_offset_body.example_recipe.json"
+  ],
+  "negative_example_paths": [
+    "test_harness/interface_example_packs/api_offset_body.invalid_recipe.json"
+  ],
+  "target_apis": ["api_offset_body"],
+  "geometry_families": ["primitive", "loaded_sgt", "generated_offset"],
+  "builder_terms": ["offset", "api_offset_body", "body offset"],
+  "fallback": "Return needs_harness_extension for sheet offsets, face offsets, mixed offsets, or source kinds not listed in the manifest."
+}

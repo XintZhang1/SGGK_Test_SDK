@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_topology_section",
+  "title": "api_topology_section flat recipes",
+  "interface_family": "api_topology_section",
+  "markdown_path": "test_harness/interface_example_packs/api_topology_section.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/recipes/topology_section_spheres_smoke.json"
+  ],
+  "negative_example_paths": [
+    "test_harness/interface_example_packs/api_topology_section.invalid_recipe.json"
+  ],
+  "target_apis": ["api_topology_section"],
+  "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
+  "builder_terms": ["topology section", "intersection edge", "intersection vertex", "section curve"],
+  "fallback": "Return needs_harness_extension when either input cannot be represented by a supported body builder or when the requested oracle requires curve geometry beyond fixed edge/vertex counts."
+}

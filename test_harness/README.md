@@ -254,6 +254,8 @@ Use `test_harness/forms/interface_distillation/00_manifest.json` as the first di
 - `extrude_rect`, `thicken_rect_sheet`, `revolve_line`, and `revolve_rect`
 - pre-boolean operation-history recuts
 - `step_roundtrip`, `iges_roundtrip`, oracle calibration, and `check_sgt`
+- `api_boolean_split`, `api_boolean_slice`, `api_offset2d`, `api_offset_body`,
+  and heterogeneous `api_topology_section` Edge/Vertex results
 - 100k+ ABC `loaded_sgt` boolean mass recut with unsupported-filtered bug reporting
 
 Build all current interface-distillation tasks and prompts without requiring the SDK:
@@ -263,24 +265,20 @@ python .\test_harness\tools\run_interface_distillation.py `
   --out .\artifacts\interface_distillation
 ```
 
-If the intranet model is only available through Qoder, do not keep one long Qoder conversation alive. Build a bounded paste-in prompt pack with a deterministic checkpoint:
+Build a bounded provider-neutral prompt pack, then run the integrated Message API pipeline:
 
 ```powershell
-python .\test_harness\tools\build_qoder_prompt_pack.py `
-  --out .\artifacts\qoder_prompt_pack `
-  --model-output-root .\artifacts\model_outputs `
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack `
   --max-prompt-chars 60000
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id qwen36_interface_distillation `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-Use `artifacts/qoder_prompt_pack/qoder_session_index.md` as the operator checklist. For each task, paste `qoder_resume_prompt.md` and exactly one prompt from `prompts/interface/` into a fresh Qoder session, then save the returned JSON to the prompt's `expected_output_path`. Re-run the pack builder to refresh `qoder_session_checkpoint.json` instead of asking Qoder to summarize a long chat.
-
-For a point-and-click operator flow, start the local Qoder workbench:
-
-```powershell
-python .\test_harness\tools\qoder_prompt_workbench.py --host 127.0.0.1 --port 8765
-```
-
-Open `http://127.0.0.1:8765/`. The UI can generate the prompt pack, list task status, copy the resume/task prompt pair, validate pasted Qoder JSON, and save it to the expected `artifacts/model_outputs` or `artifacts/source_model_outputs` path.
+The pipeline accepts only one JSON object from `choices[0].message.content`, stages it under `artifacts/`, runs the kind-specific fixed gate, and performs bounded diagnostic repair. It creates an `authoring_accepted` output/provenance pair only after those gates pass. The lower-level `run_authoring_gateway.py` is transport debugging only and produces unaccepted candidates. Use the explicit `siliconflow-test` profile to exercise the same protocol outside the intranet; it is never an implicit fallback. See `test_harness/SILICONFLOW_MESSAGE_API_TESTING.md` for profile configuration and failure semantics.
 
 For the 100k+ ABC boolean recut lane, use the fixed campaign command instead of asking the model to emit individual cases:
 
@@ -324,7 +322,7 @@ python .\test_harness\tools\manage_regression_assets.py compare `
 
 The comparison report separates fixed baseline bugs, new issues from baseline-passing cases, changed failures, still-failing bugs, and unsupported behavior changes.
 
-For a reviewed baseline that exercises the small-model output contract before real intranet inference, seed the checked-in example outputs and run SDK-free checks/compilation:
+For a deterministic baseline that exercises the output contract without inference, seed the checked-in fixtures and run SDK-free checks/compilation:
 
 ```powershell
 python .\test_harness\tools\run_interface_distillation.py `
@@ -333,7 +331,7 @@ python .\test_harness\tools\run_interface_distillation.py `
   --check-model-outputs
 ```
 
-To replay the current checked-in examples as a full distillation run on the Windows SDK machine, seed the example model outputs into a dedicated model-output root and execute all lanes:
+To replay the checked-in fixtures as a full distillation run on the Windows SDK machine, seed them into a dedicated model-output root and execute all lanes:
 
 ```powershell
 python .\test_harness\tools\run_interface_distillation.py `
@@ -344,24 +342,29 @@ python .\test_harness\tools\run_interface_distillation.py `
   --execute `
   --api-smoke `
   --abc-sample-smoke `
-  --abc-fetch-root C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
-  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --abc-fetch-root $env:SGGK_DATA_ROOT `
+  --source-root $env:SGGK_SOURCE_ROOT `
   --jobs 1 `
   --timeout 180
 ```
 
-When `--seed-example-model-outputs` is combined with `--abc-fetch-root`, STEP/IGES import templates with placeholder `source_file` values are rebound to matching files from `complex_dataset_index.json` or `dataset_index.json` when possible. If the fetch root does not contain the requested format, the seeded output keeps the placeholder and records a note so the intranet model or reviewer can supply a concrete file path.
+When `--seed-example-model-outputs` is combined with `--abc-fetch-root`, STEP/IGES import templates with placeholder `source_file` values are rebound to matching files from `complex_dataset_index.json` or `dataset_index.json` when possible. If the fetch root does not contain the requested format, the fixture is skipped and the Message API task remains pending until a concrete asset is available.
 
-Send the generated prompt files under `artifacts/interface_distillation/model_prompts/` to the intranet model, then save each reviewed JSON response as `artifacts/model_outputs/<request_id>.json`. After the Windows runner is built, execute the reviewed outputs plus the current API smoke suite:
+For the automatic authoring-to-report path, build the provider-neutral manifest and run the integrated Message API pipeline. It stages each response, runs kind-specific fixed gates, performs bounded diagnostic repair, promotes only passing output/provenance pairs, then executes and collects bug evidence:
 
 ```powershell
-python .\test_harness\tools\run_interface_distillation.py `
-  --out .\artifacts\interface_distillation `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id qwen36_interface_campaign `
   --execute `
-  --api-smoke `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
   --jobs 1 `
-  --timeout 120
+  --timeout 120 `
+  --campaign-dataset .\artifacts\abc_fetch_smoke `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
 When the ABC sample fetch and local SGGK source tree are available, extend the same run with corpus and source-guided task evidence:
@@ -374,7 +377,7 @@ python .\test_harness\tools\run_interface_distillation.py `
   --api-smoke `
   --abc-sample-smoke `
   --abc-fetch-root .\artifacts\abc_fetch_smoke `
-  --source-root C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  --source-root $env:SGGK_SOURCE_ROOT `
   --jobs 1 `
   --timeout 180
 ```
@@ -383,15 +386,15 @@ On the Windows SDK machine, the same build/check/execute/report flow can be run 
 
 ```powershell
 .\test_harness\scripts\run_interface_distillation_windows.ps1 `
-  -SdkDir C:\Develop\SGGK_Agent\SGK1.4.10\SGGK `
-  -AbcFetchRoot C:\Develop\SGGK_Agent\artifacts\abc_fetch_40chunk_sample50 `
-  -SourceRoot C:\Develop\SGGK_Agent\SGK1.4.10\SGGK\include `
+  -SdkDir $env:SGGK_SDK_DIR `
+  -AbcFetchRoot $env:SGGK_DATA_ROOT `
+  -SourceRoot $env:SGGK_SOURCE_ROOT `
   -SeedExampleModelOutputs `
   -Jobs 1 `
   -Timeout 180
 ```
 
-The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, runs the example-output SDK-free check, then executes available reviewed model outputs plus API smoke, ABC sample, and source-task lanes with the local runner. Use `-SeedExampleModelOutputs` for a checked-in baseline replay; omit it when `-ModelOutputRoot` already contains real intranet small-model responses that should not be overwritten.
+The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, runs the fixture SDK-free check, then executes available gated model outputs plus API smoke, ABC sample, and source-task lanes with the local runner. Use `-SeedExampleModelOutputs` only for deterministic fixture replay; omit it for Message API runs.
 
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
@@ -399,7 +402,7 @@ python .\test_harness\tools\build_api_test_task.py `
   --out .\artifacts\model_tasks\boolean_thicken_generated_sheet_001.json
 ```
 
-After reviewing model output, run the current API capability smoke suite sequentially:
+After the integrated pipeline promotes a gate-passing output, run the current API capability smoke suite sequentially:
 
 ```powershell
 python .\test_harness\tools\run_recipes.py `

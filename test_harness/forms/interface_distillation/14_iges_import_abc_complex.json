@@ -26,7 +26,8 @@
   "case_count": 48,
   "run_profile": "corpus",
   "input_assets": {
-    "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json"
+    "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json",
+    "local_smoke_dataset_index": "artifacts/iges_import_smoke/dataset_index.json"
   },
-  "notes": "This form may produce corpus run commands rather than one flat recipe because iges_import over ABC is dataset-driven."
+  "notes": "This form may produce a typed campaign_request rather than one flat recipe because iges_import over ABC is dataset-driven; executable and path bindings remain in fixed code. If a strict ABC IGES subset is not materialized yet, use input_assets.local_smoke_dataset_index only as a labeled local IGES import smoke fallback and keep the ABC asset gap visible."
 }

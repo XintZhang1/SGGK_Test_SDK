@@ -1,0 +1,70 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true,
+    "expectations": {
+      "result_bodies": {
+        "min": 1
+      },
+      "require_property_calculations": true,
+      "require_finite_properties": true,
+      "boolean_volume_relation": true,
+      "volume_relation_abs_tol": "topo_tol",
+      "volume_relation_rel_tol": 0.00000001
+    }
+  },
+  "cases": [
+    {
+      "case_id": "example_cylinder_wedge_side_contact",
+      "hypothesis": "A primitive wedge cutter crosses a cylinder side boundary across exact, geometry-tolerance, and topology-tolerance offsets.",
+      "target": {
+        "kind": "solid_cylinder",
+        "radius": 80.0,
+        "height": 160.0
+      },
+      "tool": {
+        "kind": "solid_wedge",
+        "length": 60.0,
+        "width": 120.0,
+        "height": 180.0,
+        "translate_x": 110.0,
+        "translate_z": -10.0
+      },
+      "variants": [
+        {
+          "suffix": "sub_overlap_geom",
+          "set": {
+            "options.boolean_type": "SUBTRACTION",
+            "tool.translate_x": "110.0 - geom_tol",
+            "expectations.result_bodies.min": 1
+          }
+        },
+        {
+          "suffix": "sub_gap_topo",
+          "set": {
+            "options.boolean_type": "SUBTRACTION",
+            "tool.translate_x": "110.0 + topo_tol",
+            "expectations.result_bodies.min": 1
+          }
+        },
+        {
+          "suffix": "int_exact",
+          "set": {
+            "options.boolean_type": "INTERSECTION",
+            "tool.translate_x": 110.0,
+            "expectations.result_bodies.min": 0
+          }
+        }
+      ]
+    }
+  ]
+}

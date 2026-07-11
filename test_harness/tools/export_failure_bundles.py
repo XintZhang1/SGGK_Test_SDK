@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional replay_summary.json or directory produced by replay_regression_seeds.py",
     )
     parser.add_argument(
+        "--reductions",
+        help="Optional reduction_index.json or reductions directory; matching reduced recipes become canonical reproducers.",
+    )
+    parser.add_argument(
         "--preview-dir",
         action="append",
         default=[],
@@ -196,6 +200,14 @@ def seed_by_fingerprint(triage_summary: dict[str, Any]) -> dict[str, dict[str, A
     return result
 
 
+def reduction_by_fingerprint(reduction_index: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in reduction_index.get("reductions", []):
+        if isinstance(item, dict) and as_str(item.get("fingerprint")):
+            result[as_str(item["fingerprint"])] = item
+    return result
+
+
 def format_ref(ref: Any) -> str:
     if not isinstance(ref, dict):
         return ""
@@ -307,6 +319,7 @@ def copy_bundle_files(
     failure: dict[str, Any],
     seed: dict[str, Any],
     replay: dict[str, Any],
+    reduction: dict[str, Any],
     preview_dirs: list[str],
     include_full_artifact: bool,
 ) -> dict[str, Any]:
@@ -329,6 +342,11 @@ def copy_bundle_files(
         copied["recipes"]["replay"] = copy_file(as_str(first_attempt.get("recipe")), bundle_dir / "recipes" / "replay_recipe.json")
         rewrite_replay_recipe_inputs(copied["recipes"]["replay"], copied["inputs"])
 
+    reduced_recipe = as_str(reduction.get("reduced_recipe"))
+    if reduced_recipe:
+        copied["recipes"]["reduced"] = copy_file(reduced_recipe, bundle_dir / "recipes" / "reduced_recipe.json")
+        rewrite_replay_recipe_inputs(copied["recipes"]["reduced"], copied["inputs"])
+
     report_dir = case_dir / "report"
     for name in KEY_REPORTS:
         copied_path = copy_file(report_dir / name, bundle_dir / "report" / name)
@@ -347,7 +365,10 @@ def copy_bundle_files(
         copied["full_artifact"] = copy_optional_tree(case_dir, bundle_dir / "full_artifact")
 
     recipes = copied.get("recipes") if isinstance(copied.get("recipes"), dict) else {}
-    copied["reproduce_script"] = write_reproduce_script(bundle_dir, as_str(recipes.get("replay") or recipes.get("original")))
+    copied["reproduce_script"] = write_reproduce_script(
+        bundle_dir,
+        as_str(recipes.get("reduced") or recipes.get("replay") or recipes.get("original")),
+    )
 
     return copied
 
@@ -357,6 +378,7 @@ def build_manifest(
     failure: dict[str, Any],
     seed: dict[str, Any],
     replay: dict[str, Any],
+    reduction: dict[str, Any],
     copied: dict[str, Any],
 ) -> dict[str, Any]:
     attempts = replay.get("attempts") if isinstance(replay.get("attempts"), list) else []
@@ -369,6 +391,7 @@ def build_manifest(
         "api": failure.get("api"),
         "reasons": group.get("reasons", []),
         "status": status,
+        "failure_signature": seed.get("failure_signature", {}),
         "runner": {
             "summary_path": runner.get("summary_path"),
             "returncode": runner.get("returncode"),
@@ -382,6 +405,13 @@ def build_manifest(
             "attempt_count": replay.get("attempt_count", len(attempts)),
             "returncodes": [item.get("returncode") for item in attempts if isinstance(item, dict)],
             "first_artifact_dir": as_str(attempts[0].get("artifact_dir")) if attempts and isinstance(attempts[0], dict) else "",
+        },
+        "reduction": {
+            "status": reduction.get("status"),
+            "accepted_reductions": reduction.get("accepted_reductions"),
+            "trials": reduction.get("trials"),
+            "summary_path": reduction.get("summary_path"),
+            "final_artifact_dir": reduction.get("final_artifact_dir"),
         },
         "recipe_paths": group.get("recipe_paths", []),
         "case_dirs": group.get("case_dirs", []),
@@ -474,7 +504,7 @@ def write_bug_report(manifest: dict[str, Any], path: Path) -> None:
     lines.append("")
     lines.append("## Reproduce")
     lines.append("")
-    replay_recipe = recipes.get("replay")
+    replay_recipe = recipes.get("reduced") or recipes.get("replay")
     original_recipe = recipes.get("original")
     recipe = replay_recipe or original_recipe
     if recipe:
@@ -523,7 +553,15 @@ def main() -> int:
         if isinstance(replay_value, dict):
             replay = replay_value
 
+    reductions: dict[str, Any] = {}
+    if args.reductions:
+        reductions_path = resolve_summary_path(args.reductions, "reduction_index.json")
+        reductions_value = read_json(reductions_path)
+        if isinstance(reductions_value, dict):
+            reductions = reductions_value
+
     replay_lookup = replay_by_fingerprint(replay)
+    reduction_lookup = reduction_by_fingerprint(reductions)
     seed_lookup = seed_by_fingerprint(triage)
     failures = triage.get("failures") if isinstance(triage.get("failures"), list) else []
     groups = triage.get("failure_groups") if isinstance(triage.get("failure_groups"), list) else []
@@ -542,6 +580,7 @@ def main() -> int:
         failure = first_dict(failures, "fingerprint", fingerprint) or first_dict(failures, "case_id", case_id)
         seed = seed_lookup.get(fingerprint, {})
         replay_result = replay_lookup.get(fingerprint, {})
+        reduction_result = reduction_lookup.get(fingerprint, {})
         bundle_dir = out_dir / f"{sanitize_name(fingerprint)}_{sanitize_name(case_id)}"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         copied = copy_bundle_files(
@@ -550,10 +589,11 @@ def main() -> int:
             failure,
             seed,
             replay_result,
+            reduction_result,
             args.preview_dir,
             args.include_full_artifact,
         )
-        manifest = build_manifest(group, failure, seed, replay_result, copied)
+        manifest = build_manifest(group, failure, seed, replay_result, reduction_result, copied)
         manifest_path = bundle_dir / "bundle_manifest.json"
         report_path = bundle_dir / "bug_report.md"
         localization_path = bundle_dir / "localization_summary.json"
@@ -583,7 +623,10 @@ def main() -> int:
         )
         print(f"bundle={bundle_dir}")
 
-    write_json(out_dir / "bundle_index.json", {"triage": str(triage_path), "replay": args.replay or "", "bundles": index})
+    write_json(
+        out_dir / "bundle_index.json",
+        {"triage": str(triage_path), "replay": args.replay or "", "reductions": args.reductions or "", "bundles": index},
+    )
     write_index_report(index, out_dir / "bundle_report.md")
     print(f"index={out_dir / 'bundle_index.json'}")
     print(f"report={out_dir / 'bundle_report.md'}")

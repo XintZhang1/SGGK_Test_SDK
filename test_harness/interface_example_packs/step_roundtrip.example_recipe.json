@@ -1,0 +1,12 @@
+{
+  "case_id": "example_step_roundtrip_imported_sgt",
+  "api": "step_roundtrip",
+  "source_file": "artifacts/interface_distillation/02_step_import_abc/top_complex_import/example/output/result_1.sgt",
+  "source_body_index": 0,
+  "step_app_protocol": "AP203",
+  "step_surface_to_bspline": true,
+  "step_curve_to_bspline": true,
+  "step_spcurve_in_wire_to_bspline": true,
+  "roundtrip_abs_tol": 0.01,
+  "roundtrip_rel_tol": 0.000001
+}

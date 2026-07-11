@@ -6,10 +6,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(SGGK_SDK_DIR "${CMAKE_SOURCE_DIR}/../SGK1.4.10/SGGK" CACHE PATH "Path to the SGGK SDK root")
+set(SGGK_SDK_DIR "$ENV{SGGK_SDK_DIR}" CACHE PATH "Path to the SGGK SDK root")
 
 if(NOT EXISTS "${SGGK_SDK_DIR}/include/Foundation/init.h")
-    message(FATAL_ERROR "SGGK_SDK_DIR does not point to a valid SGGK SDK: ${SGGK_SDK_DIR}")
+    message(FATAL_ERROR
+        "SGGK_SDK_DIR does not point to a valid SGGK SDK: '${SGGK_SDK_DIR}'. "
+        "Set the SGGK_SDK_DIR environment variable or pass -DSGGK_SDK_DIR=<path>."
+    )
 endif()
 
 add_executable(sggk_case_runner

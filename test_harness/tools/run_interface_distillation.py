@@ -3,7 +3,7 @@
 
 The default mode is SDK-free: read the interface distillation manifest, build
 one small-model task per developer form, and write a campaign report. When
-reviewed small-model outputs and a Windows runner are available, pass
+saved, gate-passing model outputs and a Windows runner are available, pass
 ``--execute`` to normalize, check, compile, run, triage, preview, and report
 those outputs.
 """
@@ -19,6 +19,14 @@ import time
 from typing import Any
 
 from build_api_test_task import build_task, render_markdown, validate_form
+from diagnostic_catalog import catalog_summary, enrich_diagnostics
+from harness_capabilities import load_capabilities, provenance_source_metadata
+from campaign_profiles import CampaignRequestError, resolve_campaign_argv, validate_campaign_request
+
+
+CAPABILITIES = load_capabilities()
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ABC_PLACEHOLDER_PREFIX = "artifacts/abc_fetch_smoke/examples/top_complex_001"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,17 +45,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-output-root",
         default="artifacts/model_outputs",
-        help="Directory where reviewed small-model JSON outputs are saved.",
+        help="Directory where gateway-promoted model JSON outputs are saved.",
+    )
+    parser.add_argument(
+        "--model-output-provenance-root",
+        default="artifacts/model_output_provenance",
+        help="Optional sidecar directory for saved-output provenance JSON. Matrix reads only; gates ignore it.",
     )
     parser.add_argument(
         "--example-catalog",
         default="test_harness/examples/interface_distillation_model_outputs/catalog.json",
-        help="Reviewed example-output catalog used by --seed-example-model-outputs.",
+        help="Deterministic fixture catalog used by --seed-example-model-outputs.",
     )
     parser.add_argument(
         "--seed-example-model-outputs",
         action="store_true",
-        help="Materialize reviewed example outputs into --model-output-root before checking/running.",
+        help="Materialize deterministic fixture outputs into --model-output-root before checking/running.",
     )
     parser.add_argument(
         "--runner",
@@ -55,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to sggk_case_runner.exe when --execute is used.",
     )
     parser.add_argument("--check-model-outputs", action="store_true", help="Run SDK-free DSL/recipe checks for model outputs.")
-    parser.add_argument("--execute", action="store_true", help="Check/compile/run reviewed model outputs when present.")
+    parser.add_argument("--execute", action="store_true", help="Check/compile/run gate-passing model outputs when present.")
     parser.add_argument("--require-model-outputs", action="store_true", help="Return non-zero if any model output is missing.")
     parser.add_argument("--api-smoke", action="store_true", help="Run the current API smoke suite after model-output lanes.")
     parser.add_argument("--abc-sample-smoke", action="store_true", help="Run the focused ABC sample smoke lane.")
@@ -177,7 +190,12 @@ def build_tasks(forms_dir: Path, manifest: dict[str, Any], out_root: Path) -> li
             record["target_api"] = form.get("target_api")
             record["geometry_family"] = (form.get("geometry") or {}).get("family")
             record["preferred_output"] = (task.get("api_guidance") or {}).get("preferred_format")
-            record["fixed_commands"] = task.get("fixed_commands", [])
+            record["selected_example_pack"] = (task.get("harness_contract") or {}).get("selected_example_pack", "")
+            record["interface_family"] = task.get("interface_family", "")
+            record["run_profile_id"] = task.get("run_profile_id", "")
+            record["run_profile"] = (task.get("harness_contract") or {}).get("run_profile", {})
+            record["allowed_campaign_profiles"] = task.get("allowed_campaign_profiles", {})
+            record["campaign_bindings"] = task.get("campaign_bindings", {})
         records.append(record)
     return records
 
@@ -202,7 +220,6 @@ def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
             "kind": "attack_dsl",
             "dsl": read_json(source_path),
             "notes": notes,
-            "commands": example.get("commands", []),
         }
     if kind == "cluster_seed":
         source_path = Path(str(example.get("source_path", "")))
@@ -229,12 +246,24 @@ def example_output_payload(example: dict[str, Any]) -> dict[str, Any]:
             "kind": "flat_recipe",
             "recipe": recipe,
             "notes": notes,
-            "commands": example.get("commands", []),
         }
     if kind == "needs_harness_extension":
         payload = {key: value for key, value in example.items() if key not in {"request_id", "notes"}}
         payload.setdefault("kind", "needs_harness_extension")
         payload.setdefault("notes", notes)
+        return payload
+    if kind == "campaign_request":
+        payload = {
+            "kind": "campaign_request",
+            "profile_id": example.get("profile_id"),
+            "args": example.get("args", {}),
+            "notes": notes,
+        }
+        if isinstance(example.get("expected_artifacts"), list):
+            payload["expected_artifacts"] = example["expected_artifacts"]
+        normalized, errors = validate_campaign_request(payload)
+        if errors or normalized is None:
+            raise ValueError("invalid campaign_request example: " + "; ".join(errors))
         return payload
     raise ValueError(f"unsupported example kind: {kind!r}")
 
@@ -260,19 +289,54 @@ def source_suffix(value: str) -> str:
     return Path(normalized).suffix.lower()
 
 
-def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -> None:
-    if abc_fetch_root is None:
-        return
+def repo_local_existing_file(path_text: str) -> bool:
+    path = Path(path_text)
+    candidate = path if path.is_absolute() else REPO_ROOT / path
+    try:
+        candidate.resolve().relative_to(REPO_ROOT.resolve())
+    except (OSError, ValueError):
+        return False
+    return candidate.is_file()
+
+
+def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -> dict[str, Any]:
+    result = {
+        "required": False,
+        "bound": False,
+        "ok": True,
+        "reason": "",
+        "source_file": "",
+    }
     if payload.get("kind") != "flat_recipe":
-        return
+        return result
     recipe = payload.get("recipe")
     if not isinstance(recipe, dict):
-        return
+        return result
     source_file = recipe.get("source_file")
     if not isinstance(source_file, str):
-        return
-    if "artifacts/abc_fetch_smoke/examples/top_complex_001" not in source_file.replace("\\", "/"):
-        return
+        return result
+    normalized_source = source_file.replace("\\", "/")
+    if ABC_PLACEHOLDER_PREFIX not in normalized_source:
+        result["source_file"] = source_file
+        if not repo_local_existing_file(source_file):
+            result.update(
+                {
+                    "ok": False,
+                    "reason": "flat_recipe_source_file_is_not_repo_local_existing_file",
+                }
+            )
+        return result
+
+    result["required"] = True
+    if abc_fetch_root is None:
+        result.update(
+            {
+                "ok": False,
+                "reason": "abc_fetch_root_required_for_placeholder_source_file",
+                "source_file": source_file,
+            }
+        )
+        return result
 
     api = str(recipe.get("api") or "")
     requested_suffix = source_suffix(source_file)
@@ -290,6 +354,8 @@ def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -
             continue
         if desired_suffixes and source_suffix(path) not in desired_suffixes:
             continue
+        if not repo_local_existing_file(path):
+            continue
         item_api = item.get("api")
         if isinstance(item_api, str) and item_api and item_api != api:
             continue
@@ -300,14 +366,60 @@ def bind_abc_source_file(payload: dict[str, Any], abc_fetch_root: Path | None) -
     if selected:
         recipe["source_file"] = selected
         notes.append(f"Bound placeholder source_file from ABC fetch root: {abc_fetch_root}")
+        result.update({"bound": True, "source_file": selected})
     else:
         suffix_text = ", ".join(sorted(desired_suffixes)) or requested_suffix or "matching"
         notes.append(f"ABC fetch root has no {suffix_text} file for {api}; replace source_file before SDK execution.")
+        result.update(
+            {
+                "ok": False,
+                "reason": f"abc_fetch_root_has_no_repo_local_{suffix_text}_file_for_{api}",
+                "source_file": source_file,
+            }
+        )
+    return result
+
+
+def model_output_provenance_path(request_id: str, provenance_root: Path) -> Path:
+    return provenance_root / f"{safe_id(request_id)}.json"
+
+
+def write_model_output_provenance(
+    request_id: str,
+    output_path: Path,
+    provenance_root: Path,
+    *,
+    source_type: str,
+    source_label: str = "",
+    source_path: str = "",
+    description: str = "",
+) -> Path:
+    path = model_output_provenance_path(request_id, provenance_root)
+    write_json(
+        path,
+        {
+            "schema_version": 1,
+            "request_id": request_id,
+            "source_type": source_type,
+            "source_label": source_label,
+            "source_path": source_path,
+            "description": description,
+            "output_path": str(output_path),
+            "saved_at": now_iso_like(),
+            "boundary": {
+                "model_calls": False,
+                "direct_api_calls": False,
+                "production_flow": "saved_json_sidecar_metadata_only",
+            },
+        },
+    )
+    return path
 
 
 def seed_example_model_outputs(
     catalog_path: Path,
     model_output_root: Path,
+    provenance_root: Path,
     abc_fetch_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     catalog = load_example_catalog(catalog_path)
@@ -322,16 +434,41 @@ def seed_example_model_outputs(
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("example output is missing request_id")
         payload = example_output_payload(raw)
-        bind_abc_source_file(payload, abc_fetch_root)
+        binding = bind_abc_source_file(payload, abc_fetch_root)
+        if not binding.get("ok"):
+            seeded.append(
+                {
+                    "request_id": request_id,
+                    "kind": payload.get("kind"),
+                    "status": "skipped",
+                    "reason": binding.get("reason") or "seed_example_not_safe_to_materialize",
+                    "source_file": binding.get("source_file") or "",
+                    "source_path": raw.get("source_path", ""),
+                    "description": raw.get("description", ""),
+                }
+            )
+            continue
         out_path = model_output_root / f"{safe_id(request_id)}.json"
         write_json(out_path, payload)
+        provenance_path = write_model_output_provenance(
+            request_id,
+            out_path,
+            provenance_root,
+            source_type="reviewed_fixture",
+            source_label=str(catalog_path),
+            source_path=str(raw.get("source_path") or ""),
+            description=str(raw.get("description") or ""),
+        )
         seeded.append(
             {
                 "request_id": request_id,
                 "kind": payload.get("kind"),
+                "status": "seeded",
                 "path": str(out_path),
+                "provenance_path": str(provenance_path),
                 "source_path": raw.get("source_path", ""),
                 "description": raw.get("description", ""),
+                "binding": binding,
             }
         )
     return seeded
@@ -351,74 +488,149 @@ def find_model_output(request_id: str, model_output_root: Path) -> tuple[str, Pa
     return "missing", None
 
 
-def normalize_model_output(record: dict[str, Any], model_output_root: Path) -> dict[str, Any]:
+def compact_provenance_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
+
+
+def compact_positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return result if result > 0 else 0
+
+
+def load_model_output_provenance(
+    request_id: str,
+    found_path: Path | None,
+    provenance_root: Path,
+) -> dict[str, Any]:
+    base = safe_id(request_id)
+    candidates = [model_output_provenance_path(request_id, provenance_root)]
+    if found_path is not None:
+        candidates.extend(
+            [
+                found_path.with_name(f"{found_path.stem}.provenance.json"),
+                found_path.with_name(f"{base}.provenance.json"),
+            ]
+        )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            loaded = read_json(path)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "found": True,
+                "path": str(path),
+                "source_type": "invalid_provenance",
+                "error": str(exc),
+            }
+        if not isinstance(loaded, dict):
+            return {
+                "found": True,
+                "path": str(path),
+                "source_type": "invalid_provenance",
+                "error": "provenance sidecar must be a JSON object",
+            }
+        source_type = compact_provenance_value(loaded.get("source_type")) or "unspecified_saved_output"
+        repair = loaded.get("repair") if isinstance(loaded.get("repair"), dict) else {}
+        result = {
+            "found": True,
+            "path": str(path),
+            "schema_version": loaded.get("schema_version"),
+            "request_id": compact_provenance_value(loaded.get("request_id")),
+            "source_type": source_type,
+            "source_label": compact_provenance_value(loaded.get("source_label")),
+            "source_path": compact_provenance_value(loaded.get("source_path")),
+            "model": compact_provenance_value(loaded.get("model")),
+            "interface": compact_provenance_value(loaded.get("interface")),
+            "prompt_pack": compact_provenance_value(loaded.get("prompt_pack")),
+            "saved_at": compact_provenance_value(loaded.get("saved_at")),
+        }
+        if repair:
+            result["repair_output"] = bool(repair.get("is_repair_output"))
+            result["repair_iteration"] = compact_positive_int(repair.get("iteration"))
+            result["repair_context_path"] = compact_provenance_value(repair.get("repair_context_path"))
+            result["repair_parent_request_id"] = compact_provenance_value(repair.get("parent_request_id"))
+            result["repair_parent_output_path"] = compact_provenance_value(repair.get("parent_output_path"))
+        return result
+    return {
+        "found": False,
+        "path": "",
+        "source_type": "missing_output" if found_path is None else "unknown_saved_output",
+    }
+
+
+def normalize_model_output(
+    record: dict[str, Any],
+    model_output_root: Path,
+    provenance_root: Path,
+    out_root: Path,
+) -> dict[str, Any]:
     request_id = str(record["request_id"])
     found_kind, found_path = find_model_output(request_id, model_output_root)
+    base = safe_id(request_id)
     model_record: dict[str, Any] = {
         "found": found_path is not None,
         "input_kind": found_kind,
         "input_path": str(found_path) if found_path else "",
         "kind": "",
         "normalized_path": "",
+        "diagnostics_path": "",
         "notes": [],
     }
+    model_record["provenance"] = load_model_output_provenance(request_id, found_path, provenance_root)
     if found_path is None:
         model_record["kind"] = "missing"
         return model_record
 
-    loaded = read_json(found_path)
-    base = safe_id(request_id)
-    if found_kind == "dsl":
-        model_record["kind"] = "attack_dsl"
-        model_record["normalized_path"] = str(found_path)
-        return model_record
-    if found_kind == "recipe":
-        model_record["kind"] = "flat_recipe"
-        model_record["normalized_path"] = str(found_path)
-        return model_record
-    if found_kind == "cluster_seed":
-        model_record["kind"] = "cluster_seed"
-        model_record["normalized_path"] = str(found_path)
+    diagnostics_path = out_root / "model_normalize" / f"{base}_diagnostics.json"
+    normalize_command = run_command(
+        f"{request_id}: normalize model output",
+        [
+            sys.executable,
+            "test_harness/tools/normalize_model_output.py",
+            str(found_path),
+            "--request-id",
+            request_id,
+            "--model-output-root",
+            str(model_output_root),
+            "--diagnostics",
+            str(diagnostics_path),
+        ],
+        acceptable={0, 1},
+    )
+    model_record["normalize_command"] = normalize_command
+    model_record["diagnostics_path"] = str(diagnostics_path)
+    if not diagnostics_path.is_file():
+        model_record["kind"] = "invalid"
+        model_record["notes"].append("normalizer did not write diagnostics")
         return model_record
 
-    if not isinstance(loaded, dict):
+    report = read_json(diagnostics_path)
+    if not isinstance(report, dict):
         model_record["kind"] = "invalid"
-        model_record["notes"].append("model output root must be a JSON object")
+        model_record["notes"].append("normalizer diagnostics must be an object")
         return model_record
 
-    kind = loaded.get("kind")
-    model_record["kind"] = kind if isinstance(kind, str) else "invalid"
-    if kind == "attack_dsl":
-        dsl = loaded.get("dsl")
-        if not isinstance(dsl, dict):
-            model_record["kind"] = "invalid"
-            model_record["notes"].append("attack_dsl output must contain object field dsl")
-            return model_record
-        out_path = model_output_root / f"{base}_dsl.json"
-        write_json(out_path, dsl)
-        model_record["normalized_path"] = str(out_path)
-    elif kind == "flat_recipe":
-        recipe = loaded.get("recipe")
-        if not isinstance(recipe, dict):
-            model_record["kind"] = "invalid"
-            model_record["notes"].append("flat_recipe output must contain object field recipe")
-            return model_record
-        out_path = model_output_root / f"{base}_recipe.json"
-        write_json(out_path, recipe)
-        model_record["normalized_path"] = str(out_path)
-    elif kind == "cluster_seed":
-        out_path = model_output_root / f"{base}_cluster_seed.json"
-        write_json(out_path, loaded)
-        model_record["normalized_path"] = str(out_path)
-    elif kind == "needs_harness_extension":
-        model_record["normalized_path"] = str(found_path)
-    elif kind == "campaign_command":
-        model_record["normalized_path"] = str(found_path)
-    else:
+    reported_kind = report.get("kind")
+    model_record["reported_kind"] = reported_kind if isinstance(reported_kind, str) else ""
+    model_record["normalizer_report"] = report
+    model_record["normalized_path"] = str(report.get("normalized_path") or "")
+    for item in report.get("diagnostics", []):
+        if isinstance(item, dict) and item.get("severity") == "error":
+            model_record["notes"].append(str(item.get("message") or item.get("error_code") or "normalization error"))
+    if not report.get("ok"):
         model_record["kind"] = "invalid"
-        model_record["notes"].append(
-            "kind must be attack_dsl, flat_recipe, cluster_seed, campaign_command, or needs_harness_extension"
-        )
+        return model_record
+    model_record["kind"] = model_record["reported_kind"]
     return model_record
 
 
@@ -427,6 +639,7 @@ def check_attack_dsl(request_id: str, dsl_path: Path, out_root: Path) -> dict[st
     checks_dir = out_root / "model_checks"
     compiled_dir = out_root / "compiled_model_recipes" / base
     check_report = checks_dir / f"{base}_check.json"
+    check_diagnostics = checks_dir / f"{base}_diagnostics.json"
     commands: list[dict[str, Any]] = []
     commands.append(
         run_command(
@@ -438,6 +651,8 @@ def check_attack_dsl(request_id: str, dsl_path: Path, out_root: Path) -> dict[st
                 "--check",
                 "--report",
                 str(check_report),
+                "--model-diagnostics",
+                str(check_diagnostics),
             ],
         )
     )
@@ -459,21 +674,32 @@ def check_attack_dsl(request_id: str, dsl_path: Path, out_root: Path) -> dict[st
         "ok": all(command["ok"] for command in commands),
         "commands": commands,
         "check_report": str(check_report),
+        "model_diagnostics": str(check_diagnostics),
         "compiled_dir": str(compiled_dir),
     }
 
 
-def check_flat_recipe(request_id: str, recipe_path: Path) -> dict[str, Any]:
+def check_flat_recipe(request_id: str, recipe_path: Path, out_root: Path) -> dict[str, Any]:
+    base = safe_id(request_id)
+    diagnostics_path = out_root / "model_checks" / f"{base}_recipe_diagnostics.json"
     commands = [
         run_command(
             f"{request_id}: validate recipe",
-            [sys.executable, "test_harness/tools/validate_recipe.py", str(recipe_path)],
+            [
+                sys.executable,
+                "test_harness/tools/validate_recipe.py",
+                str(recipe_path),
+                "--check-assets",
+                "--model-diagnostics",
+                str(diagnostics_path),
+            ],
         )
     ]
     return {
         "kind": "flat_recipe",
         "ok": all(command["ok"] for command in commands),
         "commands": commands,
+        "model_diagnostics": str(diagnostics_path),
     }
 
 
@@ -505,6 +731,137 @@ def check_cluster_seed(request_id: str, seed_path: Path, out_root: Path) -> dict
     }
 
 
+def check_harness_extension(request_id: str, extension_path: Path, out_root: Path) -> dict[str, Any]:
+    base = safe_id(request_id)
+    report_path = out_root / "model_checks" / f"{base}_extension_report.json"
+    diagnostics_path = out_root / "model_checks" / f"{base}_extension_diagnostics.json"
+    commands = [
+        run_command(
+            f"{request_id}: validate harness extension request",
+            [
+                sys.executable,
+                "test_harness/tools/validate_harness_extension.py",
+                str(extension_path),
+                "--report",
+                str(report_path),
+                "--model-diagnostics",
+                str(diagnostics_path),
+            ],
+        )
+    ]
+    return {
+        "kind": "needs_harness_extension",
+        "ok": all(command["ok"] for command in commands),
+        "reason": "extension request validation",
+        "commands": commands,
+        "check_report": str(report_path),
+        "model_diagnostics": str(diagnostics_path),
+    }
+
+
+def campaign_diagnostic(code: str, message: str, repair_hint: str, *, path: str = "$", expected_shape: Any | None = None) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "severity": "error",
+        "error_code": code,
+        "path": path,
+        "message": message,
+        "repair_hint": repair_hint,
+    }
+    if expected_shape is not None:
+        item["expected_shape"] = expected_shape
+    return item
+
+
+def check_campaign_request(request_id: str, request_path: Path, record: dict[str, Any], out_root: Path) -> dict[str, Any]:
+    base = safe_id(request_id)
+    report_path = out_root / "model_checks" / f"{base}_campaign_request_review.json"
+    diagnostics_path = out_root / "model_checks" / f"{base}_campaign_request_diagnostics.json"
+    diagnostics: list[dict[str, Any]] = []
+    loaded: Any = {}
+    try:
+        loaded = read_json(request_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        diagnostics.append(
+            campaign_diagnostic(
+                "INVALID_CAMPAIGN_REQUEST_JSON",
+                f"Campaign request output could not be read as JSON: {exc}",
+                "Return exactly one campaign_request JSON object in message.content.",
+                path="$",
+            )
+        )
+    allowed_profiles = record.get("allowed_campaign_profiles") if isinstance(record.get("allowed_campaign_profiles"), dict) else {}
+    normalized: dict[str, Any] | None = None
+    resolved_argv: list[str] = []
+    if not diagnostics:
+        normalized, request_errors = validate_campaign_request(loaded, allowed_profiles)
+        for message in request_errors:
+            diagnostics.append(
+                campaign_diagnostic(
+                    "CAMPAIGN_REQUEST_INVALID",
+                    message,
+                    "Select one allowed profile_id and provide only bounded args accepted by its args_schema.",
+                    expected_shape={
+                        "kind": "campaign_request",
+                        "profile_id": "one key from allowed_campaign_profiles",
+                        "args": {},
+                        "allowed_campaign_profiles": allowed_profiles,
+                    },
+                )
+            )
+    if normalized is not None:
+        bindings_by_profile = record.get("campaign_bindings") if isinstance(record.get("campaign_bindings"), dict) else {}
+        bindings = bindings_by_profile.get(normalized["profile_id"], {})
+        try:
+            resolved_argv = resolve_campaign_argv(
+                normalized,
+                allowed_profiles=allowed_profiles,
+                bindings=bindings if isinstance(bindings, dict) else {},
+            )
+        except CampaignRequestError as exc:
+            diagnostics.append(
+                campaign_diagnostic(
+                    "CAMPAIGN_PROFILE_BINDINGS_INVALID",
+                    str(exc),
+                    "Repair the fixed task profile/bindings; do not add paths or executable fields to model output.",
+                )
+            )
+
+    diagnostics = enrich_diagnostics(diagnostics)
+    ok = not error_diagnostics(diagnostics)
+    diagnostics_payload = {
+        "generated_at": now_iso_like(),
+        "request_id": request_id,
+        "kind": "campaign_request",
+        "ok": ok,
+        "diagnostics": diagnostics,
+    }
+    report = {
+        "generated_at": now_iso_like(),
+        "request_id": request_id,
+        "kind": "campaign_request",
+        "ok": ok,
+        "skipped": ok,
+        "reason": "typed campaign request validated" if ok else "campaign request failed typed profile validation",
+        "normalized_request": normalized or {},
+        "allowed_campaign_profiles": allowed_profiles,
+        "resolved_argv": resolved_argv,
+        "shell": False,
+        "model_diagnostics": str(diagnostics_path),
+    }
+    write_json(diagnostics_path, diagnostics_payload)
+    write_json(report_path, report)
+    return {
+        "kind": "campaign_request",
+        "ok": ok,
+        "skipped": ok,
+        "reason": report["reason"],
+        "check_report": str(report_path),
+        "model_diagnostics": str(diagnostics_path),
+        "profile_id": normalized.get("profile_id", "") if isinstance(normalized, dict) else "",
+        "shell": False,
+    }
+
+
 def check_model_output(record: dict[str, Any], out_root: Path) -> dict[str, Any]:
     model = record.get("model_output") or {}
     normalized_path = Path(str(model.get("normalized_path", "")))
@@ -512,13 +869,13 @@ def check_model_output(record: dict[str, Any], out_root: Path) -> dict[str, Any]
     if kind == "attack_dsl":
         return check_attack_dsl(str(record["request_id"]), normalized_path, out_root)
     if kind == "flat_recipe":
-        return check_flat_recipe(str(record["request_id"]), normalized_path)
+        return check_flat_recipe(str(record["request_id"]), normalized_path, out_root)
     if kind == "cluster_seed":
         return check_cluster_seed(str(record["request_id"]), normalized_path, out_root)
-    if kind == "campaign_command":
-        return {"kind": kind, "ok": True, "skipped": True, "reason": "fixed large campaign command"}
+    if kind == "campaign_request":
+        return check_campaign_request(str(record["request_id"]), normalized_path, record, out_root)
     if kind == "needs_harness_extension":
-        return {"kind": kind, "ok": True, "skipped": True, "reason": "extension request"}
+        return check_harness_extension(str(record["request_id"]), normalized_path, out_root)
     return {"kind": kind, "ok": False, "skipped": True, "reason": f"unsupported model kind: {kind}"}
 
 
@@ -538,6 +895,7 @@ def execute_attack_dsl(
     preview_dir = out_root / "model_previews" / base
     audit_dir = out_root / "model_geometry_audit" / base
     check_report = checks_dir / f"{base}_check.json"
+    check_diagnostics = checks_dir / f"{base}_diagnostics.json"
     commands: list[dict[str, Any]] = []
 
     check_cmd = [
@@ -547,10 +905,18 @@ def execute_attack_dsl(
         "--check",
         "--report",
         str(check_report),
+        "--model-diagnostics",
+        str(check_diagnostics),
     ]
     commands.append(run_command(f"{request_id}: check DSL", check_cmd))
     if not commands[-1]["ok"]:
-        return {"kind": "attack_dsl", "ok": False, "commands": commands, "check_report": str(check_report)}
+        return {
+            "kind": "attack_dsl",
+            "ok": False,
+            "commands": commands,
+            "check_report": str(check_report),
+            "model_diagnostics": str(check_diagnostics),
+        }
 
     compile_cmd = [
         sys.executable,
@@ -592,6 +958,7 @@ def execute_attack_dsl(
         "ok": all(command["ok"] for command in commands),
         "commands": commands,
         "check_report": str(check_report),
+        "model_diagnostics": str(check_diagnostics),
         "compiled_dir": str(compiled_dir),
         "run_dir": str(run_dir),
         "triage_report": str(triage_dir / "triage_report.md"),
@@ -612,11 +979,19 @@ def execute_flat_recipe(
     run_dir = out_root / "model_runs" / base
     triage_dir = out_root / "model_triage" / base
     preview_dir = out_root / "model_previews" / base
+    diagnostics_path = out_root / "model_checks" / f"{base}_recipe_diagnostics.json"
     commands: list[dict[str, Any]] = []
-    validate_cmd = [sys.executable, "test_harness/tools/validate_recipe.py", str(recipe_path)]
+    validate_cmd = [
+        sys.executable,
+        "test_harness/tools/validate_recipe.py",
+        str(recipe_path),
+        "--check-assets",
+        "--model-diagnostics",
+        str(diagnostics_path),
+    ]
     commands.append(run_command(f"{request_id}: validate recipe", validate_cmd))
     if not commands[-1]["ok"]:
-        return {"kind": "flat_recipe", "ok": False, "commands": commands}
+        return {"kind": "flat_recipe", "ok": False, "commands": commands, "model_diagnostics": str(diagnostics_path)}
     run_cmd = [
         sys.executable,
         "test_harness/tools/run_recipes.py",
@@ -643,6 +1018,7 @@ def execute_flat_recipe(
         "kind": "flat_recipe",
         "ok": all(command["ok"] for command in commands),
         "commands": commands,
+        "model_diagnostics": str(diagnostics_path),
         "run_dir": str(run_dir),
         "triage_report": str(triage_dir / "triage_report.md"),
         "contact_sheet": str(preview_dir / "contact.png"),
@@ -682,19 +1058,17 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
     runner_available = runner.is_file()
 
     model_output_root = Path(args.model_output_root)
+    provenance_root = Path(args.model_output_provenance_root)
     for record in records:
         if record.get("errors"):
             continue
-        model = normalize_model_output(record, model_output_root)
+        model = normalize_model_output(record, model_output_root, provenance_root, out_root)
         record["model_output"] = model
         if model["kind"] == "missing":
             record["stage"] = "pending_model_output"
             continue
         if model["kind"] == "invalid":
             record["stage"] = "invalid_model_output"
-            continue
-        if model["kind"] == "needs_harness_extension":
-            record["stage"] = "needs_harness_extension"
             continue
         should_check = args.check_model_outputs or args.execute
         if should_check:
@@ -703,17 +1077,20 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
             if not check_result.get("ok"):
                 record["stage"] = "model_output_check_failed"
                 continue
+        if model["kind"] == "needs_harness_extension":
+            record["stage"] = "needs_harness_extension"
+            continue
         if not args.execute:
             record["stage"] = "model_output_checked" if should_check else "model_output_ready"
             continue
-        if model["kind"] == "campaign_command":
+        if model["kind"] == "campaign_request":
             record["execute_result"] = {
-                "kind": "campaign_command",
+                "kind": "campaign_request",
                 "ok": True,
                 "skipped": True,
-                "reason": "run fixed campaign command separately",
+                "reason": "execute typed campaigns through run_message_harness_pipeline.py with --campaign-dataset",
             }
-            record["stage"] = "executed"
+            record["stage"] = "campaign_request_ready"
             continue
         if not runner_available:
             record["stage"] = "model_output_checked"
@@ -731,8 +1108,6 @@ def execute_model_outputs(records: list[dict[str, Any]], args: argparse.Namespac
             result = execute_flat_recipe(str(record["request_id"]), normalized_path, out_root, runner, args.jobs, args.timeout)
         elif model["kind"] == "cluster_seed":
             result = execute_cluster_seed(str(record["request_id"]), normalized_path, out_root, runner, args.jobs, args.timeout)
-        elif model["kind"] == "campaign_command":
-            result = {"kind": "campaign_command", "ok": True, "skipped": True, "reason": "run fixed campaign command separately"}
         else:
             result = {"ok": False, "skipped": True, "reason": f"unsupported model kind: {model['kind']}"}
         record["execute_result"] = result
@@ -845,6 +1220,265 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def diagnostics_from_payload(payload: Any) -> list[dict[str, Any]]:
+    diagnostics: list[Any]
+    if isinstance(payload, dict):
+        diagnostics = payload.get("diagnostics", [])
+        if not diagnostics and (payload.get("error_code") or payload.get("code")):
+            diagnostics = [payload]
+    elif isinstance(payload, list):
+        diagnostics = payload
+    else:
+        diagnostics = []
+    if not isinstance(diagnostics, list):
+        return []
+    return enrich_diagnostics(diagnostics)
+
+
+def diagnostics_from_path(path_value: str) -> list[dict[str, Any]]:
+    if not path_value:
+        return []
+    path = Path(path_value)
+    if not path.is_file():
+        return []
+    try:
+        loaded = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return diagnostics_from_payload(loaded)
+
+
+def error_diagnostics(diagnostics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in diagnostics:
+        severity = str(item.get("severity") or "error").lower()
+        if severity not in {"error", "blocker"}:
+            continue
+        result.append(item)
+    return result
+
+
+def unique_diagnostic_values(diagnostics: list[dict[str, Any]], key: str, *, errors_only: bool = True) -> list[str]:
+    values: list[str] = []
+    source = error_diagnostics(diagnostics) if errors_only else diagnostics
+    for item in source:
+        value = item.get(key)
+        if not value and key == "error_code":
+            value = item.get("code")
+        if isinstance(value, str) and value and value not in values:
+            values.append(value)
+    return values
+
+
+def normalizer_diagnostics(model: dict[str, Any]) -> list[dict[str, Any]]:
+    report = model.get("normalizer_report")
+    return diagnostics_from_payload(report) if isinstance(report, dict) else []
+
+
+def normalizer_error_codes(model: dict[str, Any]) -> list[str]:
+    return unique_diagnostic_values(normalizer_diagnostics(model), "error_code")
+
+
+def diagnostics_error_codes(path_value: str) -> list[str]:
+    return unique_diagnostic_values(diagnostics_from_path(path_value), "error_code")
+
+
+def matrix_empty_bucket() -> dict[str, int]:
+    return {
+        "forms": 0,
+        "saved_outputs": 0,
+        "missing_outputs": 0,
+        "normalized_ok": 0,
+        "normalized_failed": 0,
+        "gate_attempted": 0,
+        "gate_passed": 0,
+        "gate_failed": 0,
+        "gate_skipped": 0,
+        "executed": 0,
+        "execute_passed": 0,
+        "execute_failed": 0,
+        "execute_skipped": 0,
+        "needs_harness_extension": 0,
+        "campaign_request": 0,
+        "saved_repair_outputs": 0,
+        "saved_repair_gate_passed": 0,
+        "saved_repair_gate_failed": 0,
+    }
+
+
+def add_matrix_row(bucket: dict[str, int], row: dict[str, Any]) -> None:
+    bucket["forms"] += 1
+    if row["saved_output"]:
+        bucket["saved_outputs"] += 1
+    else:
+        bucket["missing_outputs"] += 1
+    if row["normalized_ok"]:
+        bucket["normalized_ok"] += 1
+    elif row["saved_output"]:
+        bucket["normalized_failed"] += 1
+    if row["gate_attempted"]:
+        bucket["gate_attempted"] += 1
+        if row["gate_skipped"]:
+            bucket["gate_skipped"] += 1
+        elif row["gate_ok"]:
+            bucket["gate_passed"] += 1
+        else:
+            bucket["gate_failed"] += 1
+    if row["execute_attempted"]:
+        bucket["executed"] += 1
+        if row["execute_skipped"]:
+            bucket["execute_skipped"] += 1
+        elif row["execute_ok"]:
+            bucket["execute_passed"] += 1
+        else:
+            bucket["execute_failed"] += 1
+    if row["output_kind"] == "needs_harness_extension":
+        bucket["needs_harness_extension"] += 1
+    if row["output_kind"] == "campaign_request":
+        bucket["campaign_request"] += 1
+    if row.get("provenance_repair_output"):
+        bucket["saved_repair_outputs"] += 1
+        if row["gate_attempted"] and row["gate_ok"]:
+            bucket["saved_repair_gate_passed"] += 1
+        elif row["gate_attempted"] and not row["gate_skipped"]:
+            bucket["saved_repair_gate_failed"] += 1
+
+
+def build_model_output_matrix(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize saved model JSON only; this never generates or repairs output."""
+
+    counts = matrix_empty_bucket()
+    by_stage: dict[str, int] = {}
+    by_output_kind: dict[str, int] = {}
+    by_input_kind: dict[str, int] = {}
+    by_target_api: dict[str, dict[str, int]] = {}
+    by_example_pack: dict[str, dict[str, int]] = {}
+    by_interface_family: dict[str, dict[str, int]] = {}
+    by_run_profile: dict[str, dict[str, int]] = {}
+    by_provenance_source: dict[str, dict[str, int]] = {}
+    by_saved_repair_iteration: dict[str, dict[str, int]] = {}
+    rows: list[dict[str, Any]] = []
+    matrix_diagnostics: list[dict[str, Any]] = []
+
+    for record in records:
+        request_id = str(record.get("request_id") or "")
+        model = record.get("model_output") if isinstance(record.get("model_output"), dict) else {}
+        provenance = model.get("provenance") if isinstance(model.get("provenance"), dict) else {}
+        check_result = record.get("check_result") if isinstance(record.get("check_result"), dict) else {}
+        execute_result = record.get("execute_result") if isinstance(record.get("execute_result"), dict) else {}
+        output_kind = str(model.get("kind") or "not_checked")
+        saved_output = bool(model.get("found"))
+        normalized_ok = saved_output and output_kind not in {"missing", "invalid", "not_checked"}
+        gate_attempted = bool(check_result)
+        execute_attempted = bool(execute_result)
+        normalizer_items = normalizer_diagnostics(model)
+        gate_items = diagnostics_from_path(str(check_result.get("model_diagnostics") or ""))
+        combined_diagnostics = normalizer_items + gate_items
+        matrix_diagnostics.extend(combined_diagnostics)
+        gate_codes = unique_diagnostic_values(gate_items, "error_code")
+        source_type = str(provenance.get("source_type") or ("missing_output" if not saved_output else "unknown_saved_output"))
+        source_info = provenance_source_metadata(source_type, CAPABILITIES)
+        row = {
+            "request_id": request_id,
+            "target_api": record.get("target_api") or "unknown",
+            "geometry_family": record.get("geometry_family") or "unknown",
+            "preferred_output": record.get("preferred_output") or "",
+            "selected_example_pack": record.get("selected_example_pack") or "",
+            "interface_family": record.get("interface_family") or "unknown",
+            "run_profile_id": record.get("run_profile_id") or "unknown",
+            "stage": record.get("stage") or "unknown",
+            "saved_output": saved_output,
+            "input_kind": model.get("input_kind") or ("missing" if not saved_output else ""),
+            "input_path": model.get("input_path") or "",
+            "provenance_found": bool(provenance.get("found")),
+            "provenance_path": provenance.get("path") or "",
+            "provenance_source_type": source_type,
+            "provenance_source_known": bool(source_info.get("known")),
+            "provenance_source_category": source_info.get("category") or "unknown",
+            "provenance_source_label": provenance.get("source_label") or "",
+            "provenance_model": provenance.get("model") or "",
+            "provenance_interface": provenance.get("interface") or "",
+            "provenance_repair_output": bool(provenance.get("repair_output")),
+            "provenance_repair_iteration": int(provenance.get("repair_iteration") or 0),
+            "provenance_repair_context_path": provenance.get("repair_context_path") or "",
+            "provenance_repair_parent_output_path": provenance.get("repair_parent_output_path") or "",
+            "output_kind": output_kind,
+            "normalized_ok": normalized_ok,
+            "normalizer_error_codes": unique_diagnostic_values(normalizer_items, "error_code"),
+            "normalizer_diagnostic_categories": unique_diagnostic_values(normalizer_items, "catalog_category", errors_only=False),
+            "normalizer_diagnostic_operator_actions": unique_diagnostic_values(normalizer_items, "operator_action", errors_only=False),
+            "normalizer_diagnostic_catalog_coverages": unique_diagnostic_values(normalizer_items, "catalog_coverage", errors_only=False),
+            "gate_attempted": gate_attempted,
+            "gate_ok": bool(check_result.get("ok")) if gate_attempted else False,
+            "gate_skipped": bool(check_result.get("skipped")) if gate_attempted else False,
+            "gate_error_codes": gate_codes,
+            "gate_diagnostic_categories": unique_diagnostic_values(gate_items, "catalog_category", errors_only=False),
+            "gate_diagnostic_operator_actions": unique_diagnostic_values(gate_items, "operator_action", errors_only=False),
+            "gate_diagnostic_catalog_coverages": unique_diagnostic_values(gate_items, "catalog_coverage", errors_only=False),
+            "diagnostic_catalog_summary": catalog_summary(combined_diagnostics),
+            "execute_attempted": execute_attempted,
+            "execute_ok": bool(execute_result.get("ok")) if execute_attempted else False,
+            "execute_skipped": bool(execute_result.get("skipped")) if execute_attempted else False,
+        }
+        rows.append(row)
+        add_matrix_row(counts, row)
+
+        stage = str(row["stage"])
+        by_stage[stage] = by_stage.get(stage, 0) + 1
+        by_output_kind[output_kind] = by_output_kind.get(output_kind, 0) + 1
+        input_kind = str(row["input_kind"] or "unknown")
+        by_input_kind[input_kind] = by_input_kind.get(input_kind, 0) + 1
+        api_key = str(row["target_api"] or "unknown")
+        pack_key = str(row["selected_example_pack"] or "none")
+        family_key = str(row["interface_family"] or "unknown")
+        profile_key = str(row["run_profile_id"] or "unknown")
+        provenance_key = str(row["provenance_source_type"] or "unknown_saved_output")
+        saved_repair_key = str(row["provenance_repair_iteration"]) if row["provenance_repair_output"] else "not_repair"
+        api_bucket = by_target_api.setdefault(api_key, matrix_empty_bucket())
+        pack_bucket = by_example_pack.setdefault(pack_key, matrix_empty_bucket())
+        family_bucket = by_interface_family.setdefault(family_key, matrix_empty_bucket())
+        profile_bucket = by_run_profile.setdefault(profile_key, matrix_empty_bucket())
+        provenance_bucket = by_provenance_source.setdefault(provenance_key, matrix_empty_bucket())
+        saved_repair_bucket = by_saved_repair_iteration.setdefault(saved_repair_key, matrix_empty_bucket())
+        add_matrix_row(api_bucket, row)
+        add_matrix_row(pack_bucket, row)
+        add_matrix_row(family_bucket, row)
+        add_matrix_row(profile_bucket, row)
+        add_matrix_row(provenance_bucket, row)
+        add_matrix_row(saved_repair_bucket, row)
+
+    return {
+        "boundary": "saved_json_only_no_model_calls",
+        "counts": counts,
+        "diagnostic_catalog_summary": catalog_summary(matrix_diagnostics),
+        "by_stage": by_stage,
+        "by_output_kind": by_output_kind,
+        "by_input_kind": by_input_kind,
+        "by_target_api": by_target_api,
+        "by_example_pack": by_example_pack,
+        "by_interface_family": by_interface_family,
+        "by_run_profile": by_run_profile,
+        "by_provenance_source": by_provenance_source,
+        "by_saved_repair_iteration": by_saved_repair_iteration,
+        "rows": rows,
+    }
+
+
+def markdown_bucket_table(title: str, buckets: dict[str, dict[str, int]]) -> list[str]:
+    if not buckets:
+        return []
+    lines = [f"### {title}", "", "| key | forms | saved | normalized | gate passed | gate failed | extension | pending |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for key, bucket in sorted(buckets.items()):
+        lines.append(
+            f"| `{key}` | {bucket.get('forms', 0)} | {bucket.get('saved_outputs', 0)} | "
+            f"{bucket.get('normalized_ok', 0)} | {bucket.get('gate_passed', 0)} | "
+            f"{bucket.get('gate_failed', 0)} | {bucket.get('needs_harness_extension', 0)} | "
+            f"{bucket.get('missing_outputs', 0)} |"
+        )
+    lines.append("")
+    return lines
+
+
 def markdown_report(summary: dict[str, Any]) -> str:
     lines = [
         "# Interface Distillation Campaign",
@@ -859,20 +1493,89 @@ def markdown_report(summary: dict[str, Any]) -> str:
     ]
     for stage, count in sorted((summary.get("stage_counts") or {}).items()):
         lines.append(f"- `{stage}`: `{count}`")
+    matrix = summary.get("model_output_matrix") if isinstance(summary.get("model_output_matrix"), dict) else {}
+    if matrix:
+        counts = matrix.get("counts") if isinstance(matrix.get("counts"), dict) else {}
+        lines.extend(
+            [
+                "",
+                "## Model Output Matrix",
+                "",
+                f"- Boundary: `{matrix.get('boundary')}`",
+                f"- Forms: `{counts.get('forms', 0)}`",
+                f"- Saved outputs: `{counts.get('saved_outputs', 0)}`",
+                f"- Missing outputs: `{counts.get('missing_outputs', 0)}`",
+                f"- Normalized ok: `{counts.get('normalized_ok', 0)}`",
+                f"- Normalized failed: `{counts.get('normalized_failed', 0)}`",
+                f"- Gate passed: `{counts.get('gate_passed', 0)}`",
+                f"- Gate failed: `{counts.get('gate_failed', 0)}`",
+                f"- Saved repair outputs: `{counts.get('saved_repair_outputs', 0)}`",
+                f"- Saved repair gate passed: `{counts.get('saved_repair_gate_passed', 0)}`",
+                f"- Saved repair gate failed: `{counts.get('saved_repair_gate_failed', 0)}`",
+                f"- Needs harness extension: `{counts.get('needs_harness_extension', 0)}`",
+                "",
+            ]
+        )
+        diagnostic_summary = matrix.get("diagnostic_catalog_summary") if isinstance(matrix.get("diagnostic_catalog_summary"), dict) else {}
+        if diagnostic_summary:
+            lines.extend(
+                [
+                    "### Diagnostic Catalog Summary",
+                    "",
+                    f"- coverage: `{diagnostic_summary.get('coverage', {})}`",
+                    f"- categories: `{diagnostic_summary.get('categories', {})}`",
+                    f"- operator_actions: `{diagnostic_summary.get('operator_actions', {})}`",
+                    f"- uncataloged_count: `{diagnostic_summary.get('uncataloged_count', 0)}`",
+                    "",
+                ]
+            )
+        by_api = matrix.get("by_target_api") if isinstance(matrix.get("by_target_api"), dict) else {}
+        by_pack = matrix.get("by_example_pack") if isinstance(matrix.get("by_example_pack"), dict) else {}
+        by_family = matrix.get("by_interface_family") if isinstance(matrix.get("by_interface_family"), dict) else {}
+        by_profile = matrix.get("by_run_profile") if isinstance(matrix.get("by_run_profile"), dict) else {}
+        by_provenance = matrix.get("by_provenance_source") if isinstance(matrix.get("by_provenance_source"), dict) else {}
+        by_saved_repair = matrix.get("by_saved_repair_iteration") if isinstance(matrix.get("by_saved_repair_iteration"), dict) else {}
+        lines.extend(markdown_bucket_table("By Interface Family", by_family))
+        lines.extend(markdown_bucket_table("By Run Profile", by_profile))
+        lines.extend(markdown_bucket_table("By Provenance Source", by_provenance))
+        lines.extend(markdown_bucket_table("By Saved Repair Iteration", by_saved_repair))
+        lines.extend(markdown_bucket_table("By Target API", by_api))
+        lines.extend(markdown_bucket_table("By Example Pack", by_pack))
+    matrix_rows_by_request: dict[str, dict[str, Any]] = {}
+    if matrix and isinstance(matrix.get("rows"), list):
+        for row in matrix["rows"]:
+            if isinstance(row, dict) and row.get("request_id"):
+                matrix_rows_by_request[str(row["request_id"])] = row
     lines.extend(["", "## Forms", ""])
     for record in summary.get("records", []):
         model = record.get("model_output") or {}
         check_result = record.get("check_result") or {}
         execute_result = record.get("execute_result") or {}
+        provenance = model.get("provenance") if isinstance(model.get("provenance"), dict) else {}
+        matrix_row = matrix_rows_by_request.get(str(record.get("request_id") or ""), {})
         lines.append(
             f"- `{record.get('request_id')}` stage=`{record.get('stage')}` api=`{record.get('target_api')}` "
             f"geometry=`{record.get('geometry_family')}` preferred=`{record.get('preferred_output')}` "
-            f"model=`{model.get('kind', '')}` check_ok=`{check_result.get('ok', '')}` run_ok=`{execute_result.get('ok', '')}`"
+            f"family=`{record.get('interface_family', '')}` run_profile=`{record.get('run_profile_id', '')}` "
+            f"example_pack=`{record.get('selected_example_pack', '')}` model=`{model.get('kind', '')}` "
+            f"source=`{provenance.get('source_type', '')}` "
+            f"saved_repair=`{matrix_row.get('provenance_repair_iteration', 0) if matrix_row.get('provenance_repair_output') else 0}` "
+            f"check_ok=`{check_result.get('ok', '')}` run_ok=`{execute_result.get('ok', '')}`"
         )
         if record.get("prompt_path"):
             lines.append(f"  prompt: `{record['prompt_path']}`")
         if model.get("input_path"):
             lines.append(f"  model_output: `{model.get('input_path')}`")
+        if matrix_row.get("gate_diagnostic_operator_actions") or matrix_row.get("normalizer_diagnostic_operator_actions"):
+            actions = sorted(
+                set(matrix_row.get("normalizer_diagnostic_operator_actions", []))
+                | set(matrix_row.get("gate_diagnostic_operator_actions", []))
+            )
+            categories = sorted(
+                set(matrix_row.get("normalizer_diagnostic_categories", []))
+                | set(matrix_row.get("gate_diagnostic_categories", []))
+            )
+            lines.append(f"  diagnostic_actions: `{actions}` categories: `{categories}`")
         if check_result.get("check_report"):
             lines.append(f"  check_report: `{check_result.get('check_report')}`")
         if check_result.get("compiled_dir"):
@@ -881,10 +1584,6 @@ def markdown_report(summary: dict[str, Any]) -> str:
             lines.append(f"  triage: `{execute_result.get('triage_report')}`")
         if execute_result.get("contact_sheet"):
             lines.append(f"  preview: `{execute_result.get('contact_sheet')}`")
-        if record.get("fixed_commands") and record.get("stage") == "pending_model_output":
-            lines.append("  next fixed commands:")
-            for command in record["fixed_commands"]:
-                lines.append(f"  - `{command}`")
     lines.append("")
     if summary.get("api_smoke"):
         lines.extend(["## API Smoke", "", f"- `{summary['api_smoke']}`", ""])
@@ -895,7 +1594,16 @@ def markdown_report(summary: dict[str, Any]) -> str:
     if summary.get("seeded_examples"):
         lines.extend(["## Seeded Examples", ""])
         for item in summary["seeded_examples"]:
-            lines.append(f"- `{item.get('request_id')}` kind=`{item.get('kind')}` path=`{item.get('path')}`")
+            if item.get("status") == "skipped":
+                lines.append(
+                    f"- `{item.get('request_id')}` kind=`{item.get('kind')}` status=`skipped` "
+                    f"reason=`{item.get('reason')}` source_file=`{item.get('source_file')}`"
+                )
+            else:
+                lines.append(
+                    f"- `{item.get('request_id')}` kind=`{item.get('kind')}` "
+                    f"status=`{item.get('status') or 'seeded'}` path=`{item.get('path')}`"
+                )
         lines.append("")
     return "\n".join(lines)
 
@@ -936,10 +1644,12 @@ def main() -> int:
     seeded_examples: list[dict[str, Any]] = []
     if args.seed_example_model_outputs:
         try:
-            abc_fetch_root = Path(args.abc_fetch_root) if args.abc_fetch_root else None
+            abc_inputs = manifest.get("abc_inputs") if isinstance(manifest.get("abc_inputs"), dict) else {}
+            abc_fetch_root = Path(args.abc_fetch_root or str(abc_inputs.get("preferred_fetch_root") or "artifacts/abc_fetch_smoke"))
             seeded_examples = seed_example_model_outputs(
                 Path(args.example_catalog),
                 Path(args.model_output_root),
+                Path(args.model_output_provenance_root),
                 abc_fetch_root,
             )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -949,13 +1659,13 @@ def main() -> int:
     api_smoke = run_api_smoke(args, out_root)
     abc_sample_smoke = run_abc_sample(args, manifest, out_root)
     source_tasks = run_source_tasks(args, out_root)
-
     summary = {
         "generated_at": now_iso_like(),
         "manifest": str(manifest_path),
         "forms_dir": str(forms_dir),
         "out_root": str(out_root),
         "model_output_root": args.model_output_root,
+        "model_output_provenance_root": args.model_output_provenance_root,
         "runner": args.runner,
         "execute": args.execute,
         "check_model_outputs": args.check_model_outputs,
@@ -963,6 +1673,7 @@ def main() -> int:
         "seeded_examples": seeded_examples,
         "records": records,
         "stage_counts": summarize_records(records),
+        "model_output_matrix": build_model_output_matrix(records),
         "api_smoke": api_smoke,
         "abc_sample_smoke": abc_sample_smoke,
         "source_tasks": source_tasks,

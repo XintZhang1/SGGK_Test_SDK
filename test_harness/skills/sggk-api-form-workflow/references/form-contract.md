@@ -6,7 +6,9 @@ Required fields:
 
 - `request_id`: stable id for generated task and artifacts.
 - `owner`: developer or team responsible for the request.
-- `target_api`: one of `api_boolean`, `check_sgt`, `step_import`, `iges_import`, `step_roundtrip`, `iges_roundtrip`, or `needs_harness_extension`.
+- `target_api`: an API id from `interface_capabilities.json`. Unknown API ids
+  are valid at intake but must produce `needs_harness_extension` rather than an
+  invented runnable recipe.
 - `test_goal`: what behavior should be exercised.
 - `risk_summary`: why normal API success may hide a bug.
 - `geometry.family`: input family such as `primitive`, `generated_extrude`, `generated_thicken`, `generated_sweep`, `support_sweep_bspline`, `generated_revolve`, `pre_boolean`, `loaded_sgt`, `exchange_file`, or `corpus`.
