@@ -19,6 +19,7 @@ from validate_recipe import validate_file
 
 CASE_ID_RE = re.compile(r"^case_id=(?P<case_id>.+)$", re.MULTILINE)
 ARTIFACT_DIR_RE = re.compile(r"^artifact_dir=(?P<artifact_dir>.+)$", re.MULTILINE)
+SAFE_CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=120.0, help="Per-recipe timeout in seconds")
     parser.add_argument("--limit", type=int, default=0, help="Maximum recipes to run; 0 means all")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel runner processes")
+    parser.add_argument("--sdk-threads", type=int, default=1, help="SDK threads per isolated runner process")
+    parser.add_argument(
+        "--capture-flat-topotrack",
+        action="store_true",
+        help="Enable crash-prone flat-recipe TopoTrack querying inside each isolated runner process",
+    )
     parser.add_argument("--fail-fast", action="store_true", help="Stop after first failed recipe")
     parser.add_argument("--resume", action="store_true", help="Skip previous passing recipes")
     parser.add_argument(
@@ -88,6 +95,13 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 
+def write_json_atomic(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
 def file_sha1(path: Path) -> str:
     digest = hashlib.sha1()
     with path.open("rb") as in_file:
@@ -114,18 +128,28 @@ def read_recipe_list(path: Path) -> list[str]:
 
 def iter_recipe_files(paths: list[str], recipe_lists: list[str]) -> list[Path]:
     files: list[Path] = []
+    seen: set[str] = set()
     expanded_paths = list(paths)
     for raw_list in recipe_lists:
         expanded_paths.extend(read_recipe_list(Path(raw_list)))
     for raw in expanded_paths:
         path = Path(raw)
         if path.is_file() and path.suffix.lower() == ".json":
-            files.append(path.resolve())
+            candidates = [path.resolve()]
         elif path.is_dir():
-            files.extend(child.resolve() for child in path.rglob("*.json") if child.is_file())
+            candidates = sorted(
+                (child.resolve() for child in path.rglob("*.json") if child.is_file()),
+                key=lambda item: str(item).lower(),
+            )
         else:
-            files.append(path.resolve())
-    return sorted(set(files), key=lambda item: str(item).lower())
+            candidates = [path.resolve()]
+        for candidate in candidates:
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(candidate)
+    return files
 
 
 def select_shard(items: list[Path], shard_count: int, shard_index: int) -> list[Path]:
@@ -143,6 +167,100 @@ def recipe_case_id(path: Path) -> str:
     if isinstance(value, dict) and isinstance(value.get("case_id"), str) and value["case_id"]:
         return value["case_id"]
     return path.stem
+
+
+def recipe_metadata(path: Path) -> dict[str, Any]:
+    value = read_json(path)
+    recipe = value if isinstance(value, dict) else {}
+    return {
+        "case_id": recipe_case_id(path),
+        "api": recipe.get("api") if isinstance(recipe.get("api"), str) else "",
+        "recipe_sha1": file_sha1(path) if path.is_file() else "",
+    }
+
+
+def initialize_run_state(runner: Path, recipe_path: Path, out_root: Path) -> tuple[Path, dict[str, Any]]:
+    metadata = recipe_metadata(recipe_path)
+    case_id = str(metadata["case_id"])
+    if not SAFE_CASE_ID_RE.fullmatch(case_id):
+        raise ValueError(f"unsafe case_id for artifact path: {case_id!r}")
+    root = out_root.resolve()
+    case_dir = (root / case_id).resolve()
+    if case_dir.parent != root:
+        raise ValueError(f"case output escaped --out root: {case_id!r}")
+    state_path = case_dir / "run_state.json"
+    state = {
+        "schema_version": 1,
+        "case_id": metadata["case_id"],
+        "api": metadata["api"],
+        "phase": "launching",
+        "last_phase": "launching",
+        "started_at": now_iso_like(),
+        "updated_at": now_iso_like(),
+        "recipe_path": str(recipe_path),
+        "recipe_sha1": metadata["recipe_sha1"],
+        "runner_path": str(runner),
+        "runner_sha1": file_sha1(runner),
+        "completed": False,
+    }
+    write_json_atomic(state_path, state)
+    frozen_recipe = case_dir / "input" / "recipe.json"
+    frozen_recipe.parent.mkdir(parents=True, exist_ok=True)
+    frozen_recipe.write_bytes(recipe_path.read_bytes())
+    return state_path, state
+
+
+def finalize_run_state(
+    state_path: Path,
+    state: dict[str, Any],
+    *,
+    returncode: int,
+    timed_out: bool,
+    stderr: str,
+) -> None:
+    last_phase, phase_evidence = infer_execution_phase(state_path.parent)
+    state.update(
+        {
+            "phase": "timed_out" if timed_out else "completed",
+            "last_phase": last_phase,
+            "phase_evidence": phase_evidence,
+            "updated_at": now_iso_like(),
+            "completed": True,
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "stderr_tail": (stderr or "")[-2000:],
+        }
+    )
+    write_json_atomic(state_path, state)
+
+
+def infer_execution_phase(case_dir: Path) -> tuple[str, str]:
+    """Infer the last reached runner phase from monotonic artifact markers."""
+
+    report_dir = case_dir / "report"
+    phase_markers = (
+        ("oracle", (report_dir / "validation.json", report_dir / "roundtrip_comparison.json")),
+        ("topocheck", (report_dir / "topo_check.json",)),
+        ("serialize_result", (report_dir / "status.json",)),
+    )
+    for phase, markers in phase_markers:
+        for marker in markers:
+            if marker.is_file():
+                return phase, str(marker)
+
+    output_dir = case_dir / "output"
+    if output_dir.is_dir() and any(path.is_file() for path in output_dir.rglob("*")):
+        return "serialize_result", str(output_dir)
+
+    input_dir = case_dir / "input"
+    if input_dir.is_dir() and any(
+        path.is_file() and path.name != "recipe.json" for path in input_dir.rglob("*")
+    ):
+        return "invoke_api", str(input_dir)
+    manifest = case_dir / "manifest.json"
+    if manifest.is_file():
+        return "build_inputs", str(manifest)
+    return "parse", "launcher_run_state_only"
 
 
 def parse_stdout_field(stdout: str, regex: re.Pattern[str], group: str) -> str:
@@ -171,11 +289,26 @@ def validate_recipes(paths: list[Path], skip_validation: bool) -> int:
     return failures
 
 
-def previous_results(summary_path: Path, resume_mode: str) -> dict[str, dict[str, Any]]:
+def validate_unique_case_ids(paths: list[Path]) -> int:
+    owners: dict[str, Path] = {}
+    duplicates = 0
+    for path in paths:
+        case_id = recipe_case_id(path)
+        previous = owners.get(case_id)
+        if previous is None:
+            owners[case_id] = path
+            continue
+        duplicates += 1
+        print(f"duplicate case_id {case_id!r}: {previous} and {path}", file=sys.stderr)
+    return duplicates
+
+
+def previous_results(summary_path: Path, resume_mode: str, runner: Path) -> dict[str, dict[str, Any]]:
     summary = read_json(summary_path)
     if not isinstance(summary, dict):
         return {}
     previous: dict[str, dict[str, Any]] = {}
+    runner_sha1 = file_sha1(runner)
     for item in summary.get("results", []):
         if not isinstance(item, dict):
             continue
@@ -183,6 +316,11 @@ def previous_results(summary_path: Path, resume_mode: str) -> dict[str, dict[str
         if not isinstance(recipe, str) or not recipe:
             continue
         returncode = item.get("returncode")
+        recipe_path = Path(recipe)
+        if not recipe_path.is_file():
+            continue
+        if item.get("recipe_sha1") != file_sha1(recipe_path) or item.get("runner_sha1") != runner_sha1:
+            continue
         completed = isinstance(returncode, int)
         passed = returncode == 0
         key = str(Path(recipe).resolve())
@@ -202,9 +340,27 @@ def skipped_result(previous: dict[str, Any], recipe_path: Path, recipe_index: in
     return result
 
 
-def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> dict[str, Any]:
+def run_one(
+    runner: Path,
+    recipe_path: Path,
+    out_root: Path,
+    timeout: float,
+    sdk_threads: int = 1,
+    capture_flat_topotrack: bool = False,
+) -> dict[str, Any]:
     started = time.perf_counter()
-    cmd = [str(runner), "--recipe", str(recipe_path), "--out", str(out_root)]
+    state_path, run_state = initialize_run_state(runner, recipe_path, out_root)
+    cmd = [
+        str(runner),
+        "--recipe",
+        str(recipe_path),
+        "--out",
+        str(out_root),
+        "--sdk-threads",
+        str(sdk_threads),
+    ]
+    if capture_flat_topotrack:
+        cmd.append("--capture-flat-topotrack")
     try:
         completed = subprocess.run(
             cmd,
@@ -218,7 +374,7 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
         stdout = completed.stdout or ""
         case_id = parse_stdout_field(stdout, CASE_ID_RE, "case_id") or recipe_case_id(recipe_path)
         artifact_dir = parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir") or infer_artifact_dir(out_root, case_id)
-        return {
+        result = {
             "recipe": str(recipe_path),
             "case_id": case_id,
             "artifact_dir": artifact_dir,
@@ -229,7 +385,18 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             "stderr": completed.stderr,
             "timed_out": False,
             "skipped": False,
+            "recipe_sha1": run_state["recipe_sha1"],
+            "runner_sha1": run_state["runner_sha1"],
+            "run_state": str(state_path),
         }
+        finalize_run_state(
+            state_path,
+            run_state,
+            returncode=completed.returncode,
+            timed_out=False,
+            stderr=completed.stderr or "",
+        )
+        return result
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
@@ -239,7 +406,7 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             stderr = stderr.decode("utf-8", errors="replace")
         case_id = parse_stdout_field(stdout, CASE_ID_RE, "case_id") or recipe_case_id(recipe_path)
         artifact_dir = parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir") or infer_artifact_dir(out_root, case_id)
-        return {
+        result = {
             "recipe": str(recipe_path),
             "case_id": case_id,
             "artifact_dir": artifact_dir,
@@ -250,7 +417,18 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             "stderr": stderr,
             "timed_out": True,
             "skipped": False,
+            "recipe_sha1": run_state["recipe_sha1"],
+            "runner_sha1": run_state["runner_sha1"],
+            "run_state": str(state_path),
         }
+        finalize_run_state(
+            state_path,
+            run_state,
+            returncode=124,
+            timed_out=True,
+            stderr=stderr,
+        )
+        return result
 
 
 def summarize_results(
@@ -318,6 +496,8 @@ def write_manifest(
         "timeout": args.timeout,
         "limit": args.limit,
         "jobs": args.jobs,
+        "sdk_threads": args.sdk_threads,
+        "capture_flat_topotrack": args.capture_flat_topotrack,
         "resume": args.resume,
         "resume_mode": args.resume_mode,
         "shard_count": args.shard_count,
@@ -334,6 +514,8 @@ def write_manifest(
 def validate_args(args: argparse.Namespace) -> None:
     if args.jobs <= 0:
         raise ValueError("--jobs must be >= 1")
+    if args.sdk_threads <= 0 or args.sdk_threads > 64:
+        raise ValueError("--sdk-threads must be in [1, 64]")
     if not args.recipe and not args.recipe_list:
         raise ValueError("at least one --recipe or --recipe-list is required")
     if args.timeout <= 0:
@@ -481,6 +663,7 @@ def main() -> int:
         selected_recipes = selected_recipes[: args.limit]
 
     validation_failures = validate_recipes(selected_recipes, args.no_validate)
+    validation_failures += validate_unique_case_ids(selected_recipes)
     if validation_failures:
         print(f"recipe validation failed for {validation_failures} file(s)", file=sys.stderr)
         return 2
@@ -500,7 +683,7 @@ def main() -> int:
         print("selected_recipes=0")
         return 0
 
-    previous = previous_results(summary_path, args.resume_mode) if args.resume else {}
+    previous = previous_results(summary_path, args.resume_mode, runner) if args.resume else {}
     results: list[dict[str, Any]] = []
     stopped_early = False
 
@@ -517,7 +700,14 @@ def main() -> int:
                 record_result(skipped_result(previous[key], recipe_path, index - 1))
                 continue
             print(f"[{index}/{len(selected_recipes)}] {recipe_path}")
-            result = run_one(runner, recipe_path, out_root, args.timeout)
+            result = run_one(
+                runner,
+                recipe_path,
+                out_root,
+                args.timeout,
+                args.sdk_threads,
+                args.capture_flat_topotrack,
+            )
             result["recipe_index"] = index - 1
             record_result(result)
             if result["returncode"] != 0 and args.fail_fast:
@@ -539,7 +729,15 @@ def main() -> int:
                     record_result(skipped_result(previous[key], recipe_path, index - 1))
                     continue
                 print(f"[{index}/{len(selected_recipes)}] {recipe_path}")
-                future = executor.submit(run_one, runner, recipe_path, out_root, args.timeout)
+                future = executor.submit(
+                    run_one,
+                    runner,
+                    recipe_path,
+                    out_root,
+                    args.timeout,
+                    args.sdk_threads,
+                    args.capture_flat_topotrack,
+                )
                 future.recipe_index = index - 1  # type: ignore[attr-defined]
                 pending.add(future)
 

@@ -1,0 +1,23 @@
+{
+  "case_id": "plugin_combine_bodies_smoke",
+  "api": "api_combine_bodies",
+  "combine_clone": true,
+  "modeling_tol": 0.01,
+  "check_valid": true,
+  "topo_track": false,
+  "target_kind": "solid_sphere",
+  "target_radius": 10.0,
+  "target_translate_x": 0.0,
+  "tool_kind": "solid_sphere",
+  "tool_radius": 5.0,
+  "tool_translate_x": 30.0,
+  "expectations": {
+    "result_bodies": {
+      "min": 1,
+      "max": 1
+    },
+    "require_property_calculations": true,
+    "require_finite_properties": true,
+    "require_nonnegative_volume": true
+  }
+}

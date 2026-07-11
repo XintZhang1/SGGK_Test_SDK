@@ -1,0 +1,86 @@
+{
+  "kind": "cluster_seed",
+  "schema_version": 1,
+  "cluster_id": "occ_fuzzy_confusion_cluster_smoke",
+  "source_ref": "https://github.com/Open-Cascade-SAS/OCCT/blob/4f95ecaa3b690e34988d42e2ca7fe882e7a8bc7d/src/ModelingAlgorithms/TKBO/BOPAlgo/BOPAlgo_Options.cxx#L49-L108",
+  "hypothesis": "A fuzzy tolerance clamp near Precision::Confusion should be expanded into exact, geometry-tolerance, topology-tolerance, source-literal, generated-topology, and large-coordinate sibling cases.",
+  "review_required": true,
+  "constants": {
+    "confusion_tol": 0.000001
+  },
+  "contact_path": "tool.chain.2.translate_x",
+  "contact_value": 170.0,
+  "source_literal_offsets": [
+    {
+      "suffix": "confusion_tol",
+      "direction": "-",
+      "offset": "confusion_tol",
+      "boolean_type": "INTERSECTION",
+      "min_result_bodies": 0
+    }
+  ],
+  "target": {
+    "chain": [
+      {"id": "seed_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+      {"id": "seed_rect_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+      {"id": "seed_target_origin", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+    ]
+  },
+  "tool": {
+    "chain": [
+      {"id": "seed_tool_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+      {"id": "seed_tool_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+      {"id": "seed_tool_side_place", "op": "transform", "translate_x": 170.0, "translate_y": 0.0, "translate_z": -20.0}
+    ]
+  },
+  "generated_sibling": {
+    "case_suffix": "preboolean_recut",
+    "hypothesis": "The same source tolerance predicate is exercised after an earlier boolean has generated split topology.",
+    "contact_path": "tool.chain.2.translate_x",
+    "contact_value": 225.0,
+    "target": {
+      "chain": [
+        {"id": "pre_base_cylinder", "op": "primitive", "kind": "solid_cylinder", "radius": 180.0, "height": 360.0, "angle": "tau"},
+        {
+          "id": "pre_cut_boolean",
+          "op": "boolean",
+          "boolean_type": "SUBTRACTION",
+          "operation_tol": "topo_tol",
+          "tool": {
+            "chain": [
+              {"id": "pre_tool_wedge", "op": "primitive", "kind": "solid_wedge", "length": 140.0, "width": 240.0, "height": 200.0},
+              {"id": "pre_tool_place", "op": "transform", "translate": [40.0, 0.0, 0.0]}
+            ]
+          }
+        }
+      ]
+    },
+    "tool": {
+      "chain": [
+        {"id": "recut_circle_profile", "op": "circle_profile", "radius": 45.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+        {"id": "recut_line_sweep", "op": "sweep_line", "height": 420.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+        {"id": "recut_tolerance_place", "op": "transform", "translate_x": 225.0, "translate_y": 0.0, "translate_z": -30.0}
+      ]
+    }
+  },
+  "large_coordinate_sibling": {
+    "case_suffix": "large_coordinate",
+    "hypothesis": "The same tolerance predicate is exercised near the SDK upper-coordinate operating range without exceeding max_model_size.",
+    "contact_path": "tool.chain.2.translate_x",
+    "contact_value": 399970.0,
+    "target": {
+      "chain": [
+        {"id": "large_rect_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+        {"id": "large_rect_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+        {"id": "large_target_place", "op": "transform", "translate": [399800.0, 0.0, 0.0]}
+      ]
+    },
+    "tool": {
+      "chain": [
+        {"id": "large_tool_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+        {"id": "large_tool_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+        {"id": "large_tool_tolerance_place", "op": "transform", "translate_x": 399970.0, "translate_y": 0.0, "translate_z": -20.0}
+      ]
+    }
+  }
+}

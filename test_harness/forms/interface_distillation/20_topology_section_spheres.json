@@ -1,0 +1,28 @@
+{
+  "request_id": "iface_20_topology_section_spheres",
+  "owner": "kernel-dev",
+  "target_api": "api_topology_section",
+  "sdk_source_refs": [
+    "SGGK Boolean/API.h: api_topology_section"
+  ],
+  "test_goal": "Generate intersecting topology-section recipes that preserve Edge and Vertex outputs as distinct topology artifacts.",
+  "risk_summary": "Section results are heterogeneous topology lists; coercing them to bodies or merging edge/vertex counts creates false-green tests and loses reproducible output evidence.",
+  "geometry": {
+    "family": "primitive",
+    "target_builder": "solid_sphere",
+    "tool_builder": "solid_sphere",
+    "parameter_notes": "Use the calibrated overlapping sphere placement that returns two edges and zero standalone vertices."
+  },
+  "tolerance_focus": [
+    "transverse_intersection"
+  ],
+  "oracles": [
+    "topology_section_counts",
+    "topocheck"
+  ],
+  "expected_behavior": "The overlapping sphere case returns exactly two Edge artifacts and zero standalone Vertex artifacts, all passing TopoCheck.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return flat_recipe only; never express topology_section results through result_bodies."
+}

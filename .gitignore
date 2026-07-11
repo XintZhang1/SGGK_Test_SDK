@@ -1,5 +1,6 @@
 /.vs/
 /.vscode/
+/.venv/
 /artifacts/
 /build/
 /SGK*/
@@ -18,9 +19,14 @@
 
 __pycache__/
 *.py[cod]
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 CMakeCache.txt
 CMakeFiles/
+CMakeUserPresets.json
 cmake_install.cmake
 *.sln
 *.vcxproj.user

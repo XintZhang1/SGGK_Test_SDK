@@ -1,0 +1,10 @@
+{
+  "case_id": "example_iges_roundtrip_imported_sgt",
+  "api": "iges_roundtrip",
+  "source_file": "artifacts/interface_distillation/02_step_import_abc/top_complex_import/example/output/result_1.sgt",
+  "source_body_index": 0,
+  "iges_face_only_mode": false,
+  "iges_write_sgk_specified_data": false,
+  "roundtrip_abs_tol": 0.01,
+  "roundtrip_rel_tol": 0.000001
+}

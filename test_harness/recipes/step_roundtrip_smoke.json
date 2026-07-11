@@ -1,7 +1,7 @@
 {
   "case_id": "step_roundtrip_smoke",
   "api": "step_roundtrip",
-  "source_file": "artifacts/boolean_smoke/output/result_1.sgt",
+  "source_file": "test_harness/fixtures/bug_records/freecad_e67361f3777637c2/tool.sgt",
   "source_body_index": 0,
   "step_app_protocol": "AP203",
   "step_surface_to_bspline": true,

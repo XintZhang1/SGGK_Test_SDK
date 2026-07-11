@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "pack_id": "check_sgt_loaded_assets",
+  "title": "check_sgt loaded asset replay",
+  "interface_family": "asset_replay",
+  "markdown_path": "test_harness/interface_example_packs/check_sgt_loaded_assets.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/check_sgt.example_recipe.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["check_sgt"],
+  "geometry_families": ["loaded_sgt"],
+  "builder_terms": ["SGT", "replay", "TopoCheck"],
+  "fallback": "Return needs_harness_extension when the requested asset replay needs new file formats or checker outputs."
+}

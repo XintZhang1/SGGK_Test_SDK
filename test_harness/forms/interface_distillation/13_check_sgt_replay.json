@@ -1,0 +1,31 @@
+{
+  "request_id": "iface_13_check_sgt_replay",
+  "owner": "qa-dev",
+  "target_api": "check_sgt",
+  "sdk_source_refs": [
+    "SGGK topology serialization/deserialization",
+    "TopoCheck replay of imported outputs and reduced failures"
+  ],
+  "test_goal": "Re-open a selected SGT output from import, recut, debug geometry, or reduced bug records and verify it remains loadable/checkable.",
+  "risk_summary": "Failure handoff depends on durable SGT assets; replay must distinguish body outputs from standalone topology/debug assets and preserve source paths.",
+  "geometry": {
+    "family": "loaded_sgt",
+    "input_asset": "artifacts/interface_distillation/<run>/<case>/output/result_1.sgt",
+    "parameter_notes": "For non-body topology assets, report topology type/count instead of body property expectations."
+  },
+  "tolerance_focus": [
+    "import_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "The SGT should deserialize and TopoCheck cleanly, or produce a replayable failure with the source asset path preserved.",
+  "case_count": 5,
+  "run_profile": "known_bug_regression",
+  "input_assets": {
+    "source_file": "artifacts/interface_distillation/<run>/<case>/output/result_1.sgt"
+  },
+  "notes": "Use flat_recipe and keep all referenced SGTs under artifacts unless a reviewed bug record promotes minimal fixtures."
+}

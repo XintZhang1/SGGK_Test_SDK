@@ -1,0 +1,12 @@
+{
+  "case_id": "example_check_sgt_replay",
+  "api": "check_sgt",
+  "source_file": "artifacts/interface_distillation/example/output/result_1.sgt",
+  "expectations": {
+    "result_bodies": {
+      "min": 1
+    },
+    "require_property_calculations": false,
+    "require_finite_properties": false
+  }
+}

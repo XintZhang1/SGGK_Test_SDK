@@ -1,0 +1,861 @@
+{
+  "schema_version": 1,
+  "purpose": "Machine-readable diagnostic catalog for Message API output repair and fixed model-output preflight gates.",
+  "boundary": {
+    "model_calls": false,
+    "direct_api_calls": false,
+    "runs_sdk": false,
+    "applies_patches": false,
+    "commits_changes": false,
+    "model_authoring_role": "message_api_gateway_only",
+    "production_flow": "prompt_pack_to_message_api_gateway_to_saved_json_to_fixed_gates"
+  },
+  "fallback_policy": {
+    "family_only_is_allowed": true,
+    "family_only_disposition": "Use the matching family defaults in repair prompts, then promote frequent real failures to exact code entries.",
+    "uncataloged_disposition": "Treat as a catalog gap before moving the flow into an intranet production-like run."
+  },
+  "families": [
+    {
+      "pattern": "^NORMALIZED_",
+      "category": "normalizer",
+      "default_severity": "info",
+      "repair_hint": "Prefer the canonical field emitted by the normalizer in future model output.",
+      "operator_action": "accept_if_gate_passes"
+    },
+    {
+      "pattern": "^MISSING_",
+      "category": "schema_or_evidence",
+      "default_severity": "error",
+      "repair_hint": "Add the required field, evidence, or patch-plan entry named by the diagnostic path/message.",
+      "operator_action": "repair_or_complete_evidence"
+    },
+    {
+      "pattern": "^ASSET_INPUT_",
+      "category": "input_asset_readiness",
+      "default_severity": "test_gap",
+      "repair_hint": "Materialize the declared local source file, dataset root, or dataset index before asking the model to produce runnable recipes.",
+      "operator_action": "materialize_input_asset"
+    },
+    {
+      "pattern": "^UNSUPPORTED_",
+      "category": "unsupported_capability",
+      "default_severity": "error",
+      "repair_hint": "Use a supported capability from the registry, or return needs_harness_extension when fixed harness support is missing.",
+      "operator_action": "repair_or_extension_request"
+    },
+    {
+      "pattern": "^INVALID_",
+      "category": "invalid_shape_or_value",
+      "default_severity": "error",
+      "repair_hint": "Change the JSON at the diagnostic path to the supported shape or value described by the message.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^EMPTY_",
+      "category": "invalid_shape_or_value",
+      "default_severity": "error",
+      "repair_hint": "Provide a non-empty value for the required field.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^CONDITIONALLY_",
+      "category": "conditional_schema",
+      "default_severity": "error",
+      "repair_hint": "Add the conditionally required field or change the controlling option.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^FILE_",
+      "category": "file_io",
+      "default_severity": "error",
+      "repair_hint": "Save or point to the expected local JSON/evidence file before rerunning the fixed gate.",
+      "operator_action": "refresh_local_file"
+    },
+    {
+      "pattern": "^RECIPE_",
+      "category": "flat_recipe_validator",
+      "default_severity": "error",
+      "repair_hint": "Adjust the flat recipe to match the supported runner recipe schema.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^DSL_",
+      "category": "dsl_compiler",
+      "default_severity": "error",
+      "repair_hint": "Follow a known-good DSL example and use only supported DSL fields.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^MODEL_OUTPUT_",
+      "category": "saved_output",
+      "default_severity": "error",
+      "repair_hint": "Save exactly one model-output JSON object with a supported kind and registered provenance sidecar.",
+      "operator_action": "repair_saved_output_or_provenance"
+    },
+    {
+      "pattern": "^ORACLE_|^TOPOCHECK_",
+      "category": "expectation_oracle",
+      "default_severity": "error",
+      "repair_hint": "Use supported expectation fields such as result_bodies, require_finite_properties, total_volume, point_relations, clash_checks, distance_checks, or plane_extreme_checks.",
+      "operator_action": "repair_saved_json"
+    },
+    {
+      "pattern": "^EXTENSION_",
+      "category": "harness_extension_request",
+      "default_severity": "warning",
+      "repair_hint": "Make the needs_harness_extension request structured enough for deterministic validation and typed patch planning.",
+      "operator_action": "repair_extension_request"
+    },
+    {
+      "pattern": "^PATCH_|^UNKNOWN_PATCH_",
+      "category": "harness_patch_plan",
+      "default_severity": "warning",
+      "repair_hint": "Make the patch plan explicit, layer-scoped, and reviewable before generating or applying a diff.",
+      "operator_action": "repair_patch_proposal"
+    },
+    {
+      "pattern": "^DIRECT_MODEL_|^SECRET_|^BOUNDARY_",
+      "category": "intranet_boundary",
+      "default_severity": "blocker",
+      "repair_hint": "Keep Message API transport and credentials inside the authoring gateway; fixed harness, SDK execution, and patch gates may consume only saved JSON and provenance.",
+      "operator_action": "remove_boundary_violation"
+    },
+    {
+      "pattern": "^CATALOG_|^DIAGNOSTIC_",
+      "category": "diagnostic_catalog",
+      "default_severity": "warning",
+      "repair_hint": "Fix the diagnostic catalog entry, family pattern, or source scan configuration before trusting repair-prompt metadata.",
+      "operator_action": "repair_catalog_metadata"
+    },
+    {
+      "pattern": "^PROVENANCE_",
+      "category": "provenance",
+      "default_severity": "blocker",
+      "repair_hint": "Fix the saved-output or regression-asset provenance sidecar without adding secrets or direct model-call dependencies.",
+      "operator_action": "repair_provenance_metadata"
+    },
+    {
+      "pattern": "^REGRESSION_ASSET_",
+      "category": "regression_asset",
+      "default_severity": "test_gap",
+      "repair_hint": "Refresh asset manifest links, triage fingerprints, bug registry references, replay plans, or provenance metadata.",
+      "operator_action": "refresh_regression_asset"
+    },
+    {
+      "pattern": "^EXAMPLE_|^PACK_",
+      "category": "example_pack",
+      "default_severity": "blocker",
+      "repair_hint": "Fix the example-pack manifest, Markdown, or referenced example JSON before using the pack in prompts.",
+      "operator_action": "repair_example_pack"
+    },
+    {
+      "pattern": "^NEGATIVE_",
+      "category": "negative_gate",
+      "default_severity": "blocker",
+      "repair_hint": "Negative checks must fail for the expected reason; investigate any unexpected pass.",
+      "operator_action": "repair_gate_or_fixture"
+    },
+    {
+      "pattern": "^SCHEMA_|^VALIDATOR_",
+      "category": "schema_validator_review",
+      "default_severity": "blocker",
+      "repair_hint": "Keep schema and validator changes paired, tested, and registered in the adapter backlog.",
+      "operator_action": "repair_schema_or_validator"
+    },
+    {
+      "pattern": "^RUNNER_|^BUILD_|^SDK_",
+      "category": "runner_review",
+      "default_severity": "blocker",
+      "repair_hint": "Runner-facing changes require fixed build evidence and SDK smoke evidence before they can be accepted.",
+      "operator_action": "refresh_runner_evidence"
+    },
+    {
+      "pattern": "^SEMANTIC_|^API_",
+      "category": "semantic_review",
+      "default_severity": "blocker",
+      "repair_hint": "Refresh semantic evidence so registry, validator, runner dispatch, SDK call, and examples agree.",
+      "operator_action": "repair_adapter_or_refresh_evidence"
+    },
+    {
+      "pattern": "^UNSAFE_|^DIFF_|^ERROR_|^BINARY_|^BRITTLE_",
+      "category": "diff_review",
+      "default_severity": "blocker",
+      "repair_hint": "Keep implementation changes deterministic, scoped to allowed paths, and covered by fixed gates.",
+      "operator_action": "repair_implementation"
+    },
+    {
+      "pattern": "^CAPABILITY_|^ASSET_|^ATTACK_|^FLAT_|^HARNESS_|^NO_|^REPAIR_|^TARGET_|^EXTRA_|^UNKNOWN_",
+      "category": "workflow_review",
+      "default_severity": "warning",
+      "repair_hint": "Inspect the referenced workflow artifact and either add missing evidence or submit a bounded Message API repair request.",
+      "operator_action": "repair_or_refresh_evidence"
+    }
+  ],
+  "codes": {
+    "INTAKE_TARGET_API_UNSUPPORTED": {
+      "category": "interface_intake",
+      "severity": "info",
+      "message": "The form names a target API that is not currently runnable in the capability registry.",
+      "repair_hint": "Keep the model output as needs_harness_extension unless the registry, validator, runner, and examples are extended first.",
+      "operator_action": "route_to_extension_request",
+      "model_visible": true
+    },
+    "INTAKE_ORACLE_UNKNOWN": {
+      "category": "interface_intake",
+      "severity": "risk",
+      "message": "The form names an oracle family outside the current registry.",
+      "repair_hint": "Map the oracle to a supported family only when the mapping is exact; otherwise request a harness extension.",
+      "operator_action": "review_oracle_or_extension_request",
+      "model_visible": true
+    },
+    "INTAKE_RUN_PROFILE_UNKNOWN": {
+      "category": "interface_intake",
+      "severity": "risk",
+      "message": "The form uses a run profile that is not registered in interface_capabilities.json.",
+      "repair_hint": "Add run profile metadata to the registry or change the form to a registered profile before building prompt packs.",
+      "operator_action": "repair_form_or_registry_metadata",
+      "model_visible": false
+    },
+    "INTAKE_CASE_COUNT_OUT_OF_RANGE": {
+      "category": "interface_intake",
+      "severity": "info",
+      "message": "The form case_count is outside the recommended fixed harness range.",
+      "repair_hint": "Use a bounded case count or a typed campaign_request profile for large corpus-scale runs.",
+      "operator_action": "review_form_scale",
+      "model_visible": true
+    },
+    "INTAKE_EXAMPLE_PACK_MISSING": {
+      "category": "interface_intake",
+      "severity": "risk",
+      "message": "A runnable form did not select an interface example pack.",
+      "repair_hint": "Add or adjust example-pack matching metadata so the model receives a small known-good context.",
+      "operator_action": "repair_example_pack_mapping",
+      "model_visible": false
+    },
+    "INTAKE_FORM_ERROR": {
+      "category": "interface_intake",
+      "severity": "error",
+      "message": "The interface form failed required field validation.",
+      "repair_hint": "Repair the form before generating prompts or accepting saved model output.",
+      "operator_action": "repair_form_metadata",
+      "model_visible": false
+    },
+    "INTAKE_TASK_BUILD_FAILED": {
+      "category": "interface_intake",
+      "severity": "error",
+      "message": "The fixed task builder could not construct the deterministic task context.",
+      "repair_hint": "Inspect the form and capability registry mismatch, then rerun the intake readiness gate.",
+      "operator_action": "repair_form_or_registry_metadata",
+      "model_visible": false
+    },
+    "INTAKE_READINESS_GATE_FAILED": {
+      "category": "interface_intake",
+      "severity": "error",
+      "message": "The intake readiness gate failed before producing a complete report.",
+      "repair_hint": "Inspect the gate error, required files, and JSON validity before running intranet preflight again.",
+      "operator_action": "repair_gate_inputs",
+      "model_visible": false
+    },
+    "MISSING_TARGET_TOOL": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "An api_boolean DSL case is missing direct target/tool objects.",
+      "repair_hint": "Move runnable body definitions into each case.target and case.tool; do not rely on top-level chains plus case inputs.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "MISSING_CASES": {
+      "category": "dsl_or_normalizer",
+      "severity": "error",
+      "message": "The DSL has no non-empty cases array.",
+      "repair_hint": "Return attack_dsl.dsl with cases: [{case_id, target, tool, expectations}].",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNSUPPORTED_DSL_VERSION": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "The DSL version is not supported by the fixed compiler.",
+      "repair_hint": "Use dsl_version 1 or omit dsl_version.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNSUPPORTED_BOOLEAN_CHAIN_PATTERN": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "The boolean chain pattern cannot be safely compiled.",
+      "repair_hint": "Use supported direct body builders or supported chain steps; otherwise return needs_harness_extension.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "UNSUPPORTED_BODY_BUILDER": {
+      "category": "dsl_or_recipe",
+      "severity": "error",
+      "message": "The body builder is not listed in the capability registry.",
+      "repair_hint": "Use a body builder listed in interface_capabilities.json, or return needs_harness_extension for the missing builder.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "UNSUPPORTED_EXPECTATION_ORACLE": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "The expectation/oracle family is not supported by the compiler.",
+      "repair_hint": "Use supported expectation fields such as result_bodies, require_finite_properties, total_volume, total_abs_volume, point_relations, face_point_relations, clash_checks, distance_checks, or plane_extreme_checks. Do not emit an expectations.properties array.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "UNSUPPORTED_CHAIN_OP": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "A chain step operation is not supported.",
+      "repair_hint": "Use supported chain ops such as primitive, body, load_sgt, direct body-builder ops, rect_profile, circle_profile, extrude, thicken, sweep_line, support_sweep, revolve, boolean, or transform.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "INVALID_CHAIN_ORDER": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "A chain step appears before the dependency it needs.",
+      "repair_hint": "Order chain steps so profile builders precede generated-body ops and transforms/booleans follow an existing body.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "MISSING_BOOLEAN_CHAIN_TOOL": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "A nested boolean chain step lacks a tool body.",
+      "repair_hint": "Include a tool object in the boolean step, or place the base body followed by the tool body/transform immediately before op=boolean.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNKNOWN_NUMERIC_SYMBOL": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "A numeric expression references an undeclared symbol.",
+      "repair_hint": "Use constants declared in dsl.constants or numeric literals.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNDEFINED_POINT_REF": {
+      "category": "expectation_oracle",
+      "severity": "error",
+      "message": "An oracle references a point_ref that is not declared.",
+      "repair_hint": "Declare every referenced point_ref under root key_points or case.key_points, or replace the reference with an explicit point array.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_NUMERIC_FIELD": {
+      "category": "dsl_or_recipe",
+      "severity": "error",
+      "message": "A field that must be numeric has an invalid value.",
+      "repair_hint": "Use a number in the allowed range, or a supported numeric expression string where expressions are accepted.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_BOOLEAN_FIELD": {
+      "category": "dsl_or_recipe",
+      "severity": "error",
+      "message": "A field that must be boolean has an invalid value.",
+      "repair_hint": "Use literal true/false. For boolean_volume_relation, set sample_input_properties=true and boolean_volume_relation=true instead of an object, formula, or relation string.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "DSL_COMPILE_ERROR": {
+      "category": "dsl_compiler",
+      "severity": "error",
+      "message": "The DSL compiler fell back to a generic compile error.",
+      "repair_hint": "Follow a known-good DSL example and use only supported DSL fields.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_ORACLES": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The oracles field is present but not an array.",
+      "repair_hint": "Move supported oracle checks into case.expectations.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_EXPECTATIONS": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The expectations field is present but not an object.",
+      "repair_hint": "Use an object with result_bodies, distance_checks, clash_checks, or other supported fields.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_ORACLE": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "An oracle array entry is not an object.",
+      "repair_hint": "Remove the invalid oracle or rewrite it as a supported expectation object.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "ORACLE_TYPE_MISSING": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "An oracle entry is missing type/kind.",
+      "repair_hint": "Use a supported expectation field rather than a prose-only oracle.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNSUPPORTED_ORACLE": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The oracle type cannot be safely normalized.",
+      "repair_hint": "Use a supported oracle type or return needs_harness_extension for missing oracle support.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "UNSUPPORTED_GLOBAL_CHAINS_SCHEMA": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The model invented a global chains schema that cannot be safely mapped to per-case target/tool bodies.",
+      "repair_hint": "Rewrite each case with direct target and tool objects, or use supported per-case chain fields.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "MODEL_OUTPUT_NOT_OBJECT": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The saved model output is not one JSON object.",
+      "repair_hint": "Return exactly one JSON object with kind and the matching payload field.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "UNSUPPORTED_MODEL_KIND": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The model output kind is not supported.",
+      "repair_hint": "Use one of attack_dsl, flat_recipe, cluster_seed, needs_harness_extension, or campaign_request.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "MODEL_OUTPUT_READ_FAILED": {
+      "category": "normalizer",
+      "severity": "error",
+      "message": "The saved model output could not be read as JSON.",
+      "repair_hint": "Save valid JSON without markdown fences or prose around it.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "MISSING_REQUIRED_KEY": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A flat recipe is missing a required key.",
+      "repair_hint": "Add the required field named in the diagnostic path/message.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "SOURCE_FILE_NOT_FOUND": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A flat recipe source_file does not exist in the current workspace.",
+      "repair_hint": "Use a source_file that exists in the current artifacts/input root, or return needs_harness_extension if the corpus asset must be materialized first.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "UNSUPPORTED_RECIPE_API": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A flat recipe API is not supported by the fixed runner schema.",
+      "repair_hint": "Use a runnable recipe API listed in interface_capabilities.json, or return needs_harness_extension.",
+      "operator_action": "repair_or_extension_request",
+      "model_visible": true
+    },
+    "INVALID_ENUM_VALUE": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A field value is outside the supported enum.",
+      "repair_hint": "Use one of the enum values listed in the validation message or expected_shape.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "EMPTY_REQUIRED_FIELD": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A required field is empty.",
+      "repair_hint": "Provide a non-empty value for the field named in the diagnostic path.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_FIELD_TYPE": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A field has the wrong JSON type.",
+      "repair_hint": "Use the exact JSON type required by the runner recipe schema.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "CONDITIONALLY_REQUIRED_FIELD": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A field is required because another option is enabled.",
+      "repair_hint": "Add this field or change the controlling option so the field is no longer required.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "RECIPE_VALIDATION_ERROR": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "The flat recipe validator emitted a generic schema error.",
+      "repair_hint": "Adjust the flat recipe to match the supported runner recipe schema.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "FILE_NOT_FOUND": {
+      "category": "file_io",
+      "severity": "error",
+      "message": "A required JSON/evidence file does not exist.",
+      "repair_hint": "Save the expected JSON file before running this fixed gate.",
+      "operator_action": "refresh_local_file",
+      "model_visible": true
+    },
+    "INVALID_JSON": {
+      "category": "json_parse",
+      "severity": "error",
+      "message": "A required JSON/evidence file is not valid JSON.",
+      "repair_hint": "Return exactly one valid JSON object with no markdown wrapper or prose outside JSON.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "INVALID_RECIPE_ROOT": {
+      "category": "flat_recipe_validator",
+      "severity": "error",
+      "message": "A flat recipe root is not a JSON object.",
+      "repair_hint": "Flat recipe output must normalize to one JSON object, not an array, string, or scalar.",
+      "operator_action": "repair_saved_json",
+      "model_visible": true
+    },
+    "NORMALIZED_OPERATION_ALIAS": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted operation to boolean_type.",
+      "repair_hint": "Prefer boolean_type with SUBTRACTION, INTERSECTION, or UNION in attack DSL.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_TYPE_TO_OP": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted a chain step type field to op.",
+      "repair_hint": "Use op for DSL chain steps.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_TYPE_TO_KIND": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted body type to kind.",
+      "repair_hint": "Use kind for direct body builder specs.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_OFFSET_DISTANCE_ALIAS": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted api_offset_body distance to offset_distance.",
+      "repair_hint": "Prefer offset_distance in api_offset_body flat recipes.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_RESULT_BODIES_ORACLE": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted a result_bodies oracle.",
+      "repair_hint": "Prefer expectations.result_bodies directly.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_PROPERTIES_ORACLE": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted a properties oracle.",
+      "repair_hint": "Use explicit total_volume or total_abs_volume bounds when analytically known.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "NORMALIZED_ORACLE_ARRAY": {
+      "category": "normalizer",
+      "severity": "info",
+      "message": "The normalizer converted a supported oracle array entry.",
+      "repair_hint": "Prefer the corresponding expectations array directly.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "TOPOCHECK_ORACLE_IS_IMPLICIT": {
+      "category": "normalizer",
+      "severity": "warning",
+      "message": "topocheck is not a standalone DSL expectation.",
+      "repair_hint": "Use check_valid/topo_track options or concrete topology-related expectations.",
+      "operator_action": "repair_if_gate_warns",
+      "model_visible": true
+    },
+    "NORMALIZED_EXTENSION_ALIAS": {
+      "category": "harness_extension_request",
+      "severity": "info",
+      "message": "The extension validator normalized a common alias field.",
+      "repair_hint": "Prefer the canonical needs_harness_extension field named in the diagnostic.",
+      "operator_action": "accept_if_gate_passes",
+      "model_visible": true
+    },
+    "MISSING_EXTENSION_FIELD": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "A required extension request string field is missing or empty.",
+      "repair_hint": "Add the field so reviewers can understand the requested harness extension.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_INPUT_ASSET_NOT_HARNESS_EXTENSION": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "The model converted a missing local input asset into a proposed harness extension.",
+      "repair_hint": "Materialize the source asset, update the form input_assets path, or create an asset-preparation action; do not add skip/synthetic-source harness behavior to hide missing corpus data.",
+      "operator_action": "materialize_input_asset",
+      "model_visible": true
+    },
+    "MISSING_EXTENSION_OBJECT": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "A required extension request object field is missing.",
+      "repair_hint": "Add the field as structured JSON, not prose.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_EXTENSION_FIELD_TYPE": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "An extension request field has the wrong type.",
+      "repair_hint": "Use the JSON type described in the diagnostic message.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_EXTENSION_SMOKE_CASE": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "minimum_smoke_case is missing a stable valid case_id.",
+      "repair_hint": "Add a small smoke recipe or DSL case id such as api_new_feature_smoke_001.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_PROPOSED_RECIPE_FIELD_NAME": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "proposed_recipe_fields contains an invalid field name.",
+      "repair_hint": "Use stable JSON field names such as source_file, blend_radius, or expectations.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_PROPOSED_RECIPE_FIELD_DESCRIPTION": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "A proposed recipe field has no useful type or meaning description.",
+      "repair_hint": "Describe the type, constraints, and runner meaning so a patch proposal can implement the field without guessing.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_SMOKE_API_MISMATCH": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "minimum_smoke_case.api differs from the extension api.",
+      "repair_hint": "Use the same requested API unless the smoke case intentionally targets a helper API and notes why.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_SMOKE_CASE_NOT_CONCRETE": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "minimum_smoke_case is not concrete enough to show a first runnable case.",
+      "repair_hint": "Add fields from proposed_recipe_fields with small literal smoke values beyond case_id and api.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_SMOKE_FIELD_NOT_PROPOSED": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "minimum_smoke_case uses fields that were not declared in proposed_recipe_fields.",
+      "repair_hint": "Declare every smoke input field in proposed_recipe_fields, or change the smoke case to use declared fields.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_SMOKE_CASE_NOT_FROM_PROPOSED_FIELDS": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "minimum_smoke_case does not instantiate any declared proposed_recipe_fields.",
+      "repair_hint": "Use at least one field from proposed_recipe_fields with a small literal smoke value.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_ARTIFACTS_NOT_REPORTABLE": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "proposed_artifacts do not look like reviewable report, diagnostic, preview, or validation outputs.",
+      "repair_hint": "Name concrete artifacts such as recipe_summary.json, validation.json, triage_report.md, diagnostics.json, or preview/contact.png.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_ORACLE_STATUS_ONLY": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "validation_oracle relies only on API success, return code, or status.",
+      "repair_hint": "Add a concrete oracle such as properties, topocheck, distance/relation checks, roundtrip drift, validation report fields, or triage diagnostics.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_ORACLE_NOT_ACTIONABLE": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "validation_oracle does not name a concrete reportable check.",
+      "repair_hint": "Name the report field or oracle family that proves correctness beyond API status.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_PATCH_PLAN": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "An extension request has no patch_plan.",
+      "repair_hint": "Add patch_plan steps for schema, validator, normalizer, runner, and tests.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_PATCH_PLAN": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "patch_plan is not a non-empty list.",
+      "repair_hint": "Add reviewable patch steps instead of a prose-only extension request.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_PATCH_PLAN_STEP": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "A patch_plan entry is not an object.",
+      "repair_hint": "Use {\"layer\":\"schema\",\"change\":\"...\",\"files\":[]}.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "UNKNOWN_PATCH_LAYER": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "A patch_plan layer is missing or unknown.",
+      "repair_hint": "Use one of the known patch layers reported by the validator.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_PATCH_CHANGE": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "A patch_plan step has no change description.",
+      "repair_hint": "Describe the smallest intended harness change for this layer.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "PATCH_PLAN_MISSING_LAYERS": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "patch_plan does not cover the required layers.",
+      "repair_hint": "Include schema, validator, normalizer, runner, and tests before a patch agent starts.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_NOT_OBJECT": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "The extension request root is not one JSON object.",
+      "repair_hint": "Return a needs_harness_extension object.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_EXTENSION_KIND": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "The extension request kind is not needs_harness_extension.",
+      "repair_hint": "Set kind to needs_harness_extension for unsupported APIs, builders, or oracles.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_PROPOSED_ARTIFACTS": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "proposed_artifacts is missing.",
+      "repair_hint": "List expected reports, smoke outputs, or debug artifacts the extension should produce.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "MISSING_VALIDATION_ORACLE": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "validation_oracle is missing.",
+      "repair_hint": "Describe at least one property, topology, relation, or regression oracle.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "INVALID_VALIDATION_ORACLE": {
+      "category": "harness_extension_request",
+      "severity": "error",
+      "message": "validation_oracle has an unsupported type.",
+      "repair_hint": "Use structured oracle JSON where possible.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "EXTENSION_API_ALREADY_SUPPORTED": {
+      "category": "harness_extension_request",
+      "severity": "warning",
+      "message": "The requested API is already listed in interface_capabilities.json.",
+      "repair_hint": "Explain whether the missing support is a body builder, oracle, runner field, or profile rather than a new API.",
+      "operator_action": "repair_extension_request",
+      "model_visible": true
+    },
+    "SECRET_LIKE_API_KEY": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "A secret-like API key appears in production harness paths.",
+      "repair_hint": "Remove the key and keep direct API credentials only in local environment variables outside committed harness paths.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    },
+    "DIRECT_MODEL_API_DOMAIN": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "A model API domain appears outside the isolated authoring gateway/provider configuration boundary.",
+      "repair_hint": "Keep endpoints inside authoring_gateway configuration; runner, validators, fixed gates, recipes, and reports must remain provider-neutral.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    },
+    "DIRECT_MODEL_CHAT_COMPLETIONS": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "A chat-completions call appears outside the isolated Message API client.",
+      "repair_hint": "Only authoring_gateway/client.py may perform configured Message API transport; fixed harness tools consume staged JSON.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    },
+    "DIRECT_MODEL_ENV_VAR": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "A provider credential/configuration environment variable appears outside authoring gateway configuration or documentation.",
+      "repair_hint": "Resolve provider variables only in authoring_gateway/config.py and never persist their secret values.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    },
+    "MODEL_CLIENT_LIBRARY": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "A model client implementation appears outside the isolated authoring gateway.",
+      "repair_hint": "Keep network transport in authoring_gateway/client.py; runner and deterministic gate modules must not import it.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    },
+    "BOUNDARY_FLAG_TRUE": {
+      "category": "intranet_boundary",
+      "severity": "blocker",
+      "message": "Boundary metadata incorrectly wires model/API behavior into the deterministic harness.",
+      "repair_hint": "Pipeline provenance may record model_calls/direct_api_calls=true, but wired_into_harness, executes_commands, applies_patches, and commits_changes must remain false.",
+      "operator_action": "remove_boundary_violation",
+      "model_visible": false
+    }
+  }
+}

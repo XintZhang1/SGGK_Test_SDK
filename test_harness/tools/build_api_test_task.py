@@ -6,122 +6,32 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any
 
+from harness_capabilities import (
+    api_guidance,
+    derive_interface_family,
+    load_capabilities,
+    oracle_guidance,
+    run_profile_metadata,
+    run_profiles,
+    supported_apis,
+    supported_body_builders,
+    supported_oracles,
+)
+from campaign_profiles import CAMPAIGN_PROFILES, allowed_campaign_profiles
 
-SUPPORTED_APIS = [
-    "api_boolean",
-    "check_sgt",
-    "step_import",
-    "iges_import",
-    "step_roundtrip",
-    "iges_roundtrip",
-    "needs_harness_extension",
-]
-
-SUPPORTED_BODY_BUILDERS = [
-    "solid_cylinder",
-    "solid_wedge",
-    "solid_sphere",
-    "solid_cone",
-    "solid_torus",
-    "extrude_rect",
-    "thicken_rect_sheet",
-    "sweep_circle_line",
-    "support_sweep_bspline_surface",
-    "revolve_line",
-    "revolve_rect",
-    "pre_boolean_cylinder_wedge",
-    "loaded_sgt",
-]
-
-SUPPORTED_ORACLES = [
-    "result_bodies",
-    "properties",
-    "boolean_volume_relation",
-    "point_relation",
-    "face_point_relation",
-    "clash",
-    "distance",
-    "plane_extreme",
-    "roundtrip_comparison",
-    "topocheck",
-]
-
-API_GUIDANCE: dict[str, dict[str, Any]] = {
-    "api_boolean": {
-        "preferred_format": "attack_dsl",
-        "body_required": ["target", "tool"],
-        "notes": [
-            "Use DSL target/tool builders or chains.",
-            "Set stable id fields on chain steps that create, split, trim, or transform topology.",
-            "For tolerance risks, use sweeps or paired_sweeps around exact contact, geom_tol, and topo_tol.",
-        ],
-    },
-    "check_sgt": {
-        "preferred_format": "flat_recipe",
-        "body_required": ["source_file"],
-        "notes": [
-            "Use a flat recipe with api=check_sgt and a source_file.",
-            "For non-body SGT topology assets, report topology counts rather than body property oracles.",
-        ],
-    },
-    "step_import": {
-        "preferred_format": "flat_recipe",
-        "body_required": ["source_file"],
-        "notes": [
-            "Use source_file pointing at .step or .stp.",
-            "Follow import with corpus discovery or SGT recut when imported bodies should be attacked further.",
-        ],
-    },
-    "iges_import": {
-        "preferred_format": "flat_recipe",
-        "body_required": ["source_file"],
-        "notes": [
-            "Use source_file pointing at .iges or .igs.",
-            "Follow import with corpus discovery or SGT recut when imported bodies should be attacked further.",
-        ],
-    },
-    "step_roundtrip": {
-        "preferred_format": "flat_recipe",
-        "body_required": ["source_file", "source_body_index"],
-        "notes": [
-            "Use a source .sgt body, export to STEP, import back, then compare properties and bbox.",
-            "Select AP203, AP214, or AP242 explicitly when source risk names an exchange protocol.",
-        ],
-    },
-    "iges_roundtrip": {
-        "preferred_format": "flat_recipe",
-        "body_required": ["source_file", "source_body_index"],
-        "notes": [
-            "Use a source .sgt body, export to IGES, import back, then compare properties and bbox.",
-            "Set face-only or SGK specified data flags only when the risk calls for them.",
-        ],
-    },
-    "needs_harness_extension": {
-        "preferred_format": "needs_harness_extension",
-        "body_required": [],
-        "notes": [
-            "Return an extension request instead of pretending the runner supports the API.",
-            "Include the minimal new recipe shape and one concrete smoke case.",
-        ],
-    },
-}
-
-ORACLE_GUIDANCE: dict[str, str] = {
-    "result_bodies": "Assert result_bodies min/max when non-empty or empty output is part of the truth.",
-    "properties": "Assert finite length/area/volume and metric ranges when analytic bounds are known.",
-    "boolean_volume_relation": "Use sample_input_properties=true only for stable solid boolean inputs.",
-    "point_relation": "Use named key_points and point_ref for critical inside/outside/boundary probes.",
-    "face_point_relation": "Prefer uv_fraction or uv on selected faces unless an exact 3D face point is known.",
-    "clash": "Use role_a/role_b among target, tool, and result with NoClash, AnyClash, or exact ClashType.",
-    "distance": "Use minimum distance for clearance/tangency and set expected/min/max with explicit tolerances.",
-    "plane_extreme": "Use exact coordinate-plane distance probes for hard min/max coordinate oracles.",
-    "roundtrip_comparison": "Rely on roundtrip_comparison.json for STEP/IGES source/result drift.",
-    "topocheck": "TopoCheck is always part of runner pass/fail for supported body outputs.",
-}
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CAPABILITIES = load_capabilities()
+SUPPORTED_APIS = supported_apis(CAPABILITIES)
+SUPPORTED_BODY_BUILDERS = supported_body_builders(CAPABILITIES)
+SUPPORTED_ORACLES = supported_oracles(CAPABILITIES)
+API_GUIDANCE: dict[str, dict[str, Any]] = api_guidance(CAPABILITIES)
+ORACLE_GUIDANCE: dict[str, str] = oracle_guidance(CAPABILITIES)
+RUN_PROFILES: dict[str, dict[str, Any]] = run_profiles(CAPABILITIES)
 
 REQUIRED_FIELDS = [
     "request_id",
@@ -165,10 +75,384 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def rel_display(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def as_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def read_text_if_present(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8-sig")
+
+
+def repo_path(raw: Any) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def matches_example_pack(form: dict[str, Any], pack: dict[str, Any]) -> bool:
+    match = pack.get("match") if isinstance(pack.get("match"), dict) else {}
+    target_apis = as_string_list(match.get("target_apis"))
+    if target_apis and form.get("target_api") not in target_apis:
+        return False
+
+    geometry = form.get("geometry") if isinstance(form.get("geometry"), dict) else {}
+    family = geometry.get("family")
+    geometry_families = as_string_list(match.get("geometry_families"))
+    if geometry_families and family in geometry_families:
+        return True
+
+    form_oracles = set(as_string_list(form.get("oracles")))
+    oracle_terms = set(as_string_list(match.get("oracles_any")))
+    if oracle_terms and form_oracles.intersection(oracle_terms):
+        return True
+
+    terms = [term.lower() for term in as_string_list(match.get("builder_terms"))]
+    if not terms:
+        return not geometry_families and not oracle_terms
+    haystack = " ".join(
+        str(value)
+        for value in (
+            geometry.get("target_builder"),
+            geometry.get("tool_builder"),
+            form.get("test_goal"),
+            form.get("risk_summary"),
+        )
+        if value
+    ).lower()
+    return any(term in haystack for term in terms)
+
+
+def select_example_pack(form: dict[str, Any]) -> dict[str, Any] | None:
+    packs = CAPABILITIES.get("example_packs") if isinstance(CAPABILITIES.get("example_packs"), dict) else {}
+    for pack_id, raw_pack in packs.items():
+        if not isinstance(pack_id, str) or not isinstance(raw_pack, dict):
+            continue
+        if not matches_example_pack(form, raw_pack):
+            continue
+        md_path = repo_path(raw_pack.get("path"))
+        manifest_path = repo_path(raw_pack.get("manifest_path"))
+        manifest: dict[str, Any] = {}
+        if manifest_path and manifest_path.is_file():
+            loaded_manifest = read_json(manifest_path)
+            if isinstance(loaded_manifest, dict):
+                manifest = loaded_manifest
+        positive_paths = as_string_list(manifest.get("positive_example_paths")) or as_string_list(raw_pack.get("example_paths"))
+        example_paths = [repo_path(item) for item in positive_paths]
+        for single_key in ("example_dsl_path", "example_recipe_path", "example_json_path"):
+            single_path = repo_path(raw_pack.get(single_key))
+            if single_path is not None:
+                example_paths.append(single_path)
+        deduped_example_paths: list[Path] = []
+        seen_example_paths: set[str] = set()
+        for path in example_paths:
+            if path is None:
+                continue
+            key = str(path.resolve() if path.exists() else path)
+            if key in seen_example_paths:
+                continue
+            seen_example_paths.add(key)
+            deduped_example_paths.append(path)
+        example_paths = deduped_example_paths
+        negative_example_paths = [
+            path
+            for path in (repo_path(item) for item in as_string_list(manifest.get("negative_example_paths") or raw_pack.get("negative_example_paths")))
+            if path is not None
+        ]
+        markdown = read_text_if_present(md_path) if md_path else ""
+        example_parts = []
+        for example_path in example_paths:
+            example_text = read_text_if_present(example_path)
+            if not example_text:
+                continue
+            example_parts.append(f"Example `{example_path.name}`:\n```json\n{example_text.strip()}\n```")
+        excerpt_parts = [part for part in (markdown.strip(), "\n\n".join(example_parts)) if part]
+        return {
+            "id": pack_id,
+            "title": raw_pack.get("title", pack_id),
+            "path": str(md_path) if md_path else "",
+            "manifest_path": str(manifest_path) if manifest_path else "",
+            "contract_kinds": as_string_list(manifest.get("contract_kinds")),
+            "example_paths": [str(path) for path in example_paths],
+            "negative_example_paths": [str(path) for path in negative_example_paths],
+            "fallback": str(manifest.get("fallback") or ""),
+            "excerpt": "\n\n".join(excerpt_parts),
+        }
+    return None
+
+
+SOURCE_FILE_SUFFIXES = {".step", ".stp", ".iges", ".igs", ".sgt"}
+API_SOURCE_SUFFIXES = {
+    "step_import": {".step", ".stp"},
+    "iges_import": {".iges", ".igs"},
+    "step_roundtrip": {".sgt"},
+    "iges_roundtrip": {".sgt"},
+    "check_sgt": {".sgt"},
+}
+WINDOWS_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
+
+
+def walk_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for item in value.values():
+            result.extend(walk_strings(item))
+        return result
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(walk_strings(item))
+        return result
+    return []
+
+
+def dataset_source_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if Path(value).suffix.lower() in SOURCE_FILE_SUFFIXES else []
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            result.extend(dataset_source_strings(item))
+        return result
+    if isinstance(value, dict):
+        result = []
+        for key, item in value.items():
+            if isinstance(item, str) and key in {"path", "source_file", "file"}:
+                result.append(item)
+            elif isinstance(item, (dict, list)):
+                result.extend(dataset_source_strings(item))
+        return result
+    return []
+
+
+def source_suffixes_for_form(form: dict[str, Any]) -> set[str]:
+    target_api = str(form.get("target_api") or "")
+    if target_api in API_SOURCE_SUFFIXES:
+        return set(API_SOURCE_SUFFIXES[target_api])
+    geometry = form.get("geometry")
+    input_assets = form.get("input_assets")
+    text = json.dumps({"geometry": geometry, "input_assets": input_assets}, ensure_ascii=False).lower()
+    if target_api == "api_boolean" and ("loaded_sgt" in text or ".sgt" in text or "result_1.sgt" in text):
+        return {".sgt"}
+    return set(SOURCE_FILE_SUFFIXES)
+
+
+def is_corpus_metadata_index(form: dict[str, Any], label: str, raw_path: str) -> bool:
+    if str(form.get("target_api") or "") != "api_boolean":
+        return False
+    if str(form.get("run_profile") or "").lower() != "corpus":
+        return False
+    if "dataset_index" not in label:
+        return False
+    return Path(raw_path).name.lower() == "corpus_summary.json"
+
+
+def source_file_matches(path_text: str, allowed_suffixes: set[str]) -> bool:
+    suffix = Path(path_text).suffix.lower()
+    return suffix in SOURCE_FILE_SUFFIXES and (not allowed_suffixes or suffix in allowed_suffixes)
+
+
+def is_absolute_path_text(path_text: str) -> bool:
+    return bool(WINDOWS_ABSOLUTE_RE.match(path_text)) or Path(path_text).is_absolute()
+
+
+def prompt_safe_source_file_display(path_text: str) -> str:
+    path = Path(path_text)
+    candidate = path if is_absolute_path_text(path_text) else REPO_ROOT / path_text
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(REPO_ROOT.resolve())
+    except (OSError, ValueError):
+        return ""
+    if not resolved.is_file():
+        return ""
+    return rel_display(resolved)
+
+
+def placeholder_root(raw_path: str) -> Path:
+    first = PLACEHOLDER_RE.split(raw_path, maxsplit=1)[0].rstrip("/\\")
+    if not first:
+        return REPO_ROOT
+    path = Path(first)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def source_file_candidates(root: Path, allowed_suffixes: set[str], limit: int = 20) -> tuple[list[str], bool]:
+    files: list[str] = []
+    limit_reached = False
+    if not root.exists():
+        return files, limit_reached
+    if root.is_file():
+        display = prompt_safe_source_file_display(str(root))
+        if display and source_file_matches(display, allowed_suffixes):
+            return [display], False
+        return files, False
+    for child in sorted(root.rglob("*")):
+        if not child.is_file() or not source_file_matches(str(child), allowed_suffixes):
+            continue
+        display = prompt_safe_source_file_display(str(child))
+        if not display or display in files:
+            continue
+        files.append(display)
+        if len(files) >= limit:
+            limit_reached = True
+            break
+    return files, limit_reached
+
+
+def dataset_index_source_files(
+    path: Path,
+    allowed_suffixes: set[str],
+    limit: int = 20,
+    expose_files: bool = True,
+) -> tuple[list[str], dict[str, Any]]:
+    try:
+        loaded = read_json(path)
+    except ValueError:
+        return [], {"parse_error": "invalid_json", "source_file_count": 0}
+    files: list[str] = []
+    by_suffix: dict[str, int] = {}
+    seen_source_files: set[str] = set()
+    for text in dataset_source_strings(loaded):
+        suffix = Path(text).suffix.lower()
+        if suffix not in SOURCE_FILE_SUFFIXES:
+            continue
+        if text in seen_source_files:
+            continue
+        seen_source_files.add(text)
+        by_suffix[suffix] = by_suffix.get(suffix, 0) + 1
+        display = prompt_safe_source_file_display(text)
+        if expose_files and display and source_file_matches(display, allowed_suffixes) and display not in files:
+            files.append(display)
+            if len(files) >= limit:
+                break
+    return files, {"source_file_suffix_counts": dict(sorted(by_suffix.items())), "source_file_count": sum(by_suffix.values())}
+
+
+def asset_path_record(
+    label: str,
+    raw_path: str,
+    allowed_suffixes: set[str],
+    *,
+    metadata_only_index: bool = False,
+) -> dict[str, Any]:
+    path = repo_path(raw_path)
+    exists = bool(path and path.exists())
+    record: dict[str, Any] = {
+        "label": label,
+        "path": raw_path,
+        "exists": exists,
+        "kind": "missing",
+        "metadata_only_index": metadata_only_index,
+        "available_source_files": [],
+    }
+    if not path:
+        return record
+    if PLACEHOLDER_RE.search(raw_path):
+        root = placeholder_root(raw_path)
+        files, limit_reached = source_file_candidates(root, allowed_suffixes)
+        record.update(
+            {
+                "exists": bool(files),
+                "kind": "placeholder_pattern",
+                "pattern_root": rel_display(root),
+                "pattern_root_exists": root.exists(),
+                "candidate_limit_reached": limit_reached,
+                "available_source_files": files,
+            }
+        )
+        return record
+    if path.is_file():
+        record["kind"] = "file"
+        if source_file_matches(str(path), allowed_suffixes):
+            record["available_source_files"] = [rel_display(path)]
+        elif path.suffix.lower() == ".json":
+            files, dataset_summary = dataset_index_source_files(
+                path,
+                allowed_suffixes,
+                expose_files=not metadata_only_index,
+            )
+            record["kind"] = "dataset_index"
+            record["dataset_index"] = dataset_summary
+            record["available_source_files"] = files
+        return record
+    if path.is_dir():
+        record["kind"] = "directory"
+        files: list[str] = []
+        for child in sorted(path.rglob("*")):
+            if not child.is_file() or not source_file_matches(str(child), allowed_suffixes):
+                continue
+            files.append(rel_display(child))
+            if len(files) >= 20:
+                break
+        record["available_source_files"] = files
+    return record
+
+
+def input_asset_availability(form: dict[str, Any]) -> dict[str, Any]:
+    allowed_suffixes = source_suffixes_for_form(form)
+    candidates: list[tuple[str, str]] = []
+    geometry = form.get("geometry")
+    if isinstance(geometry, dict) and isinstance(geometry.get("input_asset"), str):
+        candidates.append(("geometry.input_asset", geometry["input_asset"]))
+    input_assets = form.get("input_assets")
+    if isinstance(input_assets, dict):
+        for key, value in input_assets.items():
+            if isinstance(key, str) and isinstance(value, str) and value.strip():
+                candidates.append((f"input_assets.{key}", value))
+
+    merged: dict[str, list[str]] = {}
+    order: list[str] = []
+    for label, raw_path in candidates:
+        if raw_path not in merged:
+            merged[raw_path] = []
+            order.append(raw_path)
+        merged[raw_path].append(label)
+
+    records: list[dict[str, Any]] = []
+    for raw_path in order:
+        label = ", ".join(merged[raw_path])
+        records.append(
+            asset_path_record(
+                label,
+                raw_path,
+                allowed_suffixes,
+                metadata_only_index=is_corpus_metadata_index(form, label, raw_path),
+            )
+        )
+
+    available_source_files: list[str] = []
+    for record in records:
+        for source_file in record.get("available_source_files", []):
+            if isinstance(source_file, str) and source_file not in available_source_files:
+                available_source_files.append(source_file)
+
+    return {
+        "records": records,
+        "expected_source_suffixes": sorted(allowed_suffixes),
+        "available_source_files": available_source_files,
+        "has_available_source_files": bool(available_source_files),
+        "source_file_policy": {
+            "use_only_listed_source_files": True,
+            "placeholder_paths_are_not_valid_source_files": True,
+            "copy_source_file_verbatim": True,
+            "required_suffixes": sorted(allowed_suffixes),
+        },
+    }
 
 
 def validate_form(form: Any) -> tuple[list[str], list[str]]:
@@ -188,7 +472,7 @@ def validate_form(form: Any) -> tuple[list[str], list[str]]:
     target_api = form.get("target_api")
     if target_api not in SUPPORTED_APIS:
         warnings.append(
-            "target_api is not currently runnable; model output should be needs_harness_extension"
+            f"target_api {target_api!r} is not currently runnable; model output should be needs_harness_extension"
         )
 
     geometry = form.get("geometry")
@@ -209,108 +493,111 @@ def validate_form(form: Any) -> tuple[list[str], list[str]]:
     if not isinstance(case_count, int) or isinstance(case_count, bool) or case_count < 1 or case_count > 100:
         warnings.append("case_count should be an integer from 1 to 100; using model judgment")
 
+    run_profile = form.get("run_profile")
+    if run_profile not in RUN_PROFILES:
+        warnings.append(f"run_profile {run_profile!r} is not listed in interface_capabilities.json")
+
+    campaign_profile = form.get("campaign_profile")
+    if campaign_profile is not None:
+        if not isinstance(campaign_profile, str) or campaign_profile not in CAMPAIGN_PROFILES:
+            errors.append(f"campaign_profile must be one of {sorted(CAMPAIGN_PROFILES)}")
+        elif CAMPAIGN_PROFILES[campaign_profile].run_profile_id != run_profile:
+            errors.append(
+                f"campaign_profile {campaign_profile!r} requires run_profile "
+                f"{CAMPAIGN_PROFILES[campaign_profile].run_profile_id!r}"
+            )
+
     return errors, warnings
 
 
-def command_lines(request_id: str, preferred_format: str) -> list[str]:
-    safe_id = request_id.replace("/", "_").replace("\\", "_")
-    commands: list[str] = []
-    if preferred_format == "attack_dsl":
-        commands.extend(
-            [
-                (
-                    "python .\\test_harness\\tools\\compile_attack_dsl.py "
-                    f".\\artifacts\\model_outputs\\{safe_id}_dsl.json --check "
-                    f"--report .\\artifacts\\model_checks\\{safe_id}_check.json"
-                ),
-                (
-                    "python .\\test_harness\\tools\\compile_attack_dsl.py "
-                    f".\\artifacts\\model_outputs\\{safe_id}_dsl.json "
-                    f"--out .\\artifacts\\compiled_model_recipes\\{safe_id}"
-                ),
-                (
-                    "python .\\test_harness\\tools\\run_recipes.py "
-                    "--runner .\\build\\test_harness\\Release\\sggk_case_runner.exe "
-                    f"--recipe .\\artifacts\\compiled_model_recipes\\{safe_id} "
-                    f"--out .\\artifacts\\model_runs\\{safe_id} --jobs 1 --timeout 120 "
-                    f"--triage-out .\\artifacts\\model_triage\\{safe_id} "
-                    f"--preview-out .\\artifacts\\model_previews\\{safe_id} "
-                    f"--contact-sheet .\\artifacts\\model_previews\\{safe_id}\\contact.png "
-                    f"--geometry-audit-out .\\artifacts\\model_geometry_audit\\{safe_id}"
-                ),
-            ]
-        )
-    elif preferred_format == "flat_recipe":
-        commands.extend(
-            [
-                (
-                    "python .\\test_harness\\tools\\validate_recipe.py "
-                    f".\\artifacts\\model_outputs\\{safe_id}_recipe.json"
-                ),
-                (
-                    "python .\\test_harness\\tools\\run_recipes.py "
-                    "--runner .\\build\\test_harness\\Release\\sggk_case_runner.exe "
-                    f"--recipe .\\artifacts\\model_outputs\\{safe_id}_recipe.json "
-                    f"--out .\\artifacts\\model_runs\\{safe_id} --jobs 1 --timeout 120 "
-                    f"--triage-out .\\artifacts\\model_triage\\{safe_id} "
-                    f"--preview-out .\\artifacts\\model_previews\\{safe_id} "
-                    f"--contact-sheet .\\artifacts\\model_previews\\{safe_id}\\contact.png"
-                ),
-            ]
-        )
-    commands.append(
-        (
-            "python .\\test_harness\\tools\\run_recipes.py "
-            "--runner .\\build\\test_harness\\Release\\sggk_case_runner.exe "
-            "--recipe-list .\\test_harness\\suites\\api_smoke_suite.txt "
-            "--out .\\artifacts\\api_smoke_suite --jobs 1 --timeout 120 "
-            "--triage-out .\\artifacts\\api_smoke_suite_triage "
-            "--preview-out .\\artifacts\\api_smoke_suite_preview "
-            "--contact-sheet .\\artifacts\\api_smoke_suite_preview\\contact.png"
-        )
-    )
-    return commands
-
-
-def render_prompt(form: dict[str, Any], guidance: dict[str, Any], oracle_notes: list[str]) -> str:
+def render_prompt(
+    form: dict[str, Any],
+    guidance: dict[str, Any],
+    oracle_notes: list[str],
+    example_pack: dict[str, Any] | None,
+    asset_availability: dict[str, Any],
+    campaign_profiles: dict[str, Any],
+) -> str:
     form_json = json.dumps(form, indent=2, ensure_ascii=False)
     body_builders = ", ".join(SUPPORTED_BODY_BUILDERS)
     oracles = ", ".join(SUPPORTED_ORACLES)
     guidance_json = json.dumps(guidance, indent=2, ensure_ascii=False)
     oracle_json = json.dumps(oracle_notes, indent=2, ensure_ascii=False)
+    example_section = ""
+    if example_pack and example_pack.get("excerpt"):
+        example_section = f"""
+Selected interface example pack: {example_pack.get("id")}
+
+{example_pack.get("excerpt")}
+"""
+    asset_json = json.dumps(asset_availability, indent=2, ensure_ascii=False)
+    campaign_profiles_json = json.dumps(campaign_profiles, indent=2, ensure_ascii=False)
     return f"""You are generating SGGK test-harness input, not direct SDK code.
 
 Return exactly one JSON object. Use this shape for runnable DSL tests:
 {{
   "kind": "attack_dsl",
   "dsl": {{ "...": "valid SGGK attack DSL" }},
-  "notes": ["short review notes"],
-  "commands": ["compile/check/run commands"]
+  "notes": ["short review notes"]
 }}
 
 Use this shape for supported flat-recipe APIs:
 {{
   "kind": "flat_recipe",
   "recipe": {{ "...": "valid flat sggk_case_runner recipe" }},
-  "notes": ["short review notes"],
-  "commands": ["validate/run commands"]
+  "notes": ["short review notes"]
+}}
+
+Use this shape for fixed large campaigns that should not enumerate every case:
+{{
+  "kind": "campaign_request",
+  "profile_id": "select one key from Allowed campaign profiles",
+  "args": {{"bounded_argument": "value accepted by that profile's args_schema"}},
+  "notes": ["why this fixed campaign profile matches the form"],
+  "expected_artifacts": ["summary/report paths"]
 }}
 
 If the requested API or body builder is unsupported, return:
 {{
   "kind": "needs_harness_extension",
   "api": "requested_api_name",
-  "why": "why current harness cannot express this test",
-  "minimal_extension": "smallest runner/schema addition",
-  "proposed_recipe": {{ "...": "concrete future recipe" }}
+  "why_needed": "why current harness cannot express this test",
+  "extension_summary": "smallest runner/schema addition",
+  "proposed_recipe_fields": {{ "field_name": "type and meaning" }},
+  "proposed_artifacts": ["reports or debug outputs the extension should produce"],
+  "validation_oracle": {{ "oracle_family": "how the smoke proves correctness" }},
+  "minimum_smoke_case": {{ "case_id": "requested_api_smoke_001", "api": "requested_api_name" }},
+  "patch_plan": [
+    {{"layer": "schema", "change": "add recipe/form fields", "files": ["test_harness/..."]}},
+    {{"layer": "validator", "change": "reject missing or invalid fields", "files": ["test_harness/tools/..."]}},
+    {{"layer": "normalizer", "change": "normalize safe aliases only", "files": ["test_harness/tools/..."]}},
+    {{"layer": "runner", "change": "route recipe to fixed runner support", "files": ["test_harness/..."]}},
+    {{"layer": "tests", "change": "add positive and negative smoke coverage", "files": ["test_harness/..."]}}
+  ]
 }}
 
 Hard rules:
 - Prefer attack DSL for api_boolean.
+- For 100k+ corpus campaigns, do not emit individual DSL cases; emit campaign_request only when Allowed campaign profiles lists a profile.
 - Do not invent SDK calls outside the runner schema.
+- Never return command, commands, tool, executable, runner, dataset, out, cwd, env, or shell fields. For campaign_request, select only profile_id plus bounded args.
+- For flat_recipe source_file fields, use only a concrete path from Input asset availability when available. Do not copy example source_file paths unless they appear there as available.
+- If no concrete source_file is available for a source-file recipe, return needs_harness_extension or an allowed campaign_request instead of inventing a path.
 - Use constants topo_tol=0.01, geom_tol=0.00001, max_model_size=500000.0 unless the form overrides them.
 - Use stable id values on all important chain steps.
 - Add real oracles, not only API status checks.
+- Use only supported expectation fields. Do not emit an `expectations.properties` array; property checks use direct fields such as `require_finite_properties`, `require_nonnegative_length_area`, `total_volume`, or `total_abs_volume`.
+- `expectations.result_bodies` must be an object such as `{{"min": 1}}` or `{{"min": 1, "max": 1}}`; do not emit a scalar.
+- Boolean expectation fields such as `boolean_volume_relation` and `boolean_bbox_relation` must be literal true/false values, never objects, formulas, or relation strings.
+- For chain bodies, put profile builders before generated-body ops: `rect_profile -> extrude`, `circle_profile -> extrude` for a cylinder, `rect_profile -> thicken` or `thicken_rect_sheet`, `circle_profile -> sweep_line`, and `line_profile/radial_rect_profile -> revolve`.
+- For simple primitive tools such as cylinders and spheres, prefer direct body builders (`solid_cylinder`, `solid_sphere`) unless the generated-chain behavior is the point of the test. In a chain, a direct body builder can be used as `{{"op":"solid_cylinder", ...}}`.
+- When using `point_ref`, declare the point under root `key_points` or case `key_points`; otherwise use an explicit `point` array.
+- Distance oracles must use `distance_checks` as a list with roles and expected/min/max fields; do not use `expectations.distance`.
+- `support_sweep` / `support_sweep_bspline_surface` requires concrete `path_radius`, `profile_radius`, and `height` numeric fields.
+- `line_profile -> revolve` requires `bottom_radius`, `top_radius`, and `height`; do not use a free-form `points` array for the revolved profile.
+- Nested boolean chain steps use `op:"boolean"` with a supported pattern; do not invent `boolean_subtract`, `boolean_union`, or `boolean_intersect` ops. Either include a `tool` object in the boolean step, or put base body then tool body/transform immediately before `op:"boolean"`.
+- Metric expectations such as `total_volume` should be objects like `{{"min":0.0}}` or `{{"expected":0.0}}`; scalar shorthand is accepted, but object form is clearer.
+- For multi-value tolerance boundaries, prefer `sweeps` or `paired_sweeps`; do not put vector-valued fields such as `translate`, `axis`, or `point` into scalar sweep shorthand.
 - Use sweeps or paired_sweeps for tolerance boundaries.
 - Emit valid JSON only.
 
@@ -323,6 +610,14 @@ API guidance:
 Oracle guidance selected for this form:
 {oracle_json}
 
+Input asset availability in the current workspace:
+{asset_json}
+
+Allowed campaign profiles for this task:
+{campaign_profiles_json}
+
+{example_section}
+
 Developer form:
 {form_json}
 """
@@ -334,14 +629,38 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
     guidance = API_GUIDANCE.get(target_api, API_GUIDANCE["needs_harness_extension"])
     selected_oracles = as_string_list(form.get("oracles"))
     oracle_notes = [ORACLE_GUIDANCE.get(oracle, f"Map {oracle} to a supported oracle or request extension.") for oracle in selected_oracles]
+    example_pack = select_example_pack(form)
+    asset_availability = input_asset_availability(form)
+    selected_example_pack = example_pack["id"] if example_pack else ""
+    interface_family = derive_interface_family(form, selected_example_pack, CAPABILITIES)
+    run_profile_id = str(form.get("run_profile", ""))
+    run_profile_info = run_profile_metadata(run_profile_id, CAPABILITIES)
     preferred_format = guidance["preferred_format"]
+    campaign_profile_id = str(form.get("campaign_profile") or "")
+    if request_id == "iface_15_boolean_abc_mass_recut" and not campaign_profile_id:
+        campaign_profile_id = "abc_boolean_mass_recut"
+    campaign_profiles = allowed_campaign_profiles([campaign_profile_id]) if campaign_profile_id else {}
+    campaign_bindings: dict[str, dict[str, str]] = {}
+    if campaign_profile_id == "abc_boolean_mass_recut":
+        campaign_bindings[campaign_profile_id] = {
+            "runner": "build/test_harness/Release/sggk_case_runner.exe",
+            "dataset": "artifacts/interface_distillation_windows_full_40chunk_v2/abc_sample_smoke/top_complex_import",
+            "out": "artifacts/abc_boolean_mass_recut",
+        }
+        guidance = dict(guidance)
+        guidance["preferred_format"] = "campaign_request"
+        guidance["notes"] = list(guidance.get("notes", [])) + [
+            "Use campaign_request profile_id=abc_boolean_mass_recut; fixed code expands the bounded corpus lane and filters explicit unsupported failures from bug reports.",
+        ]
+        preferred_format = "campaign_request"
+
     task = {
         "task_version": 1,
         "created_at": now_iso_like(),
         "form_path": str(form_path),
         "request_id": request_id,
         "warnings": warnings,
-        "model_role": "Generate SGGK harness DSL or a needs_harness_extension object.",
+        "model_role": "Generate JSON-only SGGK harness input or a needs_harness_extension object.",
         "developer_form": form,
         "harness_contract": {
             "supported_apis": SUPPORTED_APIS,
@@ -354,17 +673,28 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
                 "max_model_size": 500000.0,
             },
             "output_must_be_json_only": True,
+            "selected_example_pack": selected_example_pack,
+            "interface_family": interface_family,
+            "run_profile": run_profile_info,
+            "input_asset_availability": asset_availability,
+            "allowed_campaign_profiles": campaign_profiles,
+        },
+        "interface_family": interface_family,
+        "run_profile_id": run_profile_id,
+        "example_pack": {
+            key: value for key, value in (example_pack or {}).items() if key != "excerpt"
         },
         "api_guidance": guidance,
         "oracle_guidance": oracle_notes,
-        "fixed_commands": command_lines(request_id, preferred_format),
+        "input_asset_availability": asset_availability,
+        "allowed_campaign_profiles": campaign_profiles,
+        "campaign_bindings": campaign_bindings,
     }
-    task["prompt"] = render_prompt(form, guidance, oracle_notes)
+    task["prompt"] = render_prompt(form, guidance, oracle_notes, example_pack, asset_availability, campaign_profiles)
     return task
 
 
 def render_markdown(task: dict[str, Any]) -> str:
-    commands = "\n".join(f"- `{command}`" for command in task["fixed_commands"])
     return f"""# SGGK API Test Task: {task["request_id"]}
 
 ## Prompt
@@ -373,9 +703,11 @@ def render_markdown(task: dict[str, Any]) -> str:
 {task["prompt"]}
 ```
 
-## Fixed Commands
+## Allowed Campaign Profiles
 
-{commands}
+```json
+{json.dumps(task.get("allowed_campaign_profiles", {}), indent=2, ensure_ascii=False)}
+```
 """
 
 

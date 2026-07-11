@@ -286,6 +286,7 @@ def promote_record(
         "roundtrip_failures": as_list(record.get("roundtrip_failures")),
         "roundtrip_oracle_details": as_list(record.get("roundtrip_oracle_details")),
         "expected": as_dict(record.get("expected")),
+        "expected_failure_signature": as_dict(record.get("expected_failure_signature")),
         "topo_track_policy": first_nonempty(record.get("topo_track_policy"), defaults.get("topo_track_policy"), "diagnostic_when_modeling_fails"),
         "topo_track_diagnostic": as_dict(record.get("topo_track_diagnostic")) or as_dict(defaults.get("topo_track_diagnostic")),
         "modeling_failure_required": bool(record.get("modeling_failure_required", defaults.get("modeling_failure_required", True))),

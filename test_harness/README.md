@@ -2,6 +2,10 @@
 
 This is the first standalone harness layer for SDK-driven tests. It intentionally avoids the vendor sample layout and writes an artifact capsule for each case.
 
+For the Message API-only trust boundary, parallel candidate selection, new-API
+plugins, failure qualification, paired TopoTrack capture, and Qwen investigation
+flow, read `test_harness/HARNESS_ARCHITECTURE.md` first.
+
 ## Build
 
 ```powershell
@@ -177,7 +181,13 @@ Supported validation failures now write `debug_geometry/*.sgt`, indexed by `repo
 
 For modeling failures that do not produce `debug_geometry`, `build_debug_handoff.py` can use `sggk_topology_extract.exe` to export the primary target/tool contact candidate as `focus/*.sgt` from the copied input bodies. Each pack also writes `visual_index.json` / `visual_index.md` for all copied debug/focus/input SGTs and `focus_index.json` / `focus_index.md` for primary-contact extraction status, tying those files back to the source SGT, topology type/id/local index, locator, check ID, status, and GUI-open path. The helper is auto-detected under `build/test_harness/<config>/`, or can be passed explicitly with `--topology-extractor`.
 
-When a recipe lane crashes only after result/topo-check output and before validation, use `probe_topotrack_crashes.py` to test whether the failure is topotrack-only. The tool reads a `run_recipes.py` summary, copies selected `topo_track=true` recipes with `topo_track=false`, replays them, and classifies cases such as `topotrack_only_modeling_ok` versus `modeling_or_validation_failure_after_topotrack_disabled`:
+Flat-recipe TopoTrack querying is crash-prone in some SDK results, so the normal
+runner records a safe skipped summary. For any failed `topo_track=true` case,
+`probe_topotrack_crashes.py` performs two isolated runs: an explicit
+`--capture-flat-topotrack` run and a `topo_track=false` control. It classifies
+available capture evidence, TopoTrack-only success/crash behavior,
+instrumentation crashes on an existing oracle failure, and crashes that persist
+without TopoTrack:
 
 ```powershell
 python .\test_harness\tools\probe_topotrack_crashes.py `
@@ -186,7 +196,10 @@ python .\test_harness\tools\probe_topotrack_crashes.py `
   --out .\artifacts\topotrack_probe_some_recipe_lane
 ```
 
-Use `topotrack_only_modeling_ok` as diagnostic evidence, not as a modeling bug by itself.
+All probe classifications are diagnostic evidence, not causal proof. Do not run
+`sggk_case_runner --capture-flat-topotrack` in a shared process; use
+`run_recipes.py --capture-flat-topotrack` or the paired probe so a crash remains
+case-isolated.
 
 ## Preview Screenshots
 
@@ -231,7 +244,8 @@ python .\test_harness\tools\render_case_preview.py `
 
 ## Attack DSL
 
-Small-model generated attacks should use the JSON DSL first. The runner can execute supported DSL files directly:
+Checked-in deterministic DSL fixtures can be executed directly for runner and
+fixed-gate debugging:
 
 ```powershell
 .\build\test_harness\Release\sggk_case_runner.exe `
@@ -239,10 +253,150 @@ Small-model generated attacks should use the JSON DSL first. The runner can exec
   --out .\artifacts\native_chain_run
 ```
 
+This direct command is not a model-output acceptance path. Model-authored DSL
+must come from `message.content` through `run_message_harness_pipeline.py`,
+which owns normalization, fixed gates, execution, selection, provenance, and
+promotion.
+
 ## API Form Workflow
 
-For intranet small-model handoff, use `test_harness/skills/sggk-api-form-workflow`.
+For intranet Message API authoring, use `test_harness/skills/sggk-api-form-workflow`.
 Developers fill `test_harness/forms/api_test_form.schema.json`, then deterministic code converts the form into a constrained model task:
+
+Use `test_harness/INTERFACE_TEST_MATRIX.md` as the current checklist of supported runner APIs, body builders, validation oracles, source-guided cluster flow, and known extension gaps.
+Use `test_harness/forms/interface_distillation/00_manifest.json` as the first distillation campaign manifest. It enumerates ready forms for:
+
+- primitive `api_boolean`
+- ABC `step_import` and `iges_import`
+- imported ABC SGT recut booleans through `loaded_sgt`
+- `sweep_circle_line` and `support_sweep_bspline_surface`
+- `extrude_rect`, `thicken_rect_sheet`, `revolve_line`, and `revolve_rect`
+- pre-boolean operation-history recuts
+- `step_roundtrip`, `iges_roundtrip`, oracle calibration, and `check_sgt`
+- `api_boolean_split`, `api_boolean_slice`, `api_offset2d`, `api_offset_body`,
+  and heterogeneous `api_topology_section` Edge/Vertex results
+- 100k+ ABC `loaded_sgt` boolean mass recut with unsupported-filtered bug reporting
+
+Build all current interface-distillation tasks and prompts without requiring the SDK:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation
+```
+
+Build a bounded provider-neutral prompt pack, then run the integrated Message API pipeline:
+
+```powershell
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack `
+  --max-prompt-chars 60000
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id qwen36_interface_distillation `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
+```
+
+Every candidate response is exactly one JSON object from
+`choices[0].message.content`. A task may author several candidates in parallel;
+the host stages, normalizes, gates, de-duplicates, and independently executes
+them before a deterministic selection promotes one formal output/provenance
+pair. There is no human-authored or fixture-seeding production path. The
+lower-level `run_authoring_gateway.py` is transport diagnostics only and cannot
+set `authoring_accepted=true`. The explicit `siliconflow-test` profile exercises
+the same protocol outside the intranet and is never an implicit fallback. See
+`test_harness/SILICONFLOW_MESSAGE_API_TESTING.md` for profile configuration and
+failure semantics.
+
+For the 100k+ ABC boolean recut lane, use the fixed typed campaign request;
+individual-case emission is not part of this lane:
+
+```powershell
+python .\test_harness\tools\run_abc_boolean_mass_recut.py `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --dataset <imported-sgt-root> `
+  --out .\artifacts\abc_boolean_mass_recut `
+  --target-cases 100000 `
+  --preset stress `
+  --shard-count 100 `
+  --shard-index 0 `
+  --jobs 1 `
+  --timeout 180 `
+  --resume
+```
+
+The report keeps raw triage evidence but filters explicit kernel unsupported/not-allowed groups out of candidate bugs.
+
+After a useful shard or full campaign, preserve a compact local regression asset. This keeps the replay recipes, baseline fingerprints, track/contact localization, and code/form references needed to detect SDK version regressions without committing ABC data or run artifacts:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py snapshot `
+  --campaign .\artifacts\abc_boolean_mass_recut `
+  --out .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --asset-id abc_boolean_mass_recut `
+  --sdk-version SGK1.4.10 `
+  --dataset-label abc_fetch_40chunk_sample50
+```
+
+After an SDK update, replay the saved recipes with `run_recipes.py --recipe-list <asset>\regression_recipe_list.txt`, then compare:
+
+```powershell
+python .\test_harness\tools\manage_regression_assets.py compare `
+  --asset .\artifacts\regression_assets\abc_boolean_mass_recut `
+  --new-run .\artifacts\regression_replay\abc_boolean_mass_recut\run\recipe_summary.json `
+  --new-triage .\artifacts\regression_replay\abc_boolean_mass_recut\triage\triage_summary.json `
+  --out .\artifacts\regression_compare\abc_boolean_mass_recut `
+  --new-sdk-version SGK1.4.11
+```
+
+The comparison report separates fixed baseline bugs, new issues from baseline-passing cases, changed failures, still-failing bugs, and unsupported behavior changes.
+
+For the automatic authoring-to-report path, execute the same provider-neutral
+manifest. The intranet profile defaults to three independent authoring
+candidates and promotes only an SDK/oracle execution pass:
+
+```powershell
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id qwen36_interface_campaign `
+  --execute `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --jobs 1 `
+  --timeout 120 `
+  --campaign-dataset .\artifacts\abc_fetch_smoke `
+  .\artifacts\model_prompt_pack\model_task_manifest.json
+```
+
+When the ABC sample fetch and local SGGK source tree are available, extend the same run with corpus and source-guided task evidence:
+
+```powershell
+python .\test_harness\tools\run_interface_distillation.py `
+  --out .\artifacts\interface_distillation `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  --execute `
+  --api-smoke `
+  --abc-sample-smoke `
+  --abc-fetch-root .\artifacts\abc_fetch_smoke `
+  --source-root $env:SGGK_SOURCE_ROOT `
+  --jobs 1 `
+  --timeout 180
+```
+
+On the Windows SDK machine, the same build/check/execute/report flow can be run through a wrapper:
+
+```powershell
+.\test_harness\scripts\run_interface_distillation_windows.ps1 `
+  -SdkDir $env:SGGK_SDK_DIR `
+  -AbcFetchRoot $env:SGGK_DATA_ROOT `
+  -SourceRoot $env:SGGK_SOURCE_ROOT `
+  -Jobs 1 `
+  -Timeout 180
+```
+
+The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, and executes only Message-API-promoted outputs plus API smoke, ABC sample, and source-task lanes with the local runner.
 
 ```powershell
 python .\test_harness\tools\build_api_test_task.py `
@@ -250,7 +404,7 @@ python .\test_harness\tools\build_api_test_task.py `
   --out .\artifacts\model_tasks\boolean_thicken_generated_sheet_001.json
 ```
 
-After reviewing model output, run the current API capability smoke suite sequentially:
+After the integrated pipeline promotes a gate-passing output, run the current API capability smoke suite sequentially:
 
 ```powershell
 python .\test_harness\tools\run_recipes.py `
@@ -264,7 +418,11 @@ python .\test_harness\tools\run_recipes.py `
   --contact-sheet .\artifacts\api_smoke_suite_preview\contact.png
 ```
 
-The suite covers `api_boolean`, generated body builders, validation oracles, `check_sgt`, `step_roundtrip`, and `iges_roundtrip`. `step_import` and `iges_import` require external corpus files, so they belong in corpus lanes rather than the self-contained smoke list.
+The 24-case suite covers built-in adapters, generated body builders, validation
+oracles, `check_sgt`, STEP/IGES roundtrip, and the real compile-time
+`api_combine_bodies` plugin. `--list-adapters-json` plus
+`validate_plugin_runtime.py` is authoritative for compiled plugin hashes and
+versions. Direct STEP/IGES import still requires external corpus files.
 
 For debugging or compatibility, the same DSL can still be compiled to flat runner recipes:
 
@@ -281,7 +439,13 @@ python .\test_harness\tools\compile_attack_dsl.py `
 python .\test_harness\tools\validate_recipe.py .\artifacts\compiled_dsl_recipes
 ```
 
-Use `--check` as the first gate for model-generated DSL. It expands variants, sweeps, chains, constants, and oracle expressions, then validates the resulting flat recipes without writing them. Keep `--report` outside the compiled recipe directory so `validate_recipe.py <compiled-dir>` sees only recipe JSON files.
+The integrated Message API pipeline invokes `--check` as the first fixed gate
+for an untrusted DSL candidate. It expands variants, sweeps, chains, constants,
+and oracle expressions, then validates the resulting flat recipes without
+writing them. The direct commands above are for checked-in deterministic
+fixtures and fixed-gate debugging only; they must not be used to accept or run
+captured model output. Keep `--report` outside the compiled recipe directory so
+`validate_recipe.py <compiled-dir>` sees only recipe JSON files.
 
 The DSL supports:
 
@@ -344,7 +508,8 @@ The thicken operation-chain smoke lives in `test_harness/dsl/thicken_chain_smoke
 
 ## Source Risk Scan
 
-For source-directed attacks, run the deterministic scanner before asking a model to write DSL:
+For source-directed attacks, run the deterministic scanner before building
+bounded source tasks for the Message API pipeline:
 
 ```powershell
 python .\test_harness\tools\scan_source_risks.py `
@@ -357,11 +522,14 @@ python .\test_harness\tools\scan_source_risks.py `
 It writes:
 
 - `source_risk_report.json`: machine-readable findings with source file/line, risk categories, numeric literals, suggested APIs, and oracles
-- `source_risk_report.md`: compact human review report
+- `source_risk_report.md`: compact human-readable diagnostic report
 - `source_risk_files.txt`: unique source files that need inspection
-- `attack_seed_drafts.json`: review-required DSL seed drafts for a smaller model or Codex to refine into runnable attacks
+- `attack_seed_drafts.json`: deterministic seed context for a later Message API
+  task; these drafts are never accepted or executed as model output
 
-Build small-model task packs from a scan report when preparing Qwen/internal-model inference or distillation data:
+Build source-task packs from a scan report, then wrap them in the production
+prompt manifest and submit that manifest through the integrated Message API
+pipeline:
 
 ```powershell
 python .\test_harness\tools\build_source_attack_tasks.py `
@@ -370,11 +538,33 @@ python .\test_harness\tools\build_source_attack_tasks.py `
   --max-tasks 80 `
   --context-lines 12 `
   --write-dsl-seeds
+
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --source-task-dir .\artifacts\sdk_include_source_attack_tasks `
+  --out .\artifacts\source_model_prompt_pack
+
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id source_attack_batch `
+  --execute `
+  --runner .\build\test_harness\Release\sggk_case_runner.exe `
+  .\artifacts\source_model_prompt_pack\model_task_manifest.json
 ```
 
-This writes `source_attack_tasks.json`, `source_attack_tasks.jsonl`, `source_attack_task_manifest.md`, `source_attack_task_ids.txt`, and optional `seed_dsl/*.json` files. Each task includes a wider source excerpt, the scanner finding, the model prompt, required output contract, harness constants, suggested post-generation checks, and an optional review-required DSL seed.
+The task builder writes `source_attack_tasks.json`,
+`source_attack_tasks.jsonl`, `source_attack_task_manifest.md`,
+`source_attack_task_ids.txt`, and optional `seed_dsl/*.json` files. Each task
+includes a wider source excerpt, the scanner finding, required output contract,
+harness constants, fixed post-generation checks, and optional seed context.
 
-The seed drafts are intentionally not bug reports. Read the cited source, adjust exact geometry and expected values, then run `compile_attack_dsl.py --check --report <report.json>` before compiling or running the reviewed DSL. For exact coordinate extrema, add `expectations.plane_extreme_checks` only after choosing a concrete variant and expected coordinate; the runner will derive the actual min/max with coordinate-plane distance probes rather than trusting the conservative SDK bbox.
+Seed drafts are prompt context, not runnable tests or bug reports. Qwen must
+return a fresh candidate through the Message API; the pipeline then performs
+the DSL check, expansion, execution, and promotion. A developer may invoke the
+low-level compiler only to diagnose a checked-in deterministic fixture or a
+pipeline fixed-gate artifact, never to accept captured model output. For exact
+coordinate extrema, the candidate must use a concrete variant and expected
+coordinate; the runner derives the actual min/max with coordinate-plane
+distance probes rather than trusting the conservative SDK bbox.
 
 A checked source-directed smoke lives at `test_harness/dsl/source_directed_scan_smoke.json`. It was derived from SDK header findings in `GeomBase/Toler.h`, `GeomInt/Extrema/*`, and `Topology/Tools/PtFaceRelation.h`, and expands into large-coordinate, fuzzy/exact overlap, and FacePtRelation/point-relation probes:
 
@@ -397,6 +587,33 @@ python .\test_harness\tools\run_recipes.py `
 ```
 
 Verified result: 17/17 recipes passed, triage found no failure groups, and geometry audit reported no duplicate inputs or tolerance mismatches. The audit confirmed signed clearances at exact contact, `+/- 1e-5`, and `+/- 1e-2`; the contact sheet is `artifacts/source_directed_scan_smoke_preview_v2/contact.png`.
+
+Use `test_harness/skills/sggk-source-guided-workflow` when source findings, developer API forms, and deterministic cluster expansion need to be combined. The public surrogate examples use OCCT links and line ranges only, with reviewed SGGK DSL mappings in `test_harness/dsl/occ_source_guided_surrogate_examples.json`:
+
+```powershell
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\test_harness\dsl\occ_source_guided_surrogate_examples.json `
+  --check `
+  --report .\artifacts\occ_source_guided_surrogate_check.json
+```
+
+The production pipeline expands `kind=cluster_seed` automatically before its
+fixed DSL gate. The following direct commands are only for host-side debugging
+of the checked-in deterministic cluster fixture; they cannot accept a model
+response or establish authoring provenance:
+
+```powershell
+python .\test_harness\tools\build_source_guided_cluster.py `
+  .\test_harness\dsl\source_guided_cluster_seed_smoke.json `
+  --out .\artifacts\source_guided_cluster_smoke.json
+
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\artifacts\source_guided_cluster_smoke.json `
+  --check `
+  --report .\artifacts\source_guided_cluster_check.json
+```
+
+The cluster wrapper emits exact contact, `+/- geom_tol`, `+/- topo_tol`, source-literal bands when present, a generated-topology sibling, and an optional large-coordinate sibling. Keep randomized and broad coverage lanes in the same campaign through `generate_boolean_matrix.py`, `generate_corpus_recut_matrix.py`, `run_campaign.py`, or `plan_large_campaign.py`.
 
 ## Generated Recipe Lanes
 
@@ -695,7 +912,11 @@ The triage tool writes:
 - `triage_report.md`: a concise human-readable report.
 
 For boolean/DSL cases, localized input topology is derived from `report/topo_track.json` ancestor `input_ref` entries and `report/input_topology_index.json` locators. This lets failures name concrete target/tool faces, edges, or vertices plus the terminal modeling operation that produced them.
-When topo tracking is unavailable or intentionally skipped, triage also reports `input_contact_candidates`: ranked target/tool Body/Face/Edge/Vertex bbox-nearness pairs from `input_topology_index.json`. These candidates are included in failure fingerprints, failure groups, markdown reports, and regression seeds so validation-only failures still point at concrete input topology.
+When topo tracking is unavailable or intentionally skipped, triage also reports
+`input_contact_candidates`: ranked target/tool Body/Face/Edge/Vertex bbox-nearness
+pairs from `input_topology_index.json`. Every entry is explicitly marked
+`evidence_kind=bbox_nearness_heuristic` and `causal_proof=false`. These
+candidates support navigation; they do not prove geometric contact or causality.
 
 Replay representative seeds before filing or reducing a failure group:
 
@@ -708,7 +929,14 @@ python .\test_harness\tools\replay_regression_seeds.py `
   --timeout 120
 ```
 
-The replay tool writes generated recipes under `_recipes`, then writes `replay_summary.json` and `replay_report.md`. Each seed is classified as `stable_failure`, `flaky`, `not_reproduced`, or `unavailable`. When a seed includes an original recipe path, replay uses that recipe first so expectations and operation metadata are preserved; artifact SGT inputs are the fallback when the original recipe is unavailable.
+The replay tool writes generated recipes under `_recipes`, then writes
+`replay_summary.json` and `replay_report.md`. Each seed is classified as
+`stable_same_failure`, `flaky_same_failure`, `changed_failure`,
+`unverified_failure`, `not_reproduced`, or `unavailable`. A stable result
+requires every attempt to match the immutable expected signature. When a seed
+includes an original recipe path, replay uses that recipe first so expectations
+and operation metadata are preserved; artifact SGT inputs are the fallback when
+the original recipe is unavailable.
 
 Reduce stable flat-recipe failures before handoff when the representative recipe is still too large:
 
@@ -723,18 +951,34 @@ python .\test_harness\tools\reduce_failure_recipe.py `
 
 The reducer runs the original recipe once to learn the failure predicate, then greedily tries smaller legal parameters. API-error baselines preserve the SDK error code by default; validation and TopoCheck baselines preserve their failed oracle class. Positive geometry dimensions are not reduced below `--min-dimension`, which defaults to `0.01` to match the current topology/modeling tolerance. For known near-contact body pairs such as sweep/extrude, sweep/sweep, and revolve/cylinder, reducer mutations preserve the contact offset while shrinking dimensions. Outputs are `reduced_recipe.json`, `reduction_summary.json`, `reduction_report.md`, and per-trial artifacts under `runs`.
 
+For a replay batch, use `reduce_replay_failures.py --replay <replay-root>`.
+It selects only verified `stable_same_failure` entries, independently rechecks
+every replay-attempt signature, invokes the fixed reducer with `shell=false`,
+and exposes a reduced recipe only when the reducer baseline, predicate, and
+final observation all match the original replay signature. Legacy
+`stable_failure` labels are not reducer-eligible.
+
 Export stable failures into handoff-ready bug bundles:
 
 ```powershell
 python .\test_harness\tools\export_failure_bundles.py `
   --triage .\artifacts\corpus_boolean_smoke_triage `
   --replay .\artifacts\corpus_boolean_smoke_replay `
+  --reductions .\artifacts\corpus_boolean_smoke_reductions `
+  --topotrack-probe .\artifacts\corpus_boolean_smoke_topotrack_probe `
   --preview-dir .\artifacts\preview_corpus_boolean_smoke `
   --out .\artifacts\corpus_boolean_smoke_bundles `
   --zip
 ```
 
-Each bundle contains `bug_report.md`, `bundle_manifest.json`, `localization_summary.json`, `reproduce.ps1`, original and replay recipes when available, copied input files (`source_sgt`, STEP/IGES source inputs, `target_sgt`, and `tool_sgt` when present), key reports such as `data_exchange.json` / `roundtrip_comparison.json` when present, and an optional preview PNG. With `--zip`, a sibling `<bundle>.zip` is written for handoff. The top-level `bundle_report.md` lists one bundle per triage fingerprint.
+Only verified `stable_same_failure` groups receive a formal bundle,
+`reproduce.ps1`, draft, registry entry, or Qwen root-cause investigation.
+Flaky, changed, unverified, unavailable, and TopoTrack-only-success cases are
+recorded under `inconclusive_triage` without a formal reproducer. Each stable
+bundle contains `bug_report.md`, `bundle_manifest.json`,
+`localization_summary.json`, recipes, copied inputs, key reports, paired
+TopoTrack capture evidence, and an optional preview PNG. With `--zip`, a sibling
+archive is written for handoff.
 
 For a lighter GUI-oriented handoff, build debug SGT packs directly from a registry or triage summary:
 
@@ -801,7 +1045,7 @@ python .\test_harness\tools\run_campaign.py `
   --bundle-zip
 ```
 
-The campaign runner writes `campaign_summary.json` and `campaign_report.md` at the campaign root. Passing `--source-root` runs `scan_source_risks.py` first and records `source_scan/` reports plus `attack_seed_drafts.json`; by default it also builds `source_attack_tasks/` with JSONL/model-task output unless `--skip-source-attack-tasks` is passed. DSL lanes run `compile_attack_dsl.py --check` first and write `dsl_checks/<lane>.json` before compiling recipes under `recipes/<lane>/`; when `--dsl` is omitted, the default DSL set includes tolerance-band, real operation-chain tolerance, and BSpline support-sweep complex-surface smokes. Recipe-lane failures are expected test discoveries, so their return code `2` is recorded and the campaign continues into aggregate triage, replay, bundle export, bug-registry collection, debug handoff pack generation, and editable bug-record draft export. Corpus recut lanes are enabled when SGT inputs are available. Use `--discover-include-artifacts` when `--dataset-root` should scan historical harness outputs and failure bundles instead of only source datasets; use `--discover-limit`, `--discover-include-build`, and `--discover-exclude-dir` to bound or tune discovery. `run_campaign.py` audits original corpus dataset lists and discovered indexes into `dataset_audit/` by default, records a `dataset_audit` block in the summary/report, and lets artifact verification check the audit evidence; use `--skip-dataset-audit`, `--dataset-audit-require-hashes`, and `--dataset-audit-fail-duplicate-ratio <ratio>` to tune this gate. Use repeated `--corpus-sgt-api check_sgt|step_roundtrip|iges_roundtrip` plus the `--corpus-step-*`, `--corpus-iges-*`, and `--corpus-roundtrip-*` options to include SGT exchange roundtrips in the standard corpus lane. By default `--corpus-recut-use auto` recuts `runs/corpus/**/output/result_*.sgt` artifacts when the corpus lane produced them, and falls back to original dataset SGTs otherwise; use `--corpus-recut-use original|artifacts|both` when you need explicit source selection. Recut generation and recipe-lane geometry audit use exact coordinate-plane distance extrema when the runner is available, falling back to diagnostic bbox snapshots only when exact probing cannot run. Use `--corpus-recut-require-exact-bbox-probe` for extent-sensitive recut lanes, or `--corpus-recut-no-exact-bbox-probe` only for exploratory fast lanes. Use `--skip-corpus-recut`, `--skip-corpus-recut-artifacts`, `--corpus-recut-preset smoke|standard|stress`, `--corpus-recut-source-limit`, and `--corpus-recut-limit` to control this lane. Use `--shard-count N --shard-index I` to split corpus and recipe lanes across stable campaign shards; a lane with no work in a shard writes an empty summary with `empty_shard=true` instead of failing the campaign. Recipe lanes run geometry audit by default and report duplicate-input and tolerance-mismatch counts; use `--no-geometry-audit` to skip it, or `--geometry-audit-fail-on-duplicates` / `--geometry-audit-fail-on-tolerance-mismatch` for stricter lanes. The transient registry is written under `bug_registry/` with `bug_registry.md`, `bug_registry.json`, and `registry_replay_recipes.txt`; use `--skip-bug-registry` to skip it. GUI-ready SGT packs are written under `debug_handoff/` with `debug_handoff_report.md`; when `sggk_topology_extract.exe` is available they also include `focus/*.sgt` exports of the primary contact target/tool topology; use `--skip-debug-handoff` to skip them. Editable bug-record drafts are written to `bug_record_drafts/drafts.json`; use `--skip-bug-record-drafts` to skip them and `--bug-record-prefix <prefix>` to control generated draft IDs. Add `--promote-bug-records` when those drafts should be copied/re-written into portable candidates under `promoted_bug_records/`; add `--replay-promoted-bug-records` when the promoted candidate root should also run materialization, replay, and regression classification under `promoted_bug_records/materialized`, `promoted_bug_records/replay`, and `promoted_bug_records/regression`. Checked-in records under `test_harness/bug_records` are materialized and replayed by default under `known_bug_records/`, `known_bug_replay/`, and `known_bug_regression/`; the known-bug replay also writes triage, preview/contact sheet, geometry audit, and `known_bug_debug_handoff/` unless those global outputs are disabled. Use `--skip-known-bug-regression` to skip this lane, `--bug-record <file-or-dir>` to override the record set, and `--known-bug-fail-on-fixed|--known-bug-fail-on-changed|--known-bug-fail-on-unavailable` when a version gate should fail on those states. Pass `--reduce-stable-failures` to run `reduce_failure_recipe.py` after aggregate replay for stable failures with flat recipes; use `--reduction-limit`, `--reduction-max-trials`, `--reduction-timeout`, and `--reduction-min-dimension` to bound the cost. The reduction lane writes `reductions/reduction_index.json` and `reduction_index.md`, and artifact verification checks those paths when present. `run_campaign.py` also summarizes validation/oracle coverage by default under `oracle_coverage/`; passed cases must have `report/validation.json` and at least one classified oracle kind unless `--skip-oracle-coverage` or `--oracle-coverage-min-kinds 0` is used. The coverage report counts property snapshots, metric expectations, point/body and face/point relations, clash checks, distance checks, exact plane extrema, skipped checks, and validation failures so source-directed runs can see whether they exercised real-result validation. `run_campaign.py` runs artifact verification by default at the end, writes `campaign_verification/`, and records an `artifact_verification` block in the summary/report; use `--skip-artifact-verify` for intentionally incomplete fast runs, or `--artifact-verify-allow-duplicate-inputs`, `--artifact-verify-allow-duplicate-geometry`, `--artifact-verify-allow-tolerance-mismatches`, and repeated `--artifact-verify-expect-known-bug-status <status>` to forward strictness controls. `collect_campaign_shards.py` also merges shard reduction indexes into `reductions/reduction_index.json` and rebuilds a merged `debug_handoff/` from the merged registry by default; pass `--skip-debug-handoff` there to skip GUI handoff generation. Use `--bundle-zip` for zipped handoff bundles and `--fail-on-failures` when the campaign should return nonzero after stable newly discovered failures are found.
+The campaign runner writes `campaign_summary.json` and `campaign_report.md` at the campaign root. Passing `--source-root` runs `scan_source_risks.py` first and records `source_scan/` reports plus `attack_seed_drafts.json`; by default it also builds `source_attack_tasks/` with JSONL/model-task output unless `--skip-source-attack-tasks` is passed. DSL lanes run `compile_attack_dsl.py --check` first and write `dsl_checks/<lane>.json` before compiling recipes under `recipes/<lane>/`; when `--dsl` is omitted, the default DSL set includes tolerance-band, real operation-chain tolerance, and BSpline support-sweep complex-surface smokes. Recipe-lane failures are expected discoveries, so return code `2` continues into aggregate triage, exact-signature replay, and paired TopoTrack control. Only verified `stable_same_failure` groups enter bundle, transient registry, and editable draft outputs; all other groups remain inconclusive triage evidence. Corpus recut lanes are enabled when SGT inputs are available. Use `--discover-include-artifacts` when `--dataset-root` should scan historical harness outputs and failure bundles instead of only source datasets; use `--discover-limit`, `--discover-include-build`, and `--discover-exclude-dir` to bound or tune discovery. `run_campaign.py` audits original corpus dataset lists and discovered indexes into `dataset_audit/` by default, records a `dataset_audit` block in the summary/report, and lets artifact verification check the audit evidence; use `--skip-dataset-audit`, `--dataset-audit-require-hashes`, and `--dataset-audit-fail-duplicate-ratio <ratio>` to tune this gate. Use repeated `--corpus-sgt-api check_sgt|step_roundtrip|iges_roundtrip` plus the `--corpus-step-*`, `--corpus-iges-*`, and `--corpus-roundtrip-*` options to include SGT exchange roundtrips in the standard corpus lane. By default `--corpus-recut-use auto` recuts `runs/corpus/**/output/result_*.sgt` artifacts when the corpus lane produced them, and falls back to original dataset SGTs otherwise; use `--corpus-recut-use original|artifacts|both` when you need explicit source selection. Recut generation and recipe-lane geometry audit use exact coordinate-plane distance extrema when the runner is available, falling back to diagnostic bbox snapshots only when exact probing cannot run. Use `--corpus-recut-require-exact-bbox-probe` for extent-sensitive recut lanes, or `--corpus-recut-no-exact-bbox-probe` only for exploratory fast lanes. Use `--skip-corpus-recut`, `--skip-corpus-recut-artifacts`, `--corpus-recut-preset smoke|standard|stress`, `--corpus-recut-source-limit`, and `--corpus-recut-limit` to control this lane. Use `--shard-count N --shard-index I` to split corpus and recipe lanes across stable campaign shards; a lane with no work in a shard writes an empty summary with `empty_shard=true` instead of failing the campaign. Recipe lanes run geometry audit by default and report duplicate-input and tolerance-mismatch counts; use `--no-geometry-audit` to skip it, or `--geometry-audit-fail-on-duplicates` / `--geometry-audit-fail-on-tolerance-mismatch` for stricter lanes. The stable-only transient registry is written under `bug_registry/` with `bug_registry.md`, `bug_registry.json`, and `registry_replay_recipes.txt`; use `--skip-bug-registry` to skip it. GUI-ready SGT packs are written under `debug_handoff/` with `debug_handoff_report.md`; when `sggk_topology_extract.exe` is available they also include `focus/*.sgt` exports of the primary contact target/tool topology; use `--skip-debug-handoff` to skip them. Editable stable bug-record drafts are written to `bug_record_drafts/drafts.json`; use `--skip-bug-record-drafts` to skip them and `--bug-record-prefix <prefix>` to control generated draft IDs. Add `--promote-bug-records` when those drafts should be copied/re-written into portable candidates under `promoted_bug_records/`; add `--replay-promoted-bug-records` when the promoted candidate root should also run materialization, replay, and regression classification under `promoted_bug_records/materialized`, `promoted_bug_records/replay`, and `promoted_bug_records/regression`. Checked-in records under `test_harness/bug_records` are materialized and replayed by default under `known_bug_records/`, `known_bug_replay/`, and `known_bug_regression/`; the known-bug replay also writes triage, preview/contact sheet, geometry audit, and `known_bug_debug_handoff/` unless those global outputs are disabled. Use `--skip-known-bug-regression` to skip this lane, `--bug-record <file-or-dir>` to override the record set, and `--known-bug-fail-on-fixed|--known-bug-fail-on-changed|--known-bug-fail-on-unavailable` when a version gate should fail on those states. Pass `--reduce-stable-failures` to invoke the hardened `reduce_replay_failures.py` batch after aggregate replay; it requires at least three attempts bound to the seed signature and revalidates reducer baseline/predicate/final evidence plus recipe/summary hashes before exporting a reduced recipe. Use `--reduction-limit`, `--reduction-max-trials`, `--reduction-timeout`, and `--reduction-min-dimension` to bound the cost. The reduction lane writes `reductions/reduction_index.json` and `reduction_index.md`, and artifact verification checks those paths when present. `run_campaign.py` also summarizes validation/oracle coverage by default under `oracle_coverage/`; passed cases must have `report/validation.json` and at least one classified oracle kind unless `--skip-oracle-coverage` or `--oracle-coverage-min-kinds 0` is used. The coverage report counts property snapshots, metric expectations, point/body and face/point relations, clash checks, distance checks, exact plane extrema, skipped checks, and validation failures so source-directed runs can see whether they exercised real-result validation. `run_campaign.py` runs artifact verification by default at the end, writes `campaign_verification/`, and records an `artifact_verification` block in the summary/report; use `--skip-artifact-verify` for intentionally incomplete fast runs, or `--artifact-verify-allow-duplicate-inputs`, `--artifact-verify-allow-duplicate-geometry`, `--artifact-verify-allow-tolerance-mismatches`, and repeated `--artifact-verify-expect-known-bug-status <status>` to forward strictness controls. `collect_campaign_shards.py` also merges shard reduction indexes into `reductions/reduction_index.json` and rebuilds a merged `debug_handoff/` from the merged registry by default; pass `--skip-debug-handoff` there to skip GUI handoff generation. Use `--bundle-zip` for zipped handoff bundles and `--fail-on-failures` when the campaign should return nonzero after stable newly discovered failures are found.
 
 `run_campaign.py` invokes the artifact verifier automatically. You can rerun it manually for an existing campaign, a merged shard root, or an exploratory pass with relaxed geometry-audit strictness. The verifier also opens debug handoff indexes and checks per-pack manifests, `sgt_paths.txt`, and focus indexes when present:
 

@@ -1,0 +1,28 @@
+{
+  "request_id": "iface_21_offset2d_cannot_connect",
+  "owner": "kernel-dev",
+  "target_api": "api_offset2d",
+  "sdk_source_refs": [
+    "SGGK GeomAlgo/Offset2D/Offset2D.h: Offset2D::Perform"
+  ],
+  "test_goal": "Generate one disconnected 2D path recipe whose exact expected status is CanNotConnect.",
+  "risk_summary": "An expected diagnostic status must count as a successful test outcome without being mistaken for either API success or a harness failure.",
+  "geometry": {
+    "family": "composite_path2d",
+    "target_builder": "two disconnected line2d segments",
+    "tool_builder": "none",
+    "parameter_notes": "Use DoNotConnect and a clear gap between consecutive segments; assert zero result paths and exact CanNotConnect status."
+  },
+  "tolerance_focus": [
+    "connectivity"
+  ],
+  "oracles": [
+    "offset2d_status",
+    "offset2d_result_paths"
+  ],
+  "expected_behavior": "The SDK returns CanNotConnect, the typed status matches, and the test outcome succeeds with zero result paths.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return exactly one flat_recipe object; a matched CanNotConnect status is the expected passing outcome."
+}

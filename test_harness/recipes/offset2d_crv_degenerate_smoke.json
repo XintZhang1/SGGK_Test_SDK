@@ -1,0 +1,20 @@
+{
+  "case_id": "offset2d_crv_degenerate_smoke",
+  "api": "api_offset2d",
+  "offset2d_distance": 10.0,
+  "offset2d_allow_crv_degenerated": false,
+  "offset2d_path": [
+    {
+      "kind": "arc",
+      "center": [0.0, 0.0],
+      "radius": 10.0,
+      "start_angle": 0.0,
+      "end_angle": "tau",
+      "ccw": true
+    }
+  ],
+  "expectations": {
+    "offset2d_status": "CrvDegenToPoint",
+    "offset2d_result_path_count": 0
+  }
+}

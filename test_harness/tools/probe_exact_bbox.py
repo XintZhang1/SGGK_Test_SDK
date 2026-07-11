@@ -341,7 +341,7 @@ def markdown_report(summary: dict[str, Any]) -> str:
     lines.append(f"- OK: `{summary.get('ok_count')}`")
     lines.append(f"- Errors: `{summary.get('error_count')}`")
     lines.append(f"- Body index: `{summary.get('body_index')}`")
-    lines.append(f"- Method: `coordinate-plane api_topo_minimum_distance`")
+    lines.append("- Method: `coordinate-plane api_topo_minimum_distance`")
     lines.append("")
     lines.append("| source | ok | min | max | dims | probe case |")
     lines.append("| --- | --- | --- | --- | --- | --- |")

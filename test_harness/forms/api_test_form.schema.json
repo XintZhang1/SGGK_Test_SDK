@@ -23,15 +23,8 @@
     },
     "target_api": {
       "type": "string",
-      "enum": [
-        "api_boolean",
-        "check_sgt",
-        "step_import",
-        "iges_import",
-        "step_roundtrip",
-        "iges_roundtrip",
-        "needs_harness_extension"
-      ]
+      "minLength": 1,
+      "description": "Requested SDK/harness API. Unknown APIs are allowed at form intake and should produce needs_harness_extension unless interface_capabilities.json supports them."
     },
     "sdk_source_refs": {
       "type": "array",
@@ -55,18 +48,8 @@
       "properties": {
         "family": {
           "type": "string",
-          "enum": [
-            "primitive",
-            "generated_extrude",
-            "generated_thicken",
-            "generated_sweep",
-            "support_sweep_bspline",
-            "generated_revolve",
-            "pre_boolean",
-            "loaded_sgt",
-            "exchange_file",
-            "corpus"
-          ]
+          "minLength": 1,
+          "description": "Geometry family label. Prefer known families from interface_capabilities.json, but allow new labels for extension intake."
         },
         "target_builder": {
           "type": "string"
@@ -103,18 +86,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": [
-          "result_bodies",
-          "properties",
-          "boolean_volume_relation",
-          "point_relation",
-          "face_point_relation",
-          "clash",
-          "distance",
-          "plane_extreme",
-          "roundtrip_comparison",
-          "topocheck"
-        ]
+        "minLength": 1
       }
     },
     "expected_behavior": {
@@ -136,6 +108,13 @@
         "corpus",
         "known_bug_regression"
       ]
+    },
+    "campaign_profile": {
+      "type": "string",
+      "enum": [
+        "abc_boolean_mass_recut"
+      ],
+      "description": "Optional typed large-campaign profile. The model may select only this id and bounded args; local code owns tool/path bindings."
     },
     "input_assets": {
       "type": "object",

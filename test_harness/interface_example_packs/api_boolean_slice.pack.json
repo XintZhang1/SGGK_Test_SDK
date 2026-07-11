@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_boolean_slice",
+  "title": "api_boolean_slice flat recipes",
+  "interface_family": "api_boolean_slice",
+  "markdown_path": "test_harness/interface_example_packs/api_boolean_slice.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/recipes/boolean_slice_smoke.json"
+  ],
+  "negative_example_paths": [
+    "test_harness/interface_example_packs/api_boolean_slice.invalid_recipe.json"
+  ],
+  "target_apis": ["api_boolean_slice"],
+  "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
+  "builder_terms": ["slice", "intersection wire", "wire body"],
+  "fallback": "Return needs_harness_extension when the requested slice inputs cannot be expressed by two supported body builders."
+}

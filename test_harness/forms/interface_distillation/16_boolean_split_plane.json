@@ -1,0 +1,30 @@
+{
+  "request_id": "iface_16_boolean_split_plane",
+  "owner": "kernel-dev",
+  "target_api": "api_boolean_split",
+  "sdk_source_refs": [
+    "SGGK Boolean/API.h: api_boolean_split"
+  ],
+  "test_goal": "Generate bounded plane-sheet and body split recipes that verify classified outer, inner, wire, and total result counts.",
+  "risk_summary": "A split may report success while dropping a classified result, returning an invalid body, or changing count semantics at tolerance boundaries.",
+  "geometry": {
+    "family": "plane_sheet",
+    "target_builder": "solid_cylinder",
+    "tool_builder": "plane_sheet",
+    "parameter_notes": "Use one plane through the cylinder interior with the calibrated classified result counts."
+  },
+  "tolerance_focus": [
+    "interior_section"
+  ],
+  "oracles": [
+    "split_body_counts",
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "The interior plane split returns the calibrated classified body counts and every returned topology passes TopoCheck.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return flat_recipe only and use the registered api_boolean_split fields from the selected example pack."
+}

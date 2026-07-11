@@ -1,0 +1,35 @@
+{
+  "request_id": "iface_05_support_sweep_bspline_boolean",
+  "owner": "modeling-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Modeling sweep API: api_sweep_entity SupportFace mode",
+    "ABC complex surfaces as downstream analogue"
+  ],
+  "test_goal": "Exercise BSpline support-face sweep body construction and boolean it against a generated cutter.",
+  "risk_summary": "Support-face sweep combines BSpline surface evaluation, profile placement, and generated topology; failures can appear only after a boolean consumes the swept body.",
+  "geometry": {
+    "family": "support_sweep_bspline",
+    "target_builder": "support_sweep",
+    "tool_builder": "solid_cylinder or sweep_circle_line",
+    "parameter_notes": "Include nominal and +/- geom_tol contact bands against the swept side face."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Support-sweep creation and downstream boolean should produce valid finite properties and stable exact-extreme measurements.",
+  "case_count": 6,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Use this as the public surrogate for ABC BSpline-heavy imported topology."
+}

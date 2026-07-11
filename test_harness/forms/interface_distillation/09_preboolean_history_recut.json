@@ -1,0 +1,35 @@
+{
+  "request_id": "iface_09_preboolean_history_recut",
+  "owner": "boolean-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Boolean/API.h: api_boolean",
+    "source risks involving topology history, generated split faces, or non-destructive mode"
+  ],
+  "test_goal": "Create a body with an internal boolean first, then recut it with another generated tool.",
+  "risk_summary": "A prior boolean result carries generated/split topology that may behave differently from primitive topology in a second boolean.",
+  "geometry": {
+    "family": "pre_boolean",
+    "target_builder": "primitive solid_cylinder -> boolean SUBTRACTION solid_wedge",
+    "tool_builder": "solid_cylinder or sweep_circle_line",
+    "parameter_notes": "Keep source operation ids stable so triage can distinguish base primitive, first cut, and recut tool."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "boolean_volume_relation",
+    "distance",
+    "topocheck"
+  ],
+  "expected_behavior": "The second boolean should not lose all result bodies or produce invalid topology after the first generated split.",
+  "case_count": 5,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "This is a bridge between purely generated cases and real ABC imported-body recut."
+}

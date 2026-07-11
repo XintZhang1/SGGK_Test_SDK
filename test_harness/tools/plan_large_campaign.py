@@ -111,6 +111,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-recut-preset", action="append", choices=["smoke", "standard", "stress"], default=[], help="Override profile corpus recut preset(s)")
     parser.add_argument("--corpus-sgt-api", action="append", choices=["check_sgt", "step_roundtrip", "iges_roundtrip"], default=[], help="Override profile SGT API list")
     parser.add_argument("--corpus-limit", type=int, default=-1, help="Override profile corpus limit; -1 uses profile")
+    parser.add_argument(
+        "--corpus-preserve-input-order",
+        action="store_true",
+        help="Preserve corpus dataset-list order in generated shard commands before applying corpus limits",
+    )
     parser.add_argument("--matrix-limit", type=int, default=-1, help="Override profile matrix limit; -1 uses profile")
     parser.add_argument("--dsl-limit", type=int, default=-1, help="Override profile DSL limit; -1 uses profile")
     parser.add_argument("--corpus-recut-source-limit", type=int, default=-1, help="Override profile corpus recut source limit; -1 uses profile")
@@ -356,6 +361,8 @@ def build_shard_command(
         cmd.extend(["--discover-limit", str(args.discover_limit)])
     for api in profile_list(args, "corpus_sgt_api", "corpus_sgt_apis"):
         cmd.extend(["--corpus-sgt-api", api])
+    if args.corpus_preserve_input_order:
+        cmd.append("--corpus-preserve-input-order")
     for preset in profile_list(args, "matrix_preset", "matrix_presets"):
         cmd.extend(["--matrix-preset", preset])
     for preset in profile_list(args, "corpus_recut_preset", "corpus_recut_presets"):
@@ -580,6 +587,7 @@ def write_report(path: Path, plan: dict[str, Any]) -> None:
         f"- Merged oracle coverage: `{not plan.get('skip_oracle_coverage')}` min_kinds=`{plan.get('oracle_coverage_min_kinds')}`",
         f"- Dataset audit: enabled=`{not plan.get('skip_dataset_audit')}` require_hashes=`{plan.get('dataset_audit_require_hashes')}` duplicate_ratio_gate=`{plan.get('dataset_audit_fail_duplicate_ratio')}`",
         f"- CAD feature profile: enabled=`{plan.get('profile_cad_features')}` min_score=`{plan.get('cad_feature_min_score')}` required=`{plan.get('require_cad_feature_profile')}` use_subset=`{plan.get('use_cad_feature_subset')}`",
+        f"- Corpus preserve input order: `{plan.get('corpus_preserve_input_order')}`",
         f"- Artifact verification: `{bool(plan.get('verify_command'))}`",
         "",
         "## Dataset Lists",
@@ -749,6 +757,7 @@ def main() -> int:
         "source_scan_each_shard": args.source_scan_each_shard,
         "corpus_recut_require_exact_bbox_probe": args.corpus_recut_require_exact_bbox_probe,
         "corpus_recut_no_exact_bbox_probe": args.corpus_recut_no_exact_bbox_probe,
+        "corpus_preserve_input_order": args.corpus_preserve_input_order,
         "reduce_stable_failures": args.reduce_stable_failures,
         "reduction_limit": args.reduction_limit,
         "reduction_max_trials": args.reduction_max_trials,

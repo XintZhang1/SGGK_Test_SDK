@@ -1,0 +1,36 @@
+{
+  "request_id": "iface_08_revolve_boolean",
+  "owner": "modeling-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Modeling API: api_revolve_entity",
+    "source risks involving periodic/seam or angular boundary handling"
+  ],
+  "test_goal": "Exercise open-profile and closed-profile revolved topology in boolean tolerance bands.",
+  "risk_summary": "Revolved topology introduces periodic side faces, seam behavior, and angle boundaries that can destabilize split/imprint and result-body classification.",
+  "geometry": {
+    "family": "generated_revolve",
+    "target_builder": "line_profile -> revolve and radial_rect_profile -> revolve",
+    "tool_builder": "solid_cylinder",
+    "parameter_notes": "Cover both revolve_line and revolve_rect; include exact side contact and +/- tolerance offsets."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "seam_periodic",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "distance",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Open and closed revolved bodies should not return empty success results at reviewed non-empty subtraction bands.",
+  "case_count": 10,
+  "run_profile": "matrix",
+  "input_assets": {},
+  "notes": "Use separate cases or paired_sweeps for revolve_line and revolve_rect."
+}

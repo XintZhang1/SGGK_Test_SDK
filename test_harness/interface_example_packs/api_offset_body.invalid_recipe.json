@@ -1,0 +1,12 @@
+{
+  "case_id": "api_offset_body_invalid_zero_distance",
+  "api": "api_offset_body",
+  "source_kind": "solid_cylinder",
+  "source_radius": 10.0,
+  "source_height": 25.0,
+  "offset_distance": 0.0,
+  "modeling_tol": 0.01,
+  "expectations": {
+    "require_finite_properties": true
+  }
+}

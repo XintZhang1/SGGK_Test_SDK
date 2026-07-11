@@ -1,0 +1,16 @@
+{
+  "case_id": "api_boolean_slice_invalid_type",
+  "api": "api_boolean_slice",
+  "boolean_type": "SLICE",
+  "modeling_tol": 0.01,
+  "target_kind": "solid_cylinder",
+  "target_radius": 20.0,
+  "target_height": 50.0,
+  "tool_kind": "solid_wedge",
+  "tool_length": 10.0,
+  "tool_width": 20.0,
+  "tool_height": 15.0,
+  "expectations": {
+    "slice_result_bodies": -1
+  }
+}

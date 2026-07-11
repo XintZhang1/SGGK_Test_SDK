@@ -1,0 +1,37 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/../build/test_harness",
+      "cacheVariables": {
+        "SGGK_SDK_DIR": "$env{SGGK_SDK_DIR}"
+      }
+    },
+    {
+      "name": "windows-local",
+      "displayName": "Windows local SGGK SDK",
+      "inherits": "windows-base"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-local",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-local",
+      "configuration": "Debug"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "request_id": "iface_10_step_roundtrip_imported_sgt",
+  "owner": "exchange-dev",
+  "target_api": "step_roundtrip",
+  "sdk_source_refs": [
+    "SGGK StepExchange/API.h: api_step_export",
+    "SGGK StepExchange/API.h: api_step_import",
+    "source risks involving AP203/AP214/AP242, BSpline conversion, units, or precision"
+  ],
+  "test_goal": "Roundtrip a selected imported ABC SGT body through STEP and compare source/result properties.",
+  "risk_summary": "Exchange APIs can report success while drifting area, volume, bbox, or topology count after export/import.",
+  "geometry": {
+    "family": "exchange_file",
+    "input_asset": "artifacts/interface_distillation/02_step_import_abc/top_complex_import/<case>/output/result_1.sgt",
+    "parameter_notes": "Use source_body_index=0 and test AP203 first; add AP214/AP242 variants when source inspection points there."
+  },
+  "tolerance_focus": [
+    "roundtrip_drift",
+    "import_topology"
+  ],
+  "oracles": [
+    "roundtrip_comparison",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "Roundtrip result length, area, absolute volume, and bbox should remain within configured tolerances or produce a triaged drift report.",
+  "case_count": 3,
+  "run_profile": "smoke",
+  "input_assets": {
+    "source_file": "artifacts/interface_distillation/02_step_import_abc/top_complex_import/<case>/output/result_1.sgt"
+  },
+  "notes": "Use flat_recipe unless the model proposes a small matrix over STEP protocol/options."
+}

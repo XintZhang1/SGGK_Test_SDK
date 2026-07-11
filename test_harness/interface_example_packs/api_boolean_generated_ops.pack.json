@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_boolean_generated_ops",
+  "title": "api_boolean generated operation chains",
+  "interface_family": "api_boolean_generated_ops",
+  "markdown_path": "test_harness/interface_example_packs/api_boolean_generated_ops.md",
+  "contract_kinds": ["attack_dsl"],
+  "positive_example_paths": [
+    "test_harness/interface_example_packs/api_boolean_generated_ops.example_dsl.json"
+  ],
+  "negative_example_paths": [],
+  "target_apis": ["api_boolean"],
+  "geometry_families": [
+    "generated_extrude",
+    "generated_thicken",
+    "generated_sweep",
+    "support_sweep_bspline",
+    "generated_revolve",
+    "pre_boolean"
+  ],
+  "builder_terms": ["extrude", "sweep", "thicken", "revolve", "pre_boolean"],
+  "fallback": "Return needs_harness_extension for unsupported generated builders, custom operations, or oracle families not listed in interface_capabilities.json."
+}

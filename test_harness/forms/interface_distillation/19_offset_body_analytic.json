@@ -1,0 +1,31 @@
+{
+  "request_id": "iface_19_offset_body_analytic",
+  "owner": "kernel-dev",
+  "target_api": "api_offset_body",
+  "sdk_source_refs": [
+    "SGGK Offset/API.h: api_offset_body"
+  ],
+  "test_goal": "Generate analytic primitive body-offset recipes with property and coordinate-extreme oracles, not just non-empty output checks.",
+  "risk_summary": "A body offset can succeed and remain topologically valid while using the wrong sign, distance, extent, or volume.",
+  "geometry": {
+    "family": "primitive",
+    "target_builder": "solid_cylinder or solid_sphere",
+    "tool_builder": "none",
+    "parameter_notes": "Use dimensions with analytically predictable bbox extrema and volume; keep the offset well away from collapse."
+  },
+  "tolerance_focus": [
+    "positive_offset",
+    "analytic_extent"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Exactly one valid result body has finite properties and calibrated analytic bbox/volume values within explicit tolerances.",
+  "case_count": 1,
+  "run_profile": "smoke",
+  "input_assets": {},
+  "notes": "Return flat_recipe only and use source_* fields rather than target/tool aliases."
+}

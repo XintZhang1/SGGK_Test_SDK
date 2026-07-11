@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pack_id": "api_boolean_split",
+  "title": "api_boolean_split flat recipes",
+  "interface_family": "api_boolean_split",
+  "markdown_path": "test_harness/interface_example_packs/api_boolean_split.md",
+  "contract_kinds": ["flat_recipe"],
+  "positive_example_paths": [
+    "test_harness/recipes/boolean_split_plane_smoke.json"
+  ],
+  "negative_example_paths": [
+    "test_harness/interface_example_packs/api_boolean_split.invalid_recipe.json"
+  ],
+  "target_apis": ["api_boolean_split"],
+  "geometry_families": ["primitive", "plane_sheet"],
+  "builder_terms": ["split", "plane sheet", "outer body", "inner body", "intersection wire"],
+  "fallback": "Return needs_harness_extension when the requested splitter cannot be expressed by a supported target/tool body builder."
+}

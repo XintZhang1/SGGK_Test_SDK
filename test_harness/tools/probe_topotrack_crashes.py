@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe whether failed topo-track-enabled recipes pass with topo_track disabled."""
+"""Capture failed recipes' TopoTrack evidence in isolated paired processes."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from collections import Counter
 from copy import deepcopy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -87,16 +89,6 @@ def selection_reason(result: dict[str, Any]) -> str:
     if not as_bool(recipe.get("topo_track"), True):
         return "recipe_topo_track_not_enabled"
 
-    artifact_text = as_str(result.get("artifact_dir"))
-    if not artifact_text:
-        return "artifact_dir_missing"
-    artifact_dir = Path(artifact_text)
-    if not artifact_has(artifact_dir, "report/status.json"):
-        return "status_report_missing"
-    if not artifact_has(artifact_dir, "report/topo_check.json"):
-        return "topo_check_report_missing"
-    if artifact_has(artifact_dir, "report/validation.json"):
-        return "validation_report_exists"
     return "selected"
 
 
@@ -151,7 +143,33 @@ def write_probe_recipes(selected: list[dict[str, Any]], recipe_dir: Path) -> lis
     return records
 
 
-def run_probe_recipes(args: argparse.Namespace, recipe_dir: Path, out_dir: Path) -> dict[str, Any]:
+def write_capture_recipes(selected: list[dict[str, Any]], recipe_dir: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for result in selected:
+        source_path = Path(as_str(result.get("recipe")))
+        recipe = load_json(source_path)
+        if not isinstance(recipe, dict):
+            continue
+        target_path = recipe_dir / probe_recipe_name(result)
+        write_json(target_path, recipe)
+        records.append(
+            {
+                "case_id": as_str(result.get("case_id")),
+                "source_recipe": str(source_path),
+                "capture_recipe": str(target_path),
+                "status": "written",
+            }
+        )
+    return records
+
+
+def run_probe_recipes(
+    args: argparse.Namespace,
+    recipe_dir: Path,
+    out_dir: Path,
+    *,
+    capture_flat_topotrack: bool = False,
+) -> dict[str, Any]:
     run_out = out_dir / "runs"
     triage_out = out_dir / "triage"
     cmd = [
@@ -170,6 +188,8 @@ def run_probe_recipes(args: argparse.Namespace, recipe_dir: Path, out_dir: Path)
         "--triage-out",
         str(triage_out),
     ]
+    if capture_flat_topotrack:
+        cmd.append("--capture-flat-topotrack")
     completed = subprocess.run(
         cmd,
         text=True,
@@ -200,6 +220,61 @@ def result_by_case_id(summary: Any) -> dict[str, dict[str, Any]]:
     return results
 
 
+def redact_workspace_paths(value: Any, workspace: Path) -> Any:
+    if isinstance(value, list):
+        return [redact_workspace_paths(item, workspace) for item in value]
+    if isinstance(value, dict):
+        return {str(key): redact_workspace_paths(item, workspace) for key, item in value.items()}
+    if isinstance(value, str):
+        return value.replace(str(workspace), "<isolated_topotrack_workspace>")
+    return value
+
+
+def persist_probe_artifacts(results: list[dict[str, Any]], out_dir: Path) -> None:
+    names = (
+        "status.json",
+        "topo_check.json",
+        "topo_track_summary.json",
+        "topo_track.json",
+        "validation.json",
+    )
+    for item in results:
+        case_id = as_str(item.get("case_id"))
+        safe_case = Path(probe_recipe_name({"case_id": case_id})).stem
+        for field, label in (
+            ("capture_artifact_dir", "capture"),
+            ("probe_artifact_dir", "disabled"),
+        ):
+            source_text = as_str(item.get(field))
+            if not source_text:
+                continue
+            source = Path(source_text)
+            destination = out_dir / "evidence" / safe_case / label
+            copied = False
+            for name in names:
+                source_report = source / "report" / name
+                if not source_report.is_file():
+                    continue
+                target = destination / "report" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_report, target)
+                copied = True
+            run_state = source / "run_state.json"
+            if run_state.is_file():
+                destination.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(run_state, destination / "run_state.json")
+                copied = True
+            if copied:
+                item[field] = str(destination)
+        capture = item.get("capture_topotrack")
+        if isinstance(capture, dict) and capture.get("available"):
+            capture["summary_path"] = str(
+                Path(as_str(item.get("capture_artifact_dir")))
+                / "report"
+                / "topo_track_summary.json"
+            )
+
+
 def validation_status(artifact_dir: Any) -> dict[str, Any]:
     path_text = as_str(artifact_dir)
     if not path_text:
@@ -216,28 +291,73 @@ def validation_status(artifact_dir: Any) -> dict[str, Any]:
     }
 
 
-def classify_probe(record: dict[str, Any], probe_result: dict[str, Any] | None) -> dict[str, Any]:
+def topotrack_status(artifact_dir: Any) -> dict[str, Any]:
+    path_text = as_str(artifact_dir)
+    if not path_text:
+        return {"available": False, "reason": "artifact_dir_missing"}
+    summary = load_json(Path(path_text) / "report" / "topo_track_summary.json")
+    if not isinstance(summary, dict):
+        return {"available": False, "reason": "topo_track_summary_missing_or_invalid"}
+    if summary.get("skipped") is True:
+        return {
+            "available": False,
+            "skipped": True,
+            "reason": as_str(summary.get("reason")) or "topotrack_skipped",
+        }
+    return {
+        "available": True,
+        "item_count": as_int(summary.get("item_count")),
+        "ancestor_count": as_int(summary.get("ancestor_count")),
+        "resolved_ancestor_count": as_int(summary.get("resolved_ancestor_count")),
+        "summary_path": str(Path(path_text) / "report" / "topo_track_summary.json"),
+    }
+
+
+def classify_probe(
+    record: dict[str, Any],
+    capture_result: dict[str, Any] | None,
+    disabled_result: dict[str, Any] | None,
+) -> dict[str, Any]:
     if record.get("status") != "written":
         return {**record, "classification": "unavailable"}
-    if not probe_result:
-        return {**record, "classification": "unavailable", "reason": "probe result missing"}
+    if not capture_result or not disabled_result:
+        return {**record, "classification": "unavailable", "reason": "paired probe result missing"}
 
-    validation = validation_status(probe_result.get("artifact_dir"))
-    returncode = probe_result.get("returncode")
-    if returncode == 0 and validation.get("ok") is True:
+    capture_validation = validation_status(capture_result.get("artifact_dir"))
+    disabled_validation = validation_status(disabled_result.get("artifact_dir"))
+    capture_topotrack = topotrack_status(capture_result.get("artifact_dir"))
+    capture_returncode = capture_result.get("returncode")
+    disabled_returncode = disabled_result.get("returncode")
+    disabled_is_clean = disabled_returncode == 0 and disabled_validation.get("ok") is True
+    if capture_returncode != 0 and disabled_is_clean:
         classification = "topotrack_only_modeling_ok"
-    elif is_process_crash_returncode(returncode) and not validation.get("available"):
-        classification = "still_crashes_without_topotrack"
+    elif is_process_crash_returncode(capture_returncode):
+        if is_process_crash_returncode(disabled_returncode):
+            classification = "still_crashes_without_topotrack"
+        else:
+            classification = "topotrack_instrumentation_crash"
+    elif capture_topotrack.get("available"):
+        classification = (
+            "topotrack_capture_available"
+            if capture_returncode == 0
+            else "topotrack_capture_available_with_failure"
+        )
     else:
         classification = "modeling_or_validation_failure_after_topotrack_disabled"
 
     return {
         **record,
         "classification": classification,
-        "probe_returncode": returncode,
-        "probe_artifact_dir": probe_result.get("artifact_dir"),
-        "probe_validation": validation,
-        "probe_timed_out": probe_result.get("timed_out"),
+        "evidence_quality": "diagnostic_not_causal_proof",
+        "capture_returncode": capture_returncode,
+        "capture_artifact_dir": capture_result.get("artifact_dir"),
+        "capture_validation": capture_validation,
+        "capture_topotrack": capture_topotrack,
+        "capture_timed_out": capture_result.get("timed_out"),
+        "probe_returncode": disabled_returncode,
+        "probe_artifact_dir": disabled_result.get("artifact_dir"),
+        "probe_validation": disabled_validation,
+        "probe_timed_out": disabled_result.get("timed_out"),
     }
 
 
@@ -251,10 +371,20 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         f"- Status counts: `{summary.get('classification_counts')}`",
         "",
     ]
+    capture_run = summary.get("capture_run")
+    if isinstance(capture_run, dict):
+        lines.extend([
+            "## Isolated Capture Run",
+            "",
+            f"- Return code: `{capture_run.get('returncode')}`",
+            f"- Run summary: `{capture_run.get('run_summary')}`",
+            f"- Triage: `{capture_run.get('triage')}`",
+            "",
+        ])
     run = summary.get("probe_run")
     if isinstance(run, dict):
         lines.extend([
-            "## Probe Run",
+            "## Disabled Control Run",
             "",
             f"- Return code: `{run.get('returncode')}`",
             f"- Run summary: `{run.get('run_summary')}`",
@@ -264,18 +394,23 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
     lines.extend([
         "## Cases",
         "",
-        "| case | classification | original rc | probe rc | validation |",
-        "| --- | --- | --- | --- | --- |",
+        "| case | classification | original rc | capture rc | disabled rc | TopoTrack |",
+        "| --- | --- | --- | --- | --- | --- |",
     ])
     for item in summary.get("results", []):
-        validation = item.get("probe_validation") if isinstance(item.get("probe_validation"), dict) else {}
+        topotrack = item.get("capture_topotrack") if isinstance(item.get("capture_topotrack"), dict) else {}
         lines.append(
-            "| `{case}` | `{classification}` | `{source_rc}` | `{probe_rc}` | `{validation}` |".format(
+            "| `{case}` | `{classification}` | `{source_rc}` | `{capture_rc}` | `{probe_rc}` | `{topotrack}` |".format(
                 case=item.get("case_id", ""),
                 classification=item.get("classification", item.get("status", "")),
                 source_rc=item.get("source_returncode", ""),
+                capture_rc=item.get("capture_returncode", ""),
                 probe_rc=item.get("probe_returncode", ""),
-                validation="ok" if validation.get("ok") is True else validation.get("reason", ""),
+                topotrack=(
+                    f"items={topotrack.get('item_count', 0)} ancestors={topotrack.get('ancestor_count', 0)}"
+                    if topotrack.get("available")
+                    else topotrack.get("reason", "unavailable")
+                ),
             )
         )
     lines.append("")
@@ -293,24 +428,74 @@ def main() -> int:
 
     started_at = now_iso_like()
     out_dir = Path(args.out)
-    recipe_dir = out_dir / "recipes"
+    capture_recipe_dir = out_dir / "capture_recipes"
+    recipe_dir = out_dir / "disabled_recipes"
     summary_path = Path(args.summary)
     source_summary = load_json(summary_path)
     if not isinstance(source_summary, dict):
         raise SystemExit(f"could not read recipe summary: {summary_path}")
 
     selected, skipped = selected_results(source_summary, args.limit)
+    capture_records = write_capture_recipes(selected, capture_recipe_dir)
     records = write_probe_recipes(selected, recipe_dir)
     write_text(out_dir / "probe_recipes.txt", "\n".join(record["probe_recipe"] for record in records if record.get("probe_recipe")) + "\n")
+    write_text(
+        out_dir / "capture_recipes.txt",
+        "\n".join(
+            record["capture_recipe"]
+            for record in capture_records
+            if record.get("capture_recipe")
+        )
+        + "\n",
+    )
 
+    capture_run: dict[str, Any] | None = None
     probe_run: dict[str, Any] | None = None
+    capture_summary: Any = None
+    probe_summary: Any = None
+    capture_results_by_case: dict[str, dict[str, Any]] = {}
     probe_results_by_case: dict[str, dict[str, Any]] = {}
-    if any(record.get("status") == "written" for record in records):
-        probe_run = run_probe_recipes(args, recipe_dir, out_dir)
-        probe_summary = load_json(Path(as_str(probe_run.get("run_summary"))))
-        probe_results_by_case = result_by_case_id(probe_summary)
+    classified: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="sggk_topotrack_") as temporary:
+        workspace = Path(temporary)
+        if any(record.get("status") == "written" for record in records):
+            capture_run = run_probe_recipes(
+                args,
+                capture_recipe_dir,
+                workspace / "capture",
+                capture_flat_topotrack=True,
+            )
+            capture_summary = load_json(Path(as_str(capture_run.get("run_summary"))))
+            capture_results_by_case = result_by_case_id(capture_summary)
+            probe_run = run_probe_recipes(args, recipe_dir, workspace / "disabled")
+            probe_summary = load_json(Path(as_str(probe_run.get("run_summary"))))
+            probe_results_by_case = result_by_case_id(probe_summary)
 
-    classified = [classify_probe(record, probe_results_by_case.get(as_str(record.get("case_id")))) for record in records]
+        classified = [
+            classify_probe(
+                record,
+                capture_results_by_case.get(as_str(record.get("case_id"))),
+                probe_results_by_case.get(as_str(record.get("case_id"))),
+            )
+            for record in records
+        ]
+        persist_probe_artifacts(classified, out_dir)
+        capture_run = redact_workspace_paths(capture_run or {}, workspace)
+        probe_run = redact_workspace_paths(probe_run or {}, workspace)
+        if isinstance(capture_summary, dict):
+            capture_summary_path = out_dir / "capture_run_summary.json"
+            write_json(
+                capture_summary_path,
+                redact_workspace_paths(capture_summary, workspace),
+            )
+            capture_run["run_summary"] = str(capture_summary_path)
+        if isinstance(probe_summary, dict):
+            probe_summary_path = out_dir / "disabled_run_summary.json"
+            write_json(
+                probe_summary_path,
+                redact_workspace_paths(probe_summary, workspace),
+            )
+            probe_run["run_summary"] = str(probe_summary_path)
     counts = Counter(as_str(item.get("classification")) or as_str(item.get("status")) for item in classified)
     summary = {
         "started_at": started_at,
@@ -319,6 +504,7 @@ def main() -> int:
         "selected_count": len(selected),
         "skipped_count": len(skipped),
         "classification_counts": dict(counts),
+        "capture_run": capture_run or {},
         "probe_run": probe_run or {},
         "results": classified,
         "skipped": skipped,

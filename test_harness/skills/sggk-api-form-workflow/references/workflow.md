@@ -1,120 +1,69 @@
-# Fixed Workflow
+# Message API Form Workflow
 
-## 1. Build The Model Task
-
-```powershell
-python .\test_harness\tools\build_api_test_task.py `
-  .\path\to\developer_form.json `
-  --out .\artifacts\model_tasks\<request_id>.json
-```
-
-Send the emitted `prompt` field to the small model.
-
-## 2. Save And Review Model Output
-
-Save the small-model JSON under:
+The production path is fully automatic:
 
 ```text
-artifacts/model_outputs/<request_id>.json
+API/C++ form
+  -> provider-neutral prompt manifest
+  -> parallel Message API candidate pool
+  -> normalize + kind-specific fixed gate + SHA-256 de-duplication
+  -> bounded diagnostic repair
+  -> independent SDK execution or isolated adapter build
+  -> deterministic selection + atomic promotion
+  -> qualification + same-failure replay + reduction + TopoTrack probe
+  -> candidate-only failure bundle/report
 ```
 
-If `kind=needs_harness_extension`, stop the run and file the extension request.
-
-If `kind=attack_dsl`, extract the `dsl` object into a standalone DSL JSON file before checking it:
-
-```text
-artifacts/model_outputs/<request_id>_dsl.json
-```
-
-If `kind=flat_recipe`, extract the `recipe` object into:
-
-```text
-artifacts/model_outputs/<request_id>_recipe.json
-```
-
-## 3. Check And Compile DSL
+## Build And Run
 
 ```powershell
-python .\test_harness\tools\compile_attack_dsl.py `
-  .\artifacts\model_outputs\<request_id>_dsl.json `
-  --check `
-  --report .\artifacts\model_checks\<request_id>_check.json
+python .\test_harness\tools\build_model_prompt_pack.py `
+  --out .\artifacts\model_prompt_pack `
+  --max-prompt-chars 60000
 
-python .\test_harness\tools\compile_attack_dsl.py `
-  .\artifacts\model_outputs\<request_id>_dsl.json `
-  --out .\artifacts\compiled_model_recipes\<request_id>
-```
-
-The check report must have zero compile failures and zero validation failures before running.
-
-For flat recipes, validate directly:
-
-```powershell
-python .\test_harness\tools\validate_recipe.py `
-  .\artifacts\model_outputs\<request_id>_recipe.json
-```
-
-## 4. Run The Generated Cases
-
-For DSL output, run the compiled recipe directory:
-
-```powershell
-python .\test_harness\tools\run_recipes.py `
+python .\test_harness\tools\run_message_harness_pipeline.py `
+  --profile intranet `
+  --run-id api_form_batch `
+  --execute `
   --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --recipe .\artifacts\compiled_model_recipes\<request_id> `
-  --out .\artifacts\model_runs\<request_id> `
   --jobs 1 `
   --timeout 120 `
-  --triage-out .\artifacts\model_triage\<request_id> `
-  --preview-out .\artifacts\model_previews\<request_id> `
-  --contact-sheet .\artifacts\model_previews\<request_id>\contact.png `
-  --geometry-audit-out .\artifacts\model_geometry_audit\<request_id>
+  .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-Use `--jobs 1` until the generated set is known to have no artifact dependencies.
+Use `--profile siliconflow-test` only for an explicit external simulation. It
+uses the same `choices[0].message.content` JSON contract and is never an
+intranet fallback.
 
-For flat-recipe output, run the extracted recipe file:
+Provider endpoint, model, credentials, CA bundle, SDK, data, and source roots
+come from environment configuration. Model output may not provide command,
+runner, dataset, output, cwd, environment, executable, or shell fields.
 
-```powershell
-python .\test_harness\tools\run_recipes.py `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --recipe .\artifacts\model_outputs\<request_id>_recipe.json `
-  --out .\artifacts\model_runs\<request_id> `
-  --jobs 1 `
-  --timeout 120 `
-  --triage-out .\artifacts\model_triage\<request_id> `
-  --preview-out .\artifacts\model_previews\<request_id> `
-  --contact-sheet .\artifacts\model_previews\<request_id>\contact.png
-```
+## Acceptance Rules
 
-## 5. Run Current API Smoke Coverage
+- `attack_dsl` must pass `compile_attack_dsl.py --check` under model asset policy.
+- `flat_recipe` must pass strict recipe and materialized-asset validation.
+- `cluster_seed` is expanded by fixed code and then passes the DSL gate.
+- `campaign_request` selects a registered profile and bounded typed arguments;
+  fixed code binds local paths and resolves argv with `shell=False`.
+- `api_plugin_candidate` is materialized through a registered fixed C++
+  archetype, then must pass isolated Release build/schema/registry/three-replay
+  semantic gates.
+- `needs_harness_extension` is a non-executing report. It does not apply or
+  propose a source patch and is used only when no existing adapter/plugin or
+  registered archetype can cover the API.
+- The low-level `run_authoring_gateway.py` stages transport-contract candidates
+  for diagnostics only. Its provenance has `authoring_accepted=false`.
 
-```powershell
-python .\test_harness\tools\run_recipes.py `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --recipe-list .\test_harness\suites\api_smoke_suite.txt `
-  --out .\artifacts\api_smoke_suite `
-  --jobs 1 `
-  --timeout 120 `
-  --triage-out .\artifacts\api_smoke_suite_triage `
-  --preview-out .\artifacts\api_smoke_suite_preview `
-  --contact-sheet .\artifacts\api_smoke_suite_preview\contact.png
-```
+SDK/oracle failures never trigger model repair and never get relabeled as SDK
+bugs. The pipeline keeps the accepted test, writes triage and replay evidence,
+and emits artifact-local bug candidates marked as requiring classification.
 
-The suite is sequential because `check_sgt_sample`, `step_roundtrip_smoke`, and `iges_roundtrip_smoke` use the SGT generated by `boolean_smoke`.
+## Post-promotion Evaluation
 
-## 6. Report
+`run_interface_distillation.py` may evaluate outputs already promoted by the
+Message API pipeline. It is not a model transport and cannot author, seed, or
+accept a model output.
 
-Report these paths:
-
-- `recipe_summary.json`
-- `recipe_manifest.json`
-- `triage_report.md`
-- `contact.png`
-- `geometry_audit.md`, when generated
-- each failing case `report/status.json`
-- each failing case `report/validation.json`
-- `report/roundtrip_comparison.json` for STEP/IGES roundtrip failures
-- `report/debug_geometry_index.json` and `debug_geometry/*.sgt` for validation failures
-
-Summarize pass/fail counts, failed oracle names, primary target/tool topology when available, and whether the failure is stable enough for reduction or bug-record promotion.
+Report the pipeline summary, accepted output/provenance, fixed-gate report,
+recipe summary, triage report, replay classification, and any failure bundles.

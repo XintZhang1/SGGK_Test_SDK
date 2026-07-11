@@ -1,0 +1,36 @@
+{
+  "request_id": "iface_04_sweep_circle_line_boolean",
+  "owner": "modeling-dev",
+  "target_api": "api_boolean",
+  "sdk_source_refs": [
+    "SGGK Modeling sweep API: api_sweep_entity",
+    "OCC surrogate: BRepAlgoAPI_BuilderAlgo forwards fuzzy value into PaveFiller"
+  ],
+  "test_goal": "Exercise sweep-generated side topology as target and tool in near-contact booleans.",
+  "risk_summary": "Generated sweep faces and PCurves are high-risk inputs for split/imprint logic, especially around exact tangency and tolerance-sized overlaps.",
+  "geometry": {
+    "family": "generated_sweep",
+    "target_builder": "rect_profile -> extrude or circle_profile -> sweep_line",
+    "tool_builder": "circle_profile -> sweep_line",
+    "parameter_notes": "Vary contact phase and side placement; keep operation_tol at topo_tol unless source says otherwise."
+  },
+  "tolerance_focus": [
+    "exact_contact",
+    "geom_tol",
+    "topo_tol",
+    "generated_topology"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "distance",
+    "clash",
+    "plane_extreme",
+    "topocheck"
+  ],
+  "expected_behavior": "Subtractions should preserve a valid body; intersections should respect the reviewed overlap threshold and never crash on generated sweep side topology.",
+  "case_count": 10,
+  "run_profile": "matrix",
+  "input_assets": {},
+  "notes": "Use stable chain step ids for profile, sweep, and placement."
+}

@@ -1,0 +1,33 @@
+{
+  "request_id": "iface_14_iges_import_abc_complex",
+  "owner": "exchange-dev",
+  "target_api": "iges_import",
+  "sdk_source_refs": [
+    "SGGK IgesExchange/API.h: api_iges_import",
+    "ABC dataset complex IGES subset"
+  ],
+  "test_goal": "Import ABC IGES samples and capture SDK status, TopoCheck, property snapshots, previews, and triage groups.",
+  "risk_summary": "IGES import can hide curve/surface tolerance drift, face-only import gaps, partial topology construction, or valid-looking empty output.",
+  "geometry": {
+    "family": "corpus",
+    "input_asset": "artifacts/abc_fetch_smoke/complex_dataset_index.json",
+    "parameter_notes": "Select IGES/IGS paths from the ABC complex subset or profile output; keep a bounded top-N smoke before broadening."
+  },
+  "tolerance_focus": [
+    "import_topology",
+    "roundtrip_drift"
+  ],
+  "oracles": [
+    "result_bodies",
+    "properties",
+    "topocheck"
+  ],
+  "expected_behavior": "Each selected IGES should either import into valid checked topology or produce a clearly triaged failure preserving the source path and import mode.",
+  "case_count": 48,
+  "run_profile": "corpus",
+  "input_assets": {
+    "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json",
+    "local_smoke_dataset_index": "artifacts/iges_import_smoke/dataset_index.json"
+  },
+  "notes": "This form may produce a typed campaign_request rather than one flat recipe because iges_import over ABC is dataset-driven; executable and path bindings remain in fixed code. If a strict ABC IGES subset is not materialized yet, use input_assets.local_smoke_dataset_index only as a labeled local IGES import smoke fallback and keep the ABC asset gap visible."
+}

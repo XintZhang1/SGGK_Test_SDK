@@ -5,19 +5,22 @@ from __future__ import annotations
 
 import argparse
 import ast
-from copy import deepcopy
-from dataclasses import dataclass
 import itertools
 import json
 import math
-from pathlib import Path
 import re
 import sys
 import time
+from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from validate_recipe import validate_recipe
+from harness_capabilities import load_capabilities, supported_body_builders
+from validate_recipe import allowed_recipe_keys, diagnostic_from_validation_error, validate_recipe
 
+CAPABILITIES = load_capabilities()
+SUPPORTED_BODY_BUILDERS = set(supported_body_builders(CAPABILITIES))
 
 NUMERIC_BODY_FIELDS = {
     "radius",
@@ -127,10 +130,34 @@ class DslError(ValueError):
     pass
 
 
+def ensure_supported_body_builder(kind: Any, path: str) -> None:
+    if not isinstance(kind, str) or not kind:
+        return
+    if kind not in SUPPORTED_BODY_BUILDERS:
+        raise DslError(
+            f"{path}: unsupported body builder {kind!r}; "
+            "add it to interface_capabilities.json and fixed compiler/runner support, or return needs_harness_extension"
+        )
+
+
 @dataclass(frozen=True)
 class Expansion:
     suffix: str
     patch: dict[str, Any]
+
+
+VECTOR_PATCH_LEAVES = {
+    "axis",
+    "center",
+    "control_points",
+    "direction",
+    "point",
+    "points",
+    "secondary_translate",
+    "translate",
+    "uv",
+    "uv_fraction",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,7 +166,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", help="Directory for compiled recipe JSON files")
     parser.add_argument("--check", action="store_true", help="Validate DSL expansion without writing compiled recipes")
     parser.add_argument("--no-validate", action="store_true", help="Skip validating compiled recipes")
+    parser.add_argument(
+        "--model-asset-policy",
+        action="store_true",
+        help="Restrict compiled source_file values to fixed repository asset roots",
+    )
     parser.add_argument("--report", default="", help="Optional JSON report path for check/compile results")
+    parser.add_argument("--model-diagnostics", default="", help="Optional model-friendly diagnostics JSON path")
     args = parser.parse_args()
     if args.check and args.out:
         parser.error("--out cannot be used with --check")
@@ -236,7 +269,7 @@ def sanitize_id(value: str) -> str:
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise DslError(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
@@ -304,14 +337,42 @@ def apply_patch_path(case: dict[str, Any], path: str, value: Any) -> None:
         raise DslError(f"cannot patch non-container leaf in {path!r}")
 
 
-def expansion_from_variant(item: dict[str, Any], index: int) -> Expansion:
+def is_scalar_patch_sweep(path: str, value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    leaf = path.rsplit(".", 1)[-1]
+    if leaf in VECTOR_PATCH_LEAVES:
+        return False
+    return all(not isinstance(item, (dict, list)) for item in value)
+
+
+def expansions_from_variant(item: dict[str, Any], index: int) -> list[Expansion]:
     if not isinstance(item, dict):
         raise DslError("variants entries must be objects")
     suffix = sanitize_id(str(item.get("suffix", f"v{index}")))
     patch = item.get("set", {})
     if not isinstance(patch, dict):
         raise DslError("variant.set must be an object")
-    return Expansion(suffix=suffix, patch=patch)
+
+    sweep_paths: list[str] = []
+    sweep_values: list[list[Any]] = []
+    base_patch: dict[str, Any] = {}
+    for path, value in patch.items():
+        if is_scalar_patch_sweep(path, value):
+            sweep_paths.append(path)
+            sweep_values.append(value)
+        else:
+            base_patch[path] = value
+
+    if not sweep_paths:
+        return [Expansion(suffix=suffix, patch=patch)]
+
+    expansions: list[Expansion] = []
+    for value_index, combo in enumerate(itertools.product(*sweep_values), start=1):
+        expanded_patch = dict(base_patch)
+        expanded_patch.update(dict(zip(sweep_paths, combo)))
+        expansions.append(Expansion(suffix=f"{suffix}_s{value_index}", patch=expanded_patch))
+    return expansions
 
 
 def expansions_from_sweep(item: dict[str, Any], index: int) -> list[Expansion]:
@@ -380,7 +441,9 @@ def case_expansions(case: dict[str, Any]) -> list[Expansion]:
     if not isinstance(paired_sweeps, list):
         raise DslError("case.paired_sweeps must be an array")
 
-    variant_expansions = [expansion_from_variant(item, i) for i, item in enumerate(variants, start=1)]
+    variant_expansions = [
+        expansion for i, item in enumerate(variants, start=1) for expansion in expansions_from_variant(item, i)
+    ]
     if not variant_expansions:
         variant_expansions = [Expansion(suffix="", patch={})]
 
@@ -579,6 +642,10 @@ def resolve_distance_checks(value: Any, scope: dict[str, float], field: str) -> 
         for key, raw in item.items():
             if key == "distance":
                 check[key] = resolve_expectation_metric(raw, scope, f"{item_field}.distance")
+            elif key == "threshold":
+                resolved = resolve_number(raw, scope, f"{item_field}.threshold")
+                if resolved > 0:
+                    check[key] = resolved
             elif key in DISTANCE_CHECK_NUMERIC_FIELDS:
                 check[key] = resolve_number(raw, scope, f"{item_field}.{key}")
             elif key in DISTANCE_CHECK_INT_FIELDS:
@@ -639,7 +706,10 @@ def resolve_expectations(
         elif key in EXPECTATION_NUMERIC_FIELDS:
             result[key] = resolve_number(raw, scope, f"{field}.{key}")
         elif key in EXPECTATION_METRICS:
-            result[key] = resolve_expectation_metric(raw, scope, f"{field}.{key}")
+            if isinstance(raw, dict):
+                result[key] = resolve_expectation_metric(raw, scope, f"{field}.{key}")
+            else:
+                result[key] = {"expected": resolve_number(raw, scope, f"{field}.{key}")}
         elif key == "point_relations":
             result[key] = resolve_point_relations(raw, scope, f"{field}.point_relations", resolved_key_points)
         elif key == "face_point_relations":
@@ -650,12 +720,17 @@ def resolve_expectations(
             result[key] = resolve_distance_checks(raw, scope, f"{field}.distance_checks")
         elif key == "plane_extreme_checks":
             result[key] = resolve_plane_extreme_checks(raw, scope, f"{field}.plane_extreme_checks")
-        elif any(key == f"{prefix}_{metric}" for prefix in ("min", "max", "expected") for metric in EXPECTATION_METRICS):
+        elif any(
+            key == f"{prefix}_{metric}" for prefix in ("min", "max", "expected") for metric in EXPECTATION_METRICS
+        ):
             result[key] = resolve_number(raw, scope, f"{field}.{key}")
         elif any(key == f"{metric}_{suffix}" for metric in EXPECTATION_METRICS for suffix in ("abs_tol", "rel_tol")):
             result[key] = resolve_number(raw, scope, f"{field}.{key}")
         else:
-            result[key] = deepcopy(raw)
+            raise DslError(
+                f"{field}.{key}: unsupported expectation/oracle key; "
+                "use a supported expectation field from interface_capabilities.json or return needs_harness_extension"
+            )
     return result
 
 
@@ -747,7 +822,9 @@ def compile_boolean_chain_body(base: dict[str, Any], step: dict[str, Any], role:
             "length": tool.get("length"),
             "width": tool.get("width"),
             "secondary_height": tool.get("height"),
-            "operation_tol": step.get("operation_tol", step.get("modeling_tol", base.get("operation_tol", tool.get("operation_tol", 0.01)))),
+            "operation_tol": step.get(
+                "operation_tol", step.get("modeling_tol", base.get("operation_tol", tool.get("operation_tol", 0.01)))
+            ),
         }
         tx, ty, tz = body_vector_components(tool, "translate")
         result["secondary_translate_x"] = tx
@@ -758,6 +835,7 @@ def compile_boolean_chain_body(base: dict[str, Any], step: dict[str, Any], role:
             resolve_string(step.get("id", "boolean"), f"{role}.boolean.id"),
             *tool.get("operations", []),
         ]
+        ensure_supported_body_builder(result.get("kind"), f"{role}.boolean.result.kind")
         return result
     raise DslError(
         f"{role}: unsupported boolean chain pattern "
@@ -769,6 +847,7 @@ def compile_boolean_chain_body(base: dict[str, Any], step: dict[str, Any], role:
 def compile_body_chain(chain: list[Any], role: str) -> dict[str, Any]:
     current: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
+    previous_body: dict[str, Any] | None = None
 
     for index, raw_step in enumerate(chain):
         if not isinstance(raw_step, dict):
@@ -780,18 +859,26 @@ def compile_body_chain(chain: list[Any], role: str) -> dict[str, Any]:
         if op == "primitive":
             if "kind" not in step:
                 raise DslError(f"{role}.chain[{index}]: primitive op requires kind")
+            if current is not None:
+                previous_body = deepcopy(current)
             current = body_without_meta(step)
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             current["operations"] = [op_id]
             profile = None
         elif op == "body":
+            if current is not None:
+                previous_body = deepcopy(current)
             current = compile_body_spec(step.get("body"), f"{role}.chain[{index}].body")
             current["operations"] = [*current.get("operations", []), op_id]
             profile = None
         elif op == "load_sgt":
             if "source_file" not in step:
                 raise DslError(f"{role}.chain[{index}]: load_sgt requires source_file")
+            if current is not None:
+                previous_body = deepcopy(current)
             current = body_without_meta(step)
             current["kind"] = "loaded_sgt"
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             current["operations"] = [op_id]
             profile = None
         elif op == "rect_profile":
@@ -811,36 +898,55 @@ def compile_body_chain(chain: list[Any], role: str) -> dict[str, Any]:
             profile["operations"] = [op_id]
             current = None
         elif op == "extrude":
-            if profile is None or profile.get("kind") != "rect_profile":
-                raise DslError(f"{role}.chain[{index}]: extrude currently requires preceding rect_profile")
+            if profile is None or profile.get("kind") not in {"rect_profile", "circle_profile"}:
+                raise DslError(
+                    f"{role}.chain[{index}]: extrude currently requires preceding rect_profile or circle_profile"
+                )
             if "height" not in step:
                 raise DslError(f"{role}.chain[{index}]: extrude requires height")
-            current = {
-                "kind": "extrude_rect",
-                "length": profile.get("length"),
-                "width": profile.get("width"),
-                "height": step.get("height"),
-                "operations": [*profile.get("operations", []), op_id],
-            }
-            if "operation_tol" in step:
-                current["operation_tol"] = step["operation_tol"]
+            if profile.get("kind") == "rect_profile":
+                current = {
+                    "kind": "extrude_rect",
+                    "length": profile.get("length"),
+                    "width": profile.get("width"),
+                    "height": step.get("height"),
+                    "operations": [*profile.get("operations", []), op_id],
+                }
+            else:
+                current = {
+                    "kind": "solid_cylinder",
+                    "radius": profile.get("radius", profile.get("profile_radius")),
+                    "height": step.get("height"),
+                    "operations": [*profile.get("operations", []), op_id],
+                }
+            for key in ("operation_tol", "g1_tol"):
+                if key in step:
+                    current[key] = step[key]
+                elif key in profile:
+                    current[key] = profile[key]
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             profile = None
-        elif op == "thicken":
+        elif op in {"thicken", "thicken_rect_sheet"}:
             if profile is None or profile.get("kind") != "rect_profile":
-                raise DslError(f"{role}.chain[{index}]: thicken currently requires preceding rect_profile")
+                raise DslError(f"{role}.chain[{index}]: {op} currently requires preceding rect_profile")
             current = {
                 "kind": "thicken_rect_sheet",
                 "length": profile.get("length"),
                 "width": profile.get("width"),
-                "min_dist": step.get("min_dist", -10.0),
-                "max_dist": step.get("max_dist", 20.0),
                 "operations": [*profile.get("operations", []), op_id],
             }
+            if "thickness" in step and "min_dist" not in step and "max_dist" not in step:
+                current["min_dist"] = 0.0
+                current["max_dist"] = step["thickness"]
+            else:
+                current["min_dist"] = step.get("min_dist", -10.0)
+                current["max_dist"] = step.get("max_dist", 20.0)
             for key in ("operation_tol", "g1_tol", "allow_partial_success"):
                 if key in step:
                     current[key] = step[key]
                 elif key in profile:
                     current[key] = profile[key]
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             profile = None
         elif op == "sweep_line":
             if profile is None or profile.get("kind") != "circle_profile":
@@ -858,22 +964,33 @@ def compile_body_chain(chain: list[Any], role: str) -> dict[str, Any]:
                     current[key] = step[key]
                 elif key in profile:
                     current[key] = profile[key]
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             profile = None
         elif op in {"support_sweep", "support_sweep_bspline_surface"}:
+            if current is not None:
+                previous_body = deepcopy(current)
+            profile_spec = step.get("profile") if isinstance(step.get("profile"), dict) else {}
+            path_spec = step.get("path") if isinstance(step.get("path"), dict) else {}
             current = {
                 "kind": "support_sweep_bspline_surface",
-                "path_radius": step.get("path_radius"),
-                "profile_radius": step.get("profile_radius", step.get("radius")),
-                "height": step.get("height"),
+                "path_radius": step.get("path_radius", path_spec.get("path_radius", path_spec.get("radius"))),
+                "profile_radius": step.get(
+                    "profile_radius",
+                    step.get("radius", profile_spec.get("profile_radius", profile_spec.get("radius"))),
+                ),
+                "height": step.get("height", path_spec.get("height")),
                 "operations": [op_id],
             }
             for key in ("operation_tol", "g1_tol"):
                 if key in step:
                     current[key] = step[key]
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             profile = None
         elif op == "revolve":
             if profile is None or profile.get("kind") not in {"line_profile", "radial_rect_profile"}:
-                raise DslError(f"{role}.chain[{index}]: revolve currently requires preceding line_profile or radial_rect_profile")
+                raise DslError(
+                    f"{role}.chain[{index}]: revolve currently requires preceding line_profile or radial_rect_profile"
+                )
             if profile.get("kind") == "line_profile":
                 current = {
                     "kind": "revolve_line",
@@ -896,22 +1013,37 @@ def compile_body_chain(chain: list[Any], role: str) -> dict[str, Any]:
                 current["operation_tol"] = step["operation_tol"]
             elif "operation_tol" in profile:
                 current["operation_tol"] = profile["operation_tol"]
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
             profile = None
         elif op == "boolean":
             if current is None:
                 raise DslError(f"{role}.chain[{index}]: boolean requires an existing body")
-            current = compile_boolean_chain_body(current, step, role)
+            if "tool" not in step and previous_body is not None:
+                step = {**step, "tool": current}
+                current = compile_boolean_chain_body(previous_body, step, role)
+            else:
+                current = compile_boolean_chain_body(current, step, role)
+            previous_body = None
             profile = None
         elif op == "transform":
             if current is None:
                 raise DslError(f"{role}.chain[{index}]: transform requires an existing body")
             current = apply_transform_spec(current, step)
             current["operations"] = [*current.get("operations", []), op_id]
+        elif op in SUPPORTED_BODY_BUILDERS:
+            if current is not None:
+                previous_body = deepcopy(current)
+            current = body_without_meta(step)
+            current["kind"] = op
+            ensure_supported_body_builder(current.get("kind"), f"{role}.chain[{index}].kind")
+            current["operations"] = [op_id]
+            profile = None
         else:
             raise DslError(f"{role}.chain[{index}]: unsupported op {op!r}")
 
     if current is None:
         raise DslError(f"{role}: chain did not produce a body")
+    ensure_supported_body_builder(current.get("kind"), f"{role}.kind")
     return current
 
 
@@ -919,7 +1051,9 @@ def compile_body_spec(body: Any, role: str) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise DslError(f"{role} must be an object")
     if "chain" not in body:
-        return deepcopy(body)
+        result = deepcopy(body)
+        ensure_supported_body_builder(result.get("kind"), f"{role}.kind")
+        return result
     chain = body["chain"]
     if not isinstance(chain, list) or not chain:
         raise DslError(f"{role}.chain must be a non-empty array")
@@ -1009,6 +1143,12 @@ def compile_one_case(
                 recipe[key] = concrete[key]
             elif isinstance(metadata, dict) and key in metadata:
                 recipe[key] = metadata[key]
+        # Defaults are shared across DSL APIs, but flat recipes are strict and
+        # must not carry options that the selected runner adapter ignores.
+        allowed = allowed_recipe_keys(recipe)
+        for key in list(recipe):
+            if key in OPTION_FIELDS and key not in allowed:
+                del recipe[key]
         recipes.append(recipe)
     return recipes
 
@@ -1032,6 +1172,14 @@ def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
     return recipes
 
 
+def is_cluster_seed_file(path: Path) -> bool:
+    try:
+        loaded = load_json(path)
+    except DslError:
+        return False
+    return loaded.get("kind") == "cluster_seed"
+
+
 def write_recipe(recipe: dict[str, Any], out_dir: Path) -> Path:
     case_id = resolve_string(recipe.get("case_id"), "recipe.case_id")
     out_path = out_dir / f"{case_id}.json"
@@ -1039,15 +1187,28 @@ def write_recipe(recipe: dict[str, Any], out_dir: Path) -> Path:
     return out_path
 
 
-def check_dsl_file(path: Path, validate: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def check_dsl_file(
+    path: Path,
+    validate: bool,
+    *,
+    asset_policy: str = "trusted",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     record: dict[str, Any] = {
         "path": str(path),
         "ok": False,
+        "skipped": False,
+        "skip_reason": "",
         "recipe_count": 0,
         "validation_failure_count": 0,
         "compile_error": "",
         "recipes": [],
     }
+    if is_cluster_seed_file(path):
+        record["ok"] = True
+        record["skipped"] = True
+        record["skip_reason"] = "cluster_seed; expand with build_source_guided_cluster.py before DSL compilation"
+        return record, []
+
     try:
         recipes = compile_dsl_file(path)
     except DslError as exc:
@@ -1059,7 +1220,7 @@ def check_dsl_file(path: Path, validate: bool) -> tuple[dict[str, Any], list[dic
         case_id = recipe.get("case_id", "<unknown>")
         item = {"case_id": case_id, "ok": True, "errors": []}
         if validate:
-            errors = validate_recipe(recipe)
+            errors = validate_recipe(recipe, asset_policy=asset_policy)
             if errors:
                 item["ok"] = False
                 item["errors"] = errors
@@ -1071,6 +1232,181 @@ def check_dsl_file(path: Path, validate: bool) -> tuple[dict[str, Any], list[dic
     record["recipe_count"] = len(recipes)
     record["ok"] = not record["compile_error"] and int(record["validation_failure_count"]) == 0
     return record, valid_recipes
+
+
+def diagnostic_from_compile_error(path: str, message: str) -> dict[str, Any]:
+    lower = message.lower()
+    if "api_boolean cases require target and tool" in lower:
+        return {
+            "severity": "error",
+            "error_code": "MISSING_TARGET_TOOL",
+            "path": path,
+            "message": message,
+            "expected_shape": {
+                "case_id": "example_case",
+                "target": {"chain": [{"id": "target_profile", "op": "rect_profile"}]},
+                "tool": {"chain": [{"id": "tool_profile", "op": "circle_profile"}]},
+            },
+            "repair_hint": (
+                "api_boolean cases require direct target and tool objects. "
+                "Do not use top-level chains plus case inputs."
+            ),
+        }
+    if "cases must be a non-empty array" in lower:
+        return {
+            "severity": "error",
+            "error_code": "MISSING_CASES",
+            "path": path,
+            "message": message,
+            "expected_shape": {"cases": [{"case_id": "example_case", "target": {}, "tool": {}}]},
+            "repair_hint": "Return attack_dsl.dsl with a non-empty cases array.",
+        }
+    if "unsupported dsl_version" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNSUPPORTED_DSL_VERSION",
+            "path": path,
+            "message": message,
+            "repair_hint": "Use dsl_version 1 or omit dsl_version.",
+        }
+    if "unsupported boolean chain pattern" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNSUPPORTED_BOOLEAN_CHAIN_PATTERN",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Use supported direct body builders or supported chain steps; "
+                "otherwise return needs_harness_extension."
+            ),
+        }
+    if "unsupported body builder" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNSUPPORTED_BODY_BUILDER",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Use a body builder listed in interface_capabilities.json, or return "
+                "needs_harness_extension for the missing builder."
+            ),
+        }
+    if "unsupported expectation/oracle key" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNSUPPORTED_EXPECTATION_ORACLE",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Use supported expectation fields such as result_bodies, require_finite_properties, "
+                "total_volume, point_relations, face_point_relations, clash_checks, distance_checks, "
+                "or plane_extreme_checks. Do not emit an expectations.properties array."
+            ),
+        }
+    if "unsupported op" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNSUPPORTED_CHAIN_OP",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Use supported chain ops such as primitive, body, load_sgt, direct body-builder ops, "
+                "rect_profile, circle_profile, extrude, thicken, sweep_line, support_sweep, revolve, "
+                "boolean, or transform."
+            ),
+        }
+    if "currently requires preceding" in lower or "requires an existing body" in lower:
+        return {
+            "severity": "error",
+            "error_code": "INVALID_CHAIN_ORDER",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Order chain steps so profile builders precede generated-body ops and "
+                "transforms/booleans follow an existing body."
+            ),
+        }
+    if "boolean chain op requires tool" in lower:
+        return {
+            "severity": "error",
+            "error_code": "MISSING_BOOLEAN_CHAIN_TOOL",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "For nested boolean chains, include a tool object in the boolean step or place the "
+                "base body followed by the tool body/transform immediately before op=boolean."
+            ),
+        }
+    if "must be bool" in lower:
+        return {
+            "severity": "error",
+            "error_code": "INVALID_BOOLEAN_FIELD",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Use literal true/false for boolean fields. For boolean_volume_relation, set "
+                "sample_input_properties=true and boolean_volume_relation=true instead of an "
+                "object, formula, or relation string."
+            ),
+        }
+    if "unknown numeric symbol" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNKNOWN_NUMERIC_SYMBOL",
+            "path": path,
+            "message": message,
+            "repair_hint": "Use constants declared in dsl.constants or numeric literals.",
+        }
+    if "point_ref" in lower and "is not defined in key_points" in lower:
+        return {
+            "severity": "error",
+            "error_code": "UNDEFINED_POINT_REF",
+            "path": path,
+            "message": message,
+            "repair_hint": (
+                "Declare every referenced point_ref under root key_points or case.key_points, "
+                "or replace the reference with an explicit point array."
+            ),
+        }
+    if "must be numeric" in lower or "invalid numeric expression" in lower:
+        return {
+            "severity": "error",
+            "error_code": "INVALID_NUMERIC_FIELD",
+            "path": path,
+            "message": message,
+            "repair_hint": "Use numbers or expressions over declared constants for numeric fields.",
+        }
+    return {
+        "severity": "error",
+        "error_code": "DSL_COMPILE_ERROR",
+        "path": path,
+        "message": message,
+        "repair_hint": "Follow a known-good DSL example and use only supported DSL fields.",
+    }
+
+
+def build_model_diagnostics(summary: dict[str, Any]) -> dict[str, Any]:
+    diagnostics: list[dict[str, Any]] = []
+    for file_record in summary.get("files", []):
+        if not isinstance(file_record, dict):
+            continue
+        path = str(file_record.get("path", ""))
+        compile_error = file_record.get("compile_error")
+        if isinstance(compile_error, str) and compile_error:
+            diagnostics.append(diagnostic_from_compile_error(path, compile_error))
+        for recipe in file_record.get("recipes", []):
+            if not isinstance(recipe, dict) or recipe.get("ok"):
+                continue
+            for error in recipe.get("errors", []):
+                diagnostics.append(
+                    diagnostic_from_validation_error(f"{path}:{recipe.get('case_id', '<unknown>')}", str(error))
+                )
+    return {
+        "generated_at": now_iso_like(),
+        "ok": bool(summary.get("ok")),
+        "diagnostic_count": len(diagnostics),
+        "diagnostics": diagnostics,
+    }
 
 
 def main() -> int:
@@ -1086,8 +1422,16 @@ def main() -> int:
         compile_failures = 0
         validation_failures = 0
         for dsl_path in files:
-            record, valid_recipes = check_dsl_file(dsl_path, not args.no_validate)
+            record, valid_recipes = check_dsl_file(
+                dsl_path,
+                not args.no_validate,
+                asset_policy="model" if args.model_asset_policy else "trusted",
+            )
             file_records.append(record)
+            if record.get("skipped"):
+                if args.check:
+                    print(f"SKIP {dsl_path}: {record['skip_reason']}")
+                continue
             if record["compile_error"]:
                 compile_failures += 1
                 print(f"FAIL {dsl_path}", file=sys.stderr)
@@ -1124,6 +1468,8 @@ def main() -> int:
         }
         if args.report:
             write_json(Path(args.report), summary)
+        if args.model_diagnostics:
+            write_json(Path(args.model_diagnostics), build_model_diagnostics(summary))
         if args.check:
             print(
                 f"checked={summary['file_count']} recipes={summary['recipe_count']} "

@@ -378,6 +378,8 @@ def complete_record(record: dict[str, Any], bug_prefix: str) -> dict[str, Any]:
     completed["bug_id"] = bug_id
     completed["title"] = first_nonempty(record.get("title"), title_for(record))
     completed["expected"] = as_dict(record.get("expected")) or infer_expected(record)
+    if isinstance(record.get("failure_signature"), dict) and record["failure_signature"].get("kind"):
+        completed["expected_failure_signature"] = record["failure_signature"]
     completed["topo_track_policy"] = first_nonempty(record.get("topo_track_policy"), "diagnostic_when_modeling_fails")
     completed["modeling_failure_required"] = bool(record.get("modeling_failure_required", True))
     completed["replay_status"] = normalize_replay_status(record.get("replay_status"))
@@ -461,6 +463,7 @@ def record_from_bundle(bundle: dict[str, Any], index_path: Path, replay_lookup: 
     replay_status = normalize_replay_status(bundle.get("replay_status") or replay.get("status"))
     topo_summary_path = resolve_existing_path(reports.get("topo_track_summary.json"), index_base)
     replay_recipe = first_nonempty(
+        resolve_existing_path(recipes.get("reduced"), index_base),
         resolve_existing_path(recipes.get("replay"), index_base),
         resolve_existing_path(first_replay_attempt_path(replay, "recipe"), index_base),
         resolve_existing_path(recipes.get("original"), index_base),
@@ -476,6 +479,7 @@ def record_from_bundle(bundle: dict[str, Any], index_path: Path, replay_lookup: 
         "roundtrip_failures": manifest.get("roundtrip_failures"),
         "roundtrip_oracle_details": manifest.get("roundtrip_oracle_details"),
         "runner": manifest.get("runner"),
+        "failure_signature": manifest.get("failure_signature"),
         "localized_inputs": localization.get("localized_inputs") or manifest.get("localized_inputs"),
         "primary_contact": first_contact(localization),
         "dsl": manifest.get("dsl"),
@@ -493,6 +497,7 @@ def record_from_bundle(bundle: dict[str, Any], index_path: Path, replay_lookup: 
         "debug_geometry_index": resolve_existing_path(reports.get("debug_geometry_index.json"), index_base),
         "reproduce_script": resolve_existing_path(copied.get("reproduce_script"), index_base),
         "original_recipe": resolve_existing_path(recipes.get("original"), index_base),
+        "reduced_recipe": resolve_existing_path(recipes.get("reduced"), index_base),
         "replay_artifact": resolve_existing_path(replay.get("first_artifact_dir") or first_replay_attempt_path(replay, "artifact_dir"), index_base),
         **input_paths,
         "replay": {"recipe_path": replay_recipe},

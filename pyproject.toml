@@ -1,0 +1,29 @@
+[project]
+name = "sggk-test-harness"
+version = "0.1.0"
+description = "Deterministic authoring and execution harness for the SGGK SDK"
+requires-python = ">=3.11"
+dependencies = [
+  "jsonschema==4.26.0",
+  "Pillow==12.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.3",
+  "ruff==0.12.2",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["test_harness/tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# The inherited campaign tools predate a repository-wide style baseline. Keep
+# the global gate focused on correctness; new/changed modules use explicit
+# E/F/I/UP checks in the verification workflow.
+select = ["F"]

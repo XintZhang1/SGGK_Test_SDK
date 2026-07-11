@@ -1,6 +1,6 @@
 # Sequential smoke coverage for currently supported sggk_case_runner APIs.
-# Run with --jobs 1 because check_sgt and roundtrip recipes consume the
-# artifacts/boolean_smoke/output/result_1.sgt file produced by boolean_smoke.
+# Source-consuming checks use small, tracked SGT fixtures so this suite is
+# independent of ignored artifacts from an earlier local run.
 ../recipes/boolean_smoke.json
 ../recipes/boolean_extrude_rect_smoke.json
 ../recipes/boolean_thicken_rect_sheet_smoke.json
@@ -9,6 +9,14 @@
 ../recipes/boolean_revolve_line_smoke.json
 ../recipes/boolean_revolve_rect_smoke.json
 ../recipes/boolean_preboolean_smoke.json
+../recipes/boolean_split_plane_smoke.json
+../recipes/boolean_slice_smoke.json
+../recipes/topology_section_spheres_smoke.json
+../api_plugins/api_combine_bodies/examples/smoke.json
+../recipes/offset2d_line_smoke.json
+../recipes/offset2d_cannot_connect_smoke.json
+../recipes/offset2d_crv_degenerate_smoke.json
+../interface_example_packs/api_offset_body.example_recipe.json
 ../recipes/point_relation_smoke.json
 ../recipes/face_point_relation_smoke.json
 ../recipes/clash_check_smoke.json

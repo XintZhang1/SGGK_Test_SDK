@@ -1,0 +1,12 @@
+{
+  "case_id": "example_step_import_top_complex",
+  "api": "step_import",
+  "source_file": "artifacts/abc_fetch_smoke/examples/top_complex_001.step",
+  "expectations": {
+    "result_bodies": {
+      "min": 1
+    },
+    "require_property_calculations": false,
+    "require_finite_properties": false
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sggk://schemas/investigation_turn.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "decision",
+    "session_id",
+    "round",
+    "tool_calls"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "investigation_turn"
+    },
+    "decision": {
+      "const": "request_tools"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "tool_calls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "call_id",
+          "tool_id",
+          "args",
+          "related_hypothesis_ids",
+          "reason"
+        ],
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          },
+          "tool_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.]{2,63}$"
+          },
+          "args": {
+            "type": "object"
+          },
+          "related_hypothesis_ids": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 32
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    }
+  }
+}
