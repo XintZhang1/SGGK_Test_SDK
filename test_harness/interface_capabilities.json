@@ -15,13 +15,6 @@
       "production_boundary": "The configured intranet endpoint returns one JSON object in message.content; the gateway stages it with provenance before fixed gates run.",
       "description": "Output produced by the configured intranet Qwen Message API profile."
     },
-    "siliconflow_test_message_api": {
-      "title": "SiliconFlow test Message API",
-      "category": "message_api_test",
-      "allowed_contexts": ["model_output", "regression_asset"],
-      "production_boundary": "Explicit external test profile only; it uses the same message.content JSON contract and never acts as an implicit fallback.",
-      "description": "Output produced by the explicitly selected SiliconFlow test profile."
-    },
     "unknown_saved_output": {
       "title": "Unknown saved output",
       "category": "synthetic_status",

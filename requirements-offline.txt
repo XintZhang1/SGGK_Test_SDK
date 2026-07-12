@@ -1,4 +1,5 @@
-# 供内网离线 wheelhouse 使用。Python 版本与系统架构必须和下载机器一致。
+# Direct runtime and verification requirements. The complete transitive lock and
+# Windows CPython 3.11 wheels are stored under offline_bundle/.
 jsonschema==4.26.0
 Pillow==12.1.1
 pytest==9.0.3

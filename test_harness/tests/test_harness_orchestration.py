@@ -402,38 +402,6 @@ def test_intranet_source_root_is_automatically_bound_but_external_is_not(tmp_pat
     assert manifest["tasks"][0]["source_contract"]["source_refs"]
     assert "if (!target || !tool)" in prompt
 
-    external_root = tmp_path / "external_repo"
-    external_root.mkdir()
-    (external_root / "test_harness").mkdir()
-    (external_root / "test_harness/interface_capabilities.json").write_bytes(
-        (REPO_ROOT / "test_harness/interface_capabilities.json").read_bytes()
-    )
-    (external_root / "artifacts").mkdir()
-    external_runtime = FakeRuntime(external_root)
-    external = HarnessWorkflow(
-        external_runtime,
-        repo_root=external_root,
-        profile="siliconflow-test",
-        source_root=source_root,
-    )
-    external.start("api_boolean")
-    external_session = next(
-        (external_root / "artifacts/harness_sessions").glob("*_api_boolean_*")
-    )
-    external_manifest = json.loads(
-        (external_session / "rounds/0001/prompt/model_task_manifest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert external_manifest["tasks"][0]["task_type"] == "interface_form"
-    assert "source_contract" not in external_manifest["tasks"][0]
-    assert external_manifest["tasks"][0]["provider_profile"] == "siliconflow-test"
-    assert (
-        external_manifest["tasks"][0]["provider_profile_category"]
-        == "explicit_external_test"
-    )
-
-
 def test_source_resolution_ignores_text_occurrences_and_binds_all_definitions(
     tmp_path: Path,
 ) -> None:
@@ -588,17 +556,6 @@ def test_header_evidence_is_intranet_classified_even_without_source_implementati
     assert task["allowed_profile_categories"] == ["intranet"]
     assert task["provider_profile"] == "intranet"
     assert task["provider_profile_category"] == "intranet"
-
-
-def test_active_session_rejects_provider_profile_switch_before_comment(tmp_path: Path) -> None:
-    workflow, runtime = make_workflow(tmp_path)
-    workflow.start("api_boolean")
-    switched = HarnessWorkflow(runtime, repo_root=tmp_path, profile="siliconflow-test")
-
-    with pytest.raises(WorkflowError, match="different Message API provider profile"):
-        switched.comment("approve the current review")
-
-    assert runtime.interpret_calls == 0
 
 
 def test_session_rejects_tampered_earlier_event(tmp_path: Path) -> None:
@@ -808,61 +765,3 @@ def test_real_message_runtime_generates_review_and_interprets_question(tmp_path:
     assert "尚未执行真实 SDK" in (tmp_path / answered["answer_path"]).read_text(encoding="utf-8")
     assert transport.calls == 2
 
-
-def test_message_runtime_rejects_mismatched_configured_provider_profile(tmp_path: Path) -> None:
-    config = GatewayConfig(
-        profile=PROFILE_SPECS["siliconflow-test"],
-        base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
-        api_key="test-key",
-        max_retries=0,
-    )
-
-    with pytest.raises(WorkflowError, match="does not match the supplied GatewayConfig"):
-        MessageApiRuntime(repo_root=tmp_path, profile="intranet", config=config)
-
-
-def test_message_runtime_comment_guard_rejects_cross_profile_context_before_transport(
-    tmp_path: Path,
-) -> None:
-    transport = QueueTransport([])
-    config = GatewayConfig(
-        profile=PROFILE_SPECS["siliconflow-test"],
-        base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
-        api_key="test-key",
-        max_retries=0,
-    )
-    runtime = MessageApiRuntime(
-        repo_root=tmp_path,
-        profile="siliconflow-test",
-        config=config,
-        client=OpenAICompatibleMessageClient(config, transport=transport),
-    )
-
-    with pytest.raises(WorkflowError, match="different Message API provider profile"):
-        runtime.interpret_comment(
-            comment="review this source round",
-            session={"profile": "intranet"},
-            round_record={},
-            subject_outline={"candidate": {"kind": "attack_dsl"}},
-            output_dir=tmp_path / "artifacts/comment",
-        )
-
-    with pytest.raises(WorkflowError, match="cannot be sent to an external"):
-        runtime.interpret_comment(
-            comment="review this source round",
-            session={
-                "provider_profile": "siliconflow-test",
-                "provider_profile_category": "explicit_external_test",
-                "data_classification": "proprietary_source",
-            },
-            round_record={
-                "data_classification": "proprietary_source",
-                "allowed_profile_categories": ["intranet"],
-            },
-            subject_outline={"candidate": {"kind": "attack_dsl"}},
-            output_dir=tmp_path / "artifacts/comment",
-        )
-
-    assert transport.calls == 0

@@ -8,10 +8,9 @@ authoring, new-API adaptation, SDK execution, and candidate bug localization.
 - Production authoring and comment interpretation are Message API only. There
   is no human-authored, clipboard, UI, or checked-in-fixture path that can
   publish a model output. The user supplies only a function name and comments.
-- `intranet` and `siliconflow-test` use the same profile-bound manifest schema,
-  `message.content` JSON contract, fixed gates, execution code, and selection policy.
-  Each endpoint gets its own provider-bound manifest; artifacts are not replayed across profiles. SiliconFlow
-  is an explicit protocol simulator, never a fallback endpoint.
+- The configured intranet Qwen endpoint is the only authoring provider. It uses
+  the profile-bound manifest schema, `message.content` JSON contract, fixed
+  gates, execution code, and deterministic selection policy.
 - A model response is always an untrusted candidate. Only the host can
   normalize, validate, compile, execute, select, and atomically promote it.
 - Model JSON cannot provide commands, executable/runner paths, cwd, environment,

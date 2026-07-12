@@ -1,48 +1,43 @@
 # SGGK Test SDK Harness
 
-This repository contains the standalone SGGK SDK test harness.
+这是面向内网 Qwen3.6-35B-A3B Message API 的 SGGK SDK 测试 Harness。普通用户通过
+本地网页 UI 完成公开接口输入、测试代码/用例生成、产物审查、修改、批准、真实 SDK
+执行和 bug 证据查看，不需要操作 PowerShell。
 
-> **首次部署请先阅读：[SGGK Harness 全新 Windows 电脑部署与使用指南（中文）](docs/SGGK_HARNESS_全新电脑部署与使用指南.md)**<br>
-> 包含 GitHub/离线 bundle、离线依赖、SGGK SDK、内网 Qwen Message API、逐轮审查、ABC 数据和故障排查。
+## 新电脑离线启动
 
-配套中文手册：
+目标电脑只需预先安装 Visual Studio 2022，并包含“使用 C++ 的桌面开发”工作负载：
 
-- [生成代码与测试用例审查指南](docs/SGGK_HARNESS_生成代码与测试用例审查指南.md)
-- [源码风险驱动测试指南](docs/SGGK_HARNESS_源码风险驱动测试指南.md)
+1. 拷贝完整仓库和公司内部提供的 SGGK SDK/许可；
+2. 双击 `install_offline.cmd`；
+3. 双击 `SGGK_Harness_UI.cmd`；
+4. 在浏览器的“内网运行配置”中填写 Message API、模型、SDK、可选源码和 runner；
+5. 环境检查通过后输入一个 public function。
 
-普通用户只使用根目录入口。输入一个 SGGK public function，Harness 会自行管理测试表单、任务 ID、候选、轮次、哈希、runner 和 JSON 证据：
+离线包包含 CPython 3.11、便携 CMake、全部固定版本 Python wheels 和 VC++ 运行库安装
+介质，并通过 `offline_bundle/manifest.json` 记录大小与 SHA-256。SGGK SDK、许可和源码
+属于公司资产，不进入 git，需通过批准的内网介质提供。
 
-```powershell
-.\harness.ps1 start api_boolean
-.\harness.ps1 comment "增加退化输入、近容差相交和空结果检查"
-.\harness.ps1 comment "这一版可以开始执行真实测试。"
-```
+详细步骤见 [离线 UI 部署指南](docs/SGGK_HARNESS_离线UI部署指南.md)。
 
-`start` 通过同一个 Message API contract 生成第 1 轮中文审查文档；每条 `comment` 都会保留原文并形成不可变事件，由 Qwen 给出中文理解。涉及方案修改的 comment 会生成新的不可变候选/审查轮次；问题留在当前轮回答，拒绝会终止任务。当 comment 被解释为明确批准且宿主也检测到清晰的执行同意时，Harness 绑定并执行当前最新轮次，随后自动写出 `final_report.zh-CN.md`。辅助命令为 `status`、`show` 和 `retry`。普通用户不需要填写表单，也不需要提供 ID、hash、round、manifest、JSON 或 runner 路径。
-
-The SGGK SDK itself is intentionally not included. Keep the SDK, license files, build outputs, and generated artifacts outside git. Point `SGGK_SDK_DIR` at the local SDK and use the checked-in preset:
-
-```powershell
-$env:SGGK_SDK_DIR = "C:\path\to\SGGK"
-Push-Location .\test_harness
-cmake --preset windows-local
-cmake --build --preset windows-release
-Pop-Location
-```
-
-The authoring path is fully Message API based:
+## 工作流
 
 ```text
-public function -> parallel Qwen candidates -> fixed pre-review gates
-                -> immutable Chinese review rounds -> user approval
-                -> real SDK/plugin execution -> final Chinese report
-                -> qualification/replay/TopoTrack -> candidate bug report
+public function -> 接口/源码解析 -> 并行 Qwen 候选 -> 固定门禁
+                -> UI 查看文档与代码 -> 自然语言修改 -> 宿主批准绑定
+                -> 真实 SDK 执行 -> 重放/归因/缩减 -> 最终报告
 ```
 
-Start with:
+内网 Qwen Message API 是唯一模型 provider。模型输出始终是不可信候选；只有宿主固定
+代码能够规范化、验证、编译、执行和提升候选。不存在人工产物入口、外部模拟 provider
+或自动 fallback。
 
-- `test_harness/HARNESS_ARCHITECTURE.md` for trust boundaries and the complete data flow;
-- `test_harness/MESSAGE_API_ENDPOINTS.md` for the identical intranet/simulator Message API contract and endpoint configuration;
-- `test_harness/INTERFACE_TEST_MATRIX.md` for built-in and plugin API coverage;
-- `test_harness/README.md` for the user workflow plus advanced runner and campaign internals;
-- `docs/ABC_DATASET_LARGE_TEST_PLAN.md` for staged large-scale execution.
+主要文档：
+
+- [Harness 架构与信任边界](test_harness/HARNESS_ARCHITECTURE.md)
+- [内网 Message API 配置](test_harness/MESSAGE_API_ENDPOINTS.md)
+- [生成代码与测试用例审查指南](docs/SGGK_HARNESS_生成代码与测试用例审查指南.md)
+- [源码风险驱动测试指南](docs/SGGK_HARNESS_源码风险驱动测试指南.md)
+- [大规模 ABC 测试计划](docs/ABC_DATASET_LARGE_TEST_PLAN.md)
+
+`harness.ps1` 仅作为维护者诊断兼容入口保留；普通使用、配置和产物查看全部通过 UI。

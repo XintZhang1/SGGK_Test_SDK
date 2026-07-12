@@ -1,0 +1,181 @@
+"""Loopback-only HTTP server for the SGGK Harness UI."""
+
+from __future__ import annotations
+
+import json
+import mimetypes
+import secrets
+import threading
+import webbrowser
+from collections.abc import Callable
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from .application import HarnessUiApplication
+
+MAX_REQUEST_BYTES = 64 * 1024
+
+
+class JobManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._state: dict[str, Any] = {"status": "idle", "operation": "", "error": ""}
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state)
+
+    def submit(self, operation: str, callback: Callable[[], Any]) -> None:
+        with self._lock:
+            if self._state["status"] == "running":
+                raise RuntimeError("another Harness operation is already running")
+            self._state = {"status": "running", "operation": operation, "error": ""}
+
+        def run() -> None:
+            try:
+                callback()
+            except Exception as exc:  # surfaced to the local UI
+                result = {"status": "failed", "operation": operation, "error": str(exc)}
+            else:
+                result = {"status": "completed", "operation": operation, "error": ""}
+            with self._lock:
+                self._state = result
+
+        threading.Thread(target=run, name=f"harness-ui-{operation}", daemon=True).start()
+
+
+class HarnessUiServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: tuple[str, int], repo_root: Path) -> None:
+        self.app = HarnessUiApplication(repo_root)
+        self.jobs = JobManager()
+        self.csrf_token = secrets.token_urlsafe(32)
+        self.static_root = Path(__file__).with_name("static")
+        super().__init__(address, HarnessUiHandler)
+
+
+class HarnessUiHandler(BaseHTTPRequestHandler):
+    server: HarnessUiServer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def _headers(self, status: int, content_type: str, length: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+        )
+        self.end_headers()
+
+    def _json(self, value: Any, status: int = HTTPStatus.OK) -> None:
+        payload = (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8")
+        self._headers(status, "application/json; charset=utf-8", len(payload))
+        self.wfile.write(payload)
+
+    def _error(self, status: int, message: str) -> None:
+        self._json({"ok": False, "error": message}, status)
+
+    def _body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if length <= 0 or length > MAX_REQUEST_BYTES:
+            raise ValueError("request body size is invalid")
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            raise ValueError("request must use application/json")
+        value = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("request root must be an object")
+        return value
+
+    def do_GET(self) -> None:
+        parsed = urlsplit(self.path)
+        if parsed.path == "/api/state":
+            try:
+                state = self.server.app.public_state()
+                state["job"] = self.server.jobs.snapshot()
+                state["csrf_token"] = self.server.csrf_token
+                self._json({"ok": True, **state})
+            except Exception as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+        if parsed.path == "/api/health":
+            self._json({"ok": True})
+            return
+        if parsed.path == "/api/artifact":
+            relative = parse_qs(parsed.query).get("path", [""])[0]
+            try:
+                self._json({"ok": True, **self.server.app.artifact(relative)})
+            except (OSError, ValueError) as exc:
+                self._error(HTTPStatus.NOT_FOUND, str(exc))
+            return
+        names = {"/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}
+        name = names.get(parsed.path)
+        if name is None:
+            self._error(HTTPStatus.NOT_FOUND, "not found")
+            return
+        path = self.server.static_root / name
+        if not path.is_file():
+            self._error(HTTPStatus.NOT_FOUND, "UI asset is missing")
+            return
+        payload = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self._headers(HTTPStatus.OK, f"{content_type}; charset=utf-8", len(payload))
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        if not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), self.server.csrf_token):
+            self._error(HTTPStatus.FORBIDDEN, "invalid CSRF token")
+            return
+        try:
+            payload = self._body()
+            path = urlsplit(self.path).path
+            if path == "/api/settings":
+                self._json({"ok": True, "settings": self.server.app.save_settings(payload)})
+                return
+            operations: dict[str, tuple[str, Callable[[], Any]]] = {
+                "/api/start": ("start", lambda: self.server.app.start(str(payload.get("public_function") or ""))),
+                "/api/comment": ("comment", lambda: self.server.app.comment(str(payload.get("comment") or ""))),
+                "/api/approve": ("approve", self.server.app.approve),
+                "/api/retry": ("retry", self.server.app.retry),
+                "/api/build": ("build", self.server.app.build_runner),
+            }
+            selected = operations.get(path)
+            if selected is None:
+                self._error(HTTPStatus.NOT_FOUND, "not found")
+                return
+            self.server.jobs.submit(*selected)
+            self._json({"ok": True, "job": self.server.jobs.snapshot()}, HTTPStatus.ACCEPTED)
+        except (ValueError, OSError, RuntimeError, json.JSONDecodeError) as exc:
+            self._error(HTTPStatus.BAD_REQUEST, str(exc))
+
+
+def run_server(*, repo_root: str | Path, port: int = 8765, open_browser: bool = True) -> None:
+    server = HarnessUiServer(("127.0.0.1", port), Path(repo_root).resolve())
+    actual_port = server.server_address[1]
+    url = f"http://127.0.0.1:{actual_port}/"
+    if open_browser:
+        threading.Timer(0.35, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever(poll_interval=0.4)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+__all__ = ["HarnessUiApplication", "HarnessUiServer", "run_server"]

@@ -565,31 +565,6 @@ def test_secret_with_json_escape_characters_is_never_staged_as_candidate(tmp_pat
     assert secret not in all_artifact_text(tmp_path)
 
 
-def test_intranet_profile_never_falls_back_to_siliconflow_configuration() -> None:
-    siliconflow_only = {
-        "SILICONFLOW_BASE_URL": "https://api.siliconflow.example/v1",
-        "SILICONFLOW_MODEL": "Qwen3.6-35B-A3B",
-        "SILICONFLOW_API_KEY": API_KEY,
-    }
-    with pytest.raises(ConfigError, match="SGGK_QWEN_BASE_URL"):
-        load_gateway_config("intranet", environ=siliconflow_only)
-    explicit = load_gateway_config("siliconflow-test", environ=siliconflow_only)
-    assert explicit.profile.provenance_source_type == "siliconflow_test_message_api"
-    assert explicit.model == "Qwen3.6-35B-A3B"
-
-
-def test_siliconflow_profile_requires_https() -> None:
-    with pytest.raises(ConfigError, match="must use https"):
-        load_gateway_config(
-            "siliconflow-test",
-            environ={
-                "SILICONFLOW_BASE_URL": "http://api.siliconflow.example/v1",
-                "SILICONFLOW_MODEL": "Qwen3.6-35B-A3B",
-                "SILICONFLOW_API_KEY": API_KEY,
-            },
-        )
-
-
 def test_gateway_source_has_no_process_sdk_patch_or_git_imports() -> None:
     package_root = Path(__file__).resolve().parents[1] / "authoring_gateway"
     forbidden = {"subprocess", "sggk", "git", "pygit2", "runner"}

@@ -3,6 +3,7 @@
 /.venv/
 /artifacts/
 /build/
+/.offline_runtime/
 /SGK*/
 /SGGK/
 
@@ -30,4 +31,7 @@ CMakeUserPresets.json
 cmake_install.cmake
 *.sln
 *.vcxproj.user
+
+# Checked-in, hash-pinned offline bootstrap payload.
+!/offline_bundle/archives/vc_redist.x64.exe
 

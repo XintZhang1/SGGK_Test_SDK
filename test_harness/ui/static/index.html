@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SGGK Harness</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">MESSAGE API · LOCAL CONTROL PLANE</p>
+      <h1>SGGK Harness</h1>
+    </div>
+    <div class="status-strip"><span id="jobBadge" class="badge">空闲</span><span id="sessionBadge" class="badge muted">未开始</span></div>
+  </header>
+
+  <main>
+    <section class="hero panel">
+      <div>
+        <p class="section-label">当前任务</p>
+        <h2 id="taskTitle">等待输入公开接口</h2>
+        <p id="taskMeta" class="muted-text">配置内网 Message API 与 SDK 后即可开始。</p>
+      </div>
+      <form id="startForm" class="start-form">
+        <label for="publicFunction">Public function</label>
+        <div class="input-row"><input id="publicFunction" autocomplete="off" placeholder="例如: SGCreateBody" required><button class="primary" type="submit">生成测试</button></div>
+      </form>
+    </section>
+
+    <section class="layout">
+      <div class="main-column">
+        <section class="panel">
+          <div class="section-head"><div><p class="section-label">WORKFLOW</p><h2>执行步骤</h2></div><button id="refreshButton" class="ghost" type="button">刷新</button></div>
+          <ol id="stages" class="stages"></ol>
+        </section>
+
+        <section class="panel artifact-panel">
+          <div class="section-head"><div><p class="section-label">ARTIFACTS</p><h2>Qwen 输出与 Harness 产物</h2></div><span id="artifactCount" class="muted-text"></span></div>
+          <div class="artifact-layout">
+            <nav id="artifactList" class="artifact-list" aria-label="产物列表"></nav>
+            <div class="preview-wrap"><div id="previewPath" class="preview-path">选择一个文档或代码文件</div><pre id="artifactPreview" tabindex="0">这里会安全地显示 Markdown、JSON、C++、Python 和日志文本。</pre></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="section-label">REVIEW GATE</p><h2>审查、批准与重试</h2>
+          <form id="commentForm"><label for="comment">自然语言审查意见</label><textarea id="comment" rows="4" placeholder="说明要新增、修改或删除的测试条件"></textarea><div class="actions"><button type="submit">提交意见</button><button id="approveButton" class="primary" type="button">批准并执行 SDK 测试</button><button id="retryButton" class="danger" type="button">重试执行</button></div></form>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel">
+          <div class="section-head"><div><p class="section-label">READINESS</p><h2>环境检查</h2></div><button id="settingsToggle" class="ghost" type="button">配置</button></div>
+          <ul id="readiness" class="check-list"></ul>
+          <button id="buildButton" type="button">构建 / 更新 SGGK Runner</button>
+        </section>
+        <section id="settingsPanel" class="panel hidden">
+          <p class="section-label">LOCAL SETTINGS</p><h2>内网运行配置</h2>
+          <form id="settingsForm" class="settings-form">
+            <label>Message API 地址<input name="base_url" type="url" placeholder="http://intranet-host/v1" required></label>
+            <label>模型名<input name="model" placeholder="Qwen3.6-35B-A3B" required></label>
+            <label>API Key（留空保持原值）<input name="api_key" type="password" autocomplete="new-password"></label>
+            <label>CA 证书文件<input name="ca_bundle" placeholder="可选"></label>
+            <label>SGGK SDK 目录<input name="sdk_dir" required></label>
+            <label>SDK 源码目录<input name="source_root" placeholder="可选，用于 bug 定位"></label>
+            <label>用例运行器<input name="runner_path" placeholder="build/.../sggk_case_runner.exe"></label>
+            <div class="settings-grid"><label>候选数<input name="candidate_count" type="number" min="1" max="8"></label><label>并行数<input name="candidate_parallelism" type="number" min="1" max="8"></label><label>测试 jobs<input name="jobs" type="number" min="1" max="64"></label><label>超时（秒）<input name="execution_timeout_seconds" type="number" min="1"></label></div>
+            <button class="primary" type="submit">保存配置</button>
+          </form>
+        </section>
+        <section class="panel">
+          <p class="section-label">AUDIT LOG</p><h2>事件时间线</h2><ol id="events" class="events"></ol>
+        </section>
+      </aside>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

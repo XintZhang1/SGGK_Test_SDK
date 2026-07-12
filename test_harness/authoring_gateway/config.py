@@ -41,16 +41,6 @@ PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
             api_key_required=False,
             provenance_source_type="intranet_message_api",
         ),
-        "siliconflow-test": ProfileSpec(
-            name="siliconflow-test",
-            category="explicit_external_test",
-            base_url_env="SILICONFLOW_BASE_URL",
-            api_key_env="SILICONFLOW_API_KEY",
-            model_env="SILICONFLOW_MODEL",
-            ca_bundle_env="SILICONFLOW_CA_BUNDLE",
-            api_key_required=True,
-            provenance_source_type="siliconflow_test_message_api",
-        ),
     }
 )
 
@@ -149,8 +139,8 @@ def load_gateway_config(
 ) -> GatewayConfig:
     """Resolve a named profile exclusively from environment variables.
 
-    Neither the intranet profile nor the explicit SiliconFlow test profile has a
-    compiled-in endpoint or model name.  Missing configuration fails closed.
+    The intranet profile has no compiled-in endpoint or model name. Missing
+    configuration fails closed.
     """
 
     env = os.environ if environ is None else environ

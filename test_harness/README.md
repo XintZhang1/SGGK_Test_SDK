@@ -342,9 +342,8 @@ The review-session layer owns approval and starts real SDK execution only after
 the current round is approved. There is no human-authored, fixture-seeding, or
 standalone gateway CLI production path.
 
-SiliconFlow is only a replaceable test endpoint for the same Message API
-contract and the same model behavior expected in the intranet. It is not a
-provider-specific authoring path, implicit fallback, or separate user workflow.
+The configured intranet Qwen Message API is the only model provider. There is
+no external simulator, implicit fallback, or separate authoring workflow.
 See `test_harness/MESSAGE_API_ENDPOINTS.md` for endpoint compatibility
 testing and failure semantics.
 

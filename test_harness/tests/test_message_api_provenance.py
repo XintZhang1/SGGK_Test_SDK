@@ -36,10 +36,7 @@ def message_api_provenance(
     }
 
 
-@pytest.mark.parametrize(
-    "source_type",
-    ["intranet_message_api", "siliconflow_test_message_api"],
-)
+@pytest.mark.parametrize("source_type", ["intranet_message_api"])
 def test_endpoint_provenance_uses_the_same_non_execution_boundary(
     tmp_path: Path,
     source_type: str,

@@ -23,9 +23,9 @@ following:
   locations or `source_unavailable`, registered falsification tools, and a
   stable reproduction reference.
 
-SiliconFlow and intranet runs must consume the same profile-bound manifest schema and fixed gates;
-each run generates its own provider-bound manifest instead of replaying one artifact across endpoints;
-the simulator proves protocol equivalence, not identical token sampling.
+All runs use the single intranet provider, the same profile-bound manifest schema,
+and the same fixed gates. Each run generates its own immutable manifest instead
+of replaying an artifact across sessions.
 
 Scale in explicit stages: one Message task, all API smokes, 100 cases, 1,000
 cases in one shard, multi-shard merge/resume, then 100k+. Each stage requires

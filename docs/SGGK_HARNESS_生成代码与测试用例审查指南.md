@@ -127,9 +127,9 @@ generating -> generation_failed
 
 批准前可以执行 JSON contract、schema、DSL/recipe 静态验证、受控物化、编译可行性检查及其他不会启动正式 SDK case 的固定门禁。真实 SDK runner、批量测试、回归复现和故障调查只能在最新轮次获得有效批准后启动。
 
-### 3.4 Message API endpoint 一致性
+### 3.4 Message API endpoint
 
-内网 Qwen 和 SiliconFlow 测试 endpoint 使用同一个 Message API contract、轮次协议、中文解释 schema 和固定门禁。SiliconFlow 只作为可替换的联调环境，不形成 provider 专用审查流程，也不是内网失败后的自动 fallback。包含本机源码 excerpt 的 session 只能发送到获准的内网 endpoint。
+Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API contract、轮次协议、中文解释 schema 和固定门禁。不存在外部 provider 或失败后的自动 fallback。
 
 ## 4. 报告和内部证据
 

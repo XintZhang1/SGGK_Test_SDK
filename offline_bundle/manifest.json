@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "target": "Windows x86-64, CPython 3.11, Visual Studio 2022",
+  "python": "3.11.9 embeddable amd64",
+  "cmake": "4.3.3 windows x86_64",
+  "files": [
+    {
+      "path": "archives/cmake-4.3.3-windows-x86_64.zip",
+      "bytes": 52967828,
+      "sha256": "935ade9e5e8723583c07f44c5592cea2a1c8f65c56ca7e07b34c025c880e0bd6",
+      "source": "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.zip"
+    },
+    {
+      "path": "archives/python-3.11.9-embeddable-amd64.zip",
+      "bytes": 11243893,
+      "sha256": "33b448f95fecb7c6f802157dbd5e6b40a2ad9bfc8b95ca634a06ba4073ad1ac0",
+      "source": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embeddable-amd64.zip"
+    },
+    {
+      "path": "archives/vc_redist.x64.exe",
+      "bytes": 18731856,
+      "sha256": "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c",
+      "source": "https://aka.ms/vc14/vc_redist.x64.exe"
+    },
+    {
+      "path": "wheelhouse/attrs-26.1.0-py3-none-any.whl",
+      "bytes": 67548,
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/colorama-0.4.6-py2.py3-none-any.whl",
+      "bytes": 25335,
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/iniconfig-2.3.0-py3-none-any.whl",
+      "bytes": 7484,
+      "sha256": "f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/jsonschema-4.26.0-py3-none-any.whl",
+      "bytes": 90630,
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "bytes": 18437,
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/packaging-26.2-py3-none-any.whl",
+      "bytes": 100195,
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/pillow-12.1.1-cp311-cp311-win_amd64.whl",
+      "bytes": 7031448,
+      "sha256": "fbfa2a7c10cc2623f412753cddf391c7f971c52ca40a3f65dc5039b2939e8563",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/pluggy-1.6.0-py3-none-any.whl",
+      "bytes": 20538,
+      "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/pygments-2.20.0-py3-none-any.whl",
+      "bytes": 1231151,
+      "sha256": "81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/pytest-9.0.3-py3-none-any.whl",
+      "bytes": 375249,
+      "sha256": "2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/referencing-0.37.0-py3-none-any.whl",
+      "bytes": 26766,
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/rpds_py-2026.6.3-cp311-cp311-win_amd64.whl",
+      "bytes": 223219,
+      "sha256": "2c54a076ca4d370980ab57bc0e31df57bbe8d41340436a90ef8b1219a3cbb127",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/ruff-0.12.2-py3-none-win_amd64.whl",
+      "bytes": 11629831,
+      "sha256": "dca8a3b6d6dc9810ed8f328d406516bf4d660c00caeaef36eb831cf4871b0639",
+      "source": "PyPI wheel"
+    },
+    {
+      "path": "wheelhouse/typing_extensions-4.16.0-py3-none-any.whl",
+      "bytes": 45571,
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "source": "PyPI wheel"
+    }
+  ]
+}
