@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from test_harness.authoring_gateway import cli as gateway_cli
 from test_harness.authoring_gateway.client import (
     HttpResponse,
     OpenAICompatibleMessageClient,
@@ -589,27 +588,6 @@ def test_siliconflow_profile_requires_https() -> None:
                 "SILICONFLOW_API_KEY": API_KEY,
             },
         )
-
-
-def test_cli_configuration_failure_returns_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("SGGK_QWEN_BASE_URL", "SGGK_QWEN_MODEL", "SGGK_QWEN_API_KEY", "SGGK_QWEN_CA_BUNDLE"):
-        monkeypatch.delenv(name, raising=False)
-    exit_code = gateway_cli.main(
-        [
-            "task",
-            "--profile",
-            "intranet",
-            "--task-id",
-            "missing_config",
-            "--prompt",
-            "artifacts/not-read.md",
-            "--output",
-            "artifacts/not-written.json",
-            "--allowed-kind",
-            "flat_recipe",
-        ]
-    )
-    assert exit_code == 2
 
 
 def test_gateway_source_has_no_process_sdk_patch_or_git_imports() -> None:

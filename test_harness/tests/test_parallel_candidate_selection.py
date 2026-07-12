@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import threading
@@ -9,7 +8,6 @@ from typing import Any
 from test_harness.authoring_gateway.client import (
     HttpResponse,
     OpenAICompatibleMessageClient,
-    canonical_json_bytes,
 )
 from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig
 from test_harness.authoring_gateway.gateway import TaskSpec
@@ -113,39 +111,14 @@ def task(tmp_path: Path) -> TaskSpec:
     )
 
 
-def test_later_execution_pass_is_selected_and_only_then_promoted(tmp_path: Path) -> None:
-    values = [candidate("candidate_fails"), candidate("candidate_passes"), candidate("candidate_also_fails")]
-    harness = pipeline(tmp_path, values, {"candidate_passes"})
-
-    result = harness.run_task(
-        task(tmp_path),
-        run_id="later_pass",
-        candidate_count=3,
-        candidate_parallelism=1,
-        max_contract_repairs=0,
-        max_gate_repairs=0,
-        execute=True,
-        runner="unused-by-mock",
-    )
-
-    assert result.ok
-    assert result.selected_candidate_id == "candidate_02_test_design"
-    assert set(harness.executed) == {"candidate_fails", "candidate_passes", "candidate_also_fails"}
-    assert json.loads((tmp_path / result.accepted_path).read_text()) == values[1]
-    provenance = json.loads((tmp_path / result.provenance_path).read_text())
-    assert provenance["candidate_selection"]["policy"] == "must_pass_execution"
-    assert len(provenance["candidate_selection"]["pool"]) == 3
-
-
-def test_no_execution_pass_never_creates_formal_output(tmp_path: Path) -> None:
-    values = [candidate("fail_one"), candidate("fail_two")]
-    harness = pipeline(tmp_path, values, set())
+def test_message_candidates_cannot_generate_and_execute_in_one_step(tmp_path: Path) -> None:
     spec = task(tmp_path)
+    harness = pipeline(tmp_path, [candidate("candidate_one")], {"candidate_one"})
 
     result = harness.run_task(
         spec,
-        run_id="all_fail",
-        candidate_count=2,
+        run_id="approval_required",
+        candidate_count=1,
         candidate_parallelism=1,
         max_contract_repairs=0,
         max_gate_repairs=0,
@@ -155,32 +128,9 @@ def test_no_execution_pass_never_creates_formal_output(tmp_path: Path) -> None:
 
     assert not result.ok
     assert not result.authoring_accepted
-    assert "no independent candidate satisfied" in result.error
+    assert "cannot generate and execute in one step" in result.error
+    assert harness.executed == []
     assert not Path(spec.expected_output_path).exists()
-
-
-def test_canonical_duplicate_is_gated_but_executed_once(tmp_path: Path) -> None:
-    duplicate = candidate("same_candidate")
-    unique = candidate("unique_candidate")
-    harness = pipeline(tmp_path, [duplicate, duplicate, unique], {"same_candidate", "unique_candidate"})
-
-    result = harness.run_task(
-        task(tmp_path),
-        run_id="deduplicate",
-        candidate_count=3,
-        candidate_parallelism=1,
-        max_contract_repairs=0,
-        max_gate_repairs=0,
-        execute=True,
-        runner="unused-by-mock",
-    )
-
-    assert result.ok
-    assert harness.executed.count("same_candidate") == 1
-    assert harness.executed.count("unique_candidate") == 1
-    assert result.candidates[1]["duplicate_of"] == "candidate_01_implementation"
-    expected_hash = hashlib.sha256(canonical_json_bytes(duplicate)).hexdigest()
-    assert result.candidates[0]["candidate_sha256"] == expected_hash
 
 
 class BarrierTransport:
@@ -332,50 +282,3 @@ def test_target_signature_rejects_legacy_status_and_declared_only_attempts(tmp_p
 
     assert not matched
     assert stable_count == 0
-
-
-def test_stable_target_reproducer_is_successful_even_though_execution_fails(tmp_path: Path) -> None:
-    value = candidate("stable_reproducer")
-    harness = pipeline(tmp_path, [value], set())
-    harness._matches_target_signature = lambda *_args, **_kwargs: (True, 3)  # type: ignore[method-assign]
-
-    result = harness.run_task(
-        task(tmp_path),
-        run_id="stable_reproducer",
-        candidate_count=1,
-        candidate_parallelism=1,
-        max_contract_repairs=0,
-        max_gate_repairs=0,
-        execute=True,
-        runner="unused-by-mock",
-        selection_goal="must_reproduce_target_signature",
-        target_failure_signature={"kind": "oracle_failure"},
-    )
-
-    assert result.ok
-    assert result.authoring_accepted
-    assert not result.execution.ok
-    assert result.candidates[0]["score"]["target_signature_match"] is True
-    assert result.candidates[0]["score"]["stable_replay_count"] == 3
-
-
-def test_adapter_build_goal_rejects_an_executable_non_plugin_candidate(tmp_path: Path) -> None:
-    value = candidate("ordinary_recipe")
-    harness = pipeline(tmp_path, [value], {"ordinary_recipe"})
-
-    result = harness.run_task(
-        task(tmp_path),
-        run_id="adapter_kind_binding",
-        candidate_count=1,
-        candidate_parallelism=1,
-        max_contract_repairs=0,
-        max_gate_repairs=0,
-        execute=True,
-        runner="unused-by-mock",
-        selection_goal="adapter_build_pass",
-    )
-
-    assert not result.ok
-    assert not result.authoring_accepted
-    assert result.candidates[0]["fixed_gate"]["kind"] == "flat_recipe"
-    assert result.candidates[0]["score"]["eligible"] is False

@@ -1,20 +1,20 @@
 {
   "kind": "cluster_seed",
   "schema_version": 1,
-  "cluster_id": "occ_fuzzy_confusion_cluster_smoke",
-  "source_ref": "https://github.com/Open-Cascade-SAS/OCCT/blob/4f95ecaa3b690e34988d42e2ca7fe882e7a8bc7d/src/ModelingAlgorithms/TKBO/BOPAlgo/BOPAlgo_Options.cxx#L49-L108",
-  "hypothesis": "A fuzzy tolerance clamp near Precision::Confusion should be expanded into exact, geometry-tolerance, topology-tolerance, source-literal, generated-topology, and large-coordinate sibling cases.",
+  "cluster_id": "generic_tolerance_clamp_cluster_smoke",
+  "source_ref": "generic-source-pattern:tolerance-lower-bound",
+  "hypothesis": "A generic lower-bound tolerance branch should be expanded into exact, geometry-tolerance, topology-tolerance, source-literal, generated-topology, and large-coordinate sibling cases.",
   "review_required": true,
   "constants": {
-    "confusion_tol": 0.000001
+    "source_threshold": 0.000001
   },
   "contact_path": "tool.chain.2.translate_x",
   "contact_value": 170.0,
   "source_literal_offsets": [
     {
-      "suffix": "confusion_tol",
+      "suffix": "source_threshold",
       "direction": "-",
-      "offset": "confusion_tol",
+      "offset": "source_threshold",
       "boolean_type": "INTERSECTION",
       "min_result_bodies": 0
     }
@@ -82,5 +82,16 @@
         {"id": "large_tool_tolerance_place", "op": "transform", "translate_x": 399970.0, "translate_y": 0.0, "translate_z": -20.0}
       ]
     }
+  },
+  "source_review": {
+    "summary": "A repository-owned generic threshold pattern is expanded only to test deterministic cluster behavior.",
+    "risky_branches": ["lower-bound threshold branch"],
+    "failure_hypotheses": [
+      "Exact and tolerance-sized offsets can take different branches.",
+      "Generated topology and large coordinates can amplify the branch boundary."
+    ],
+    "test_enhancements": ["expand exact and signed tolerance bands into generated and large-coordinate siblings"],
+    "source_refs": ["generic-source-pattern:tolerance-lower-bound"],
+    "source_excerpt_sha256": "host-authored-generic-pattern"
   }
 }

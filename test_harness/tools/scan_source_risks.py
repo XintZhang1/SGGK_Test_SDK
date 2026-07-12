@@ -31,10 +31,7 @@ DEFAULT_EXTENSIONS = {
     ".hxx",
     ".ipp",
     ".inl",
-    ".py",
-    ".md",
-    ".txt",
-    ".json",
+    ".tpp",
 }
 DEFAULT_EXCLUDE_DIRS = {
     ".git",

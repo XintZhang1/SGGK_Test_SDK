@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,15 +9,35 @@ from test_harness.authoring_gateway.client import HttpResponse, OpenAICompatible
 from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig
 from test_harness.authoring_gateway.contracts import validate_candidate
 from test_harness.authoring_gateway.gateway import TaskSpec
-from test_harness.tools.api_adaptation_contract import build_adaptation_contract, sha256_json
-from test_harness.tools.build_api_adaptation_task import _validate as validate_api_intake
+from test_harness.tools.api_adaptation_contract import (
+    build_adaptation_contract,
+    sha256_json,
+    validate_adaptation_contract,
+)
 from test_harness.tools.materialize_api_plugin_candidate import materialize, validate_candidate as validate_plugin_candidate
-from test_harness.tools.run_message_harness_pipeline import ExecutionResult, MessageHarnessPipeline
+from test_harness.tools.run_message_harness_pipeline import MessageHarnessPipeline
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = REPO_ROOT / "test_harness/api_plugin_candidates/api_combine_bodies.example.json"
-INTAKE = REPO_ROOT / "test_harness/api_intakes/api_combine_bodies.example.json"
+INTAKE_VALUE: dict[str, object] = {
+    "schema_version": 1,
+    "request_id": "adapt_api_combine_bodies",
+    "api": "api_combine_bodies",
+    "sdk_header": "ModelingBase/API.h",
+    "sdk_modules": ["ModelingBase", "Topology"],
+    "function_signature": "BodyPtr api_combine_bodies(const BodyList& bodies, bool clone = true)",
+    "adapter_archetype": "body_list_to_body",
+    "behavior": "Combine target and tool BodyPtr inputs into one BodyPtr.",
+    "input_roles": ["target", "tool"],
+    "result_roles": ["result"],
+    "required_oracles": ["result_bodies", "properties", "topocheck"],
+    "smoke_guidance": "Use two separated solid spheres and require one valid result body.",
+    "topotrack": {
+        "mode": "unavailable",
+        "reason": "The API returns BodyPtr and exposes no ModelingRet TopoTrack channel.",
+    },
+}
 
 
 def candidate() -> dict[str, object]:
@@ -26,7 +45,7 @@ def candidate() -> dict[str, object]:
 
 
 def adaptation_metadata() -> dict[str, object]:
-    intake = json.loads(INTAKE.read_text(encoding="utf-8"))
+    intake = copy.deepcopy(INTAKE_VALUE)
     contract = build_adaptation_contract(intake)
     return {
         "target_api": intake["api"],
@@ -86,13 +105,14 @@ def test_sdk_header_cannot_escape_the_sdk_include_namespace() -> None:
     assert any("not a safe SDK include" in error for error in errors)
 
 
-def test_api_intake_cannot_weaken_fixed_archetype_oracles() -> None:
-    intake = json.loads(INTAKE.read_text(encoding="utf-8"))
+def test_host_adaptation_contract_cannot_weaken_fixed_archetype_oracles() -> None:
+    intake = copy.deepcopy(INTAKE_VALUE)
     intake["required_oracles"] = ["result_bodies"]
+    contract = build_adaptation_contract(intake)
 
-    errors = validate_api_intake(intake, sdk_dir=None, allow_existing=True)
+    errors = validate_adaptation_contract(contract, sha256_json(contract))
 
-    assert any("required_oracles must contain" in error for error in errors)
+    assert any("is missing fixed host oracles" in error for error in errors)
 
 
 def test_positive_and_negative_examples_must_discriminate() -> None:
@@ -291,7 +311,7 @@ def test_pipeline_rejects_valid_plugin_for_a_different_trusted_api(tmp_path: Pat
     assert any("does not match trusted value" in item["message"] for item in diagnostics)
 
 
-def test_existing_plugin_build_revalidation_refreshes_formal_attestation(
+def test_existing_plugin_build_revalidation_requires_host_approval(
     tmp_path: Path,
 ) -> None:
     config = GatewayConfig(
@@ -326,36 +346,8 @@ def test_existing_plugin_build_revalidation_refreshes_formal_attestation(
         selection_goal="fixed_gate_only",
     )
     assert first.ok
-
-    def fake_execute(*_args: object, execute: bool, **_kwargs: object) -> ExecutionResult:
-        assert execute
-        report_path = tmp_path / "artifacts/plugin_attestation/plugin_build_report.json"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report = {
-            "ok": True,
-            "stable_semantic_evidence": True,
-            "smoke_replays": 3,
-            "runner_sha256": "a" * 64,
-            "runtime_registry_sha256": "b" * 64,
-            "sdk_identity": {"sha256": "c" * 64},
-            "semantic_hashes": ["d" * 64] * 3,
-        }
-        report_path.write_text(json.dumps(report), encoding="utf-8")
-        return ExecutionResult(
-            True,
-            True,
-            "passed",
-            artifacts={
-                "plugin_build_report": report_path.relative_to(tmp_path).as_posix(),
-                "plugin_build_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
-                "runner_sha256": "a" * 64,
-                "runtime_registry_sha256": "b" * 64,
-                "sdk_identity_sha256": "c" * 64,
-                "semantic_sha256": "d" * 64,
-            },
-        )
-
-    harness._execute = fake_execute  # type: ignore[method-assign]
+    provenance_path = accepted.with_name("reattest_plugin.provenance.json")
+    reviewed_provenance = provenance_path.read_bytes()
     second = harness.run_task(
         spec,
         run_id="plugin_build_reattest",
@@ -364,11 +356,7 @@ def test_existing_plugin_build_revalidation_refreshes_formal_attestation(
         execute=True,
     )
 
-    assert second.ok
-    provenance = json.loads(
-        accepted.with_name("reattest_plugin.provenance.json").read_text(encoding="utf-8")
-    )
-    assert provenance["candidate_selection"]["policy"] == "adapter_build_pass"
-    assert provenance["candidate_selection"]["execution"]["requested"] is True
-    assert provenance["api_plugin_build_attestation"]["runner_sha256"] == "a" * 64
-    assert provenance["latest_attestation"]["attestation_run_id"] == "plugin_build_reattest"
+    assert not second.ok
+    assert second.execution.candidate_cause == "missing_or_stale_execution_approval"
+    assert "host execution approval attestation" in second.error
+    assert provenance_path.read_bytes() == reviewed_provenance

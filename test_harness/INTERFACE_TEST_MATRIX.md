@@ -16,7 +16,7 @@ These values are accepted by the flat recipe `api` field and by the DSL compiler
 
 | Runner API | SDK surface exercised | Input source | Best ABC/source-guided use | Current examples |
 |---|---|---|---|---|
-| `api_boolean` | `api_boolean` with `UNION`, `INTERSECTION`, `SUBTRACTION` | Generated bodies or `loaded_sgt` | Main ABC recut lane; source-guided tolerance/contact/topology attacks | `recipes/boolean_smoke.json`, `dsl/tolerance_band_smoke.json`, `dsl/occ_source_guided_surrogate_examples.json` |
+| `api_boolean` | `api_boolean` with `UNION`, `INTERSECTION`, `SUBTRACTION` | Generated bodies or `loaded_sgt` | Main ABC recut lane; source-guided tolerance/contact/topology attacks | `recipes/boolean_smoke.json`, `dsl/tolerance_band_smoke.json`, `dsl/source_risk_pattern_examples.json` |
 | `api_boolean_split` | `api_boolean_split` with classified outer/inner/wire results | Generated or loaded target/tool, including `plane_sheet` | Split classification, imprint, and tolerance-boundary tests | `recipes/boolean_split_plane_smoke.json` |
 | `api_boolean_slice` | `api_boolean_slice` returning wire-type bodies | Intersecting generated or loaded bodies | Section-wire count and topology validation | `recipes/boolean_slice_smoke.json` |
 | `api_offset2d` | `api_offset2d` with line/arc paths and typed `Offset2DStatus` | Bounded 2D path segments | Success plus expected `CanNotConnect`/`CrvDegenToPoint` diagnostics | `recipes/offset2d_line_smoke.json`, `recipes/offset2d_cannot_connect_smoke.json` |
@@ -58,7 +58,7 @@ These are not independent top-level runner APIs yet. They are currently exercise
 | `extrude_rect` | `api_create_rect_sheet_body`, `api_extrude_entity` | generated cap/side faces, side-edge contact, tiny height | generated sibling for source-risk clusters; ABC recut tool/target | `recipes/boolean_extrude_rect_smoke.json`, `dsl/operation_chain_smoke.json` |
 | `thicken_rect_sheet` | `api_create_rect_sheet_body`, `api_thicken_body` | offset/thicken side and cap topology, asymmetric min/max distance | generated sibling for offset/tolerance source risks | `recipes/boolean_thicken_rect_sheet_smoke.json`, `dsl/thicken_chain_smoke.json` |
 | `sweep_circle_line` | `api_sweep_entity` | generated sweep side topology, near-tangent side contact, PCurve/topology history | high-value generated tool/target against ABC bodies | `recipes/boolean_sweep_smoke.json`, `dsl/real_chain_tolerance_smoke.json` |
-| `support_sweep_bspline_surface` | `api_create_face`, `api_sweep_entity` with support-face mode | BSpline support-face sweep, guide/support tolerance, generated complex surface | strong source-guided surrogate for ABC complex surfaces | `recipes/boolean_support_sweep_bspline_surface_smoke.json`, `dsl/complex_surface_sweep_boolean_smoke.json` |
+| `support_sweep_bspline_surface` | `api_create_face`, `api_sweep_entity` with support-face mode | BSpline support-face sweep, guide/support tolerance, generated complex surface | deterministic source-guided companion for ABC complex surfaces | `recipes/boolean_support_sweep_bspline_surface_smoke.json`, `dsl/complex_surface_sweep_boolean_smoke.json` |
 | `revolve_line` | `api_revolve_entity` on open profile | periodic/open revolved side topology, angle boundaries | generated sibling for seam/periodic source risks | `recipes/boolean_revolve_line_smoke.json`, `dsl/revolve_chain_smoke.json` |
 | `revolve_rect` | `api_revolve_entity` on radial rectangular face | closed-profile revolved solid, side cutter at tolerance bands | generated sibling for solid periodic topology | `recipes/boolean_revolve_rect_smoke.json`, `dsl/revolve_rect_chain_smoke.json` |
 | `pre_boolean_cylinder_wedge` | internal `api_boolean`, then reuse result | operation-chain history, recutting previous boolean results | proxy for ABC imported/previous-result recut when no durable SGT exists | `recipes/boolean_preboolean_smoke.json`, `dsl/operation_chain_smoke.json` |
@@ -107,10 +107,10 @@ Every distilled test should include at least one real-result oracle beyond API s
 
 Use this exact loop for each interface family:
 
-1. Fill a developer/source form.
-   - `target_api`: one of the top-level runner APIs.
-   - `geometry.family`: one of `primitive`, `generated_extrude`, `generated_thicken`, `generated_sweep`, `support_sweep_bspline`, `generated_revolve`, `pre_boolean`, `loaded_sgt`, `exchange_file`, or `corpus`.
-   - `sdk_source_refs`: intranet source file/function/line, or an OCC surrogate link for public examples.
+1. Start from one public function; the host resolves declarations/definitions and builds the internal form automatically.
+   - `target_api` is selected from registered top-level runner capabilities.
+   - `geometry.family` is selected from `primitive`, `generated_extrude`, `generated_thicken`, `generated_sweep`, `support_sweep_bspline`, `generated_revolve`, `pre_boolean`, `loaded_sgt`, `exchange_file`, or `corpus`.
+   - Source references are definition-aware, host-bound intranet evidence; users never fill or edit this internal form.
 2. Generate several independent Message API candidates, each producing one of:
    - `attack_dsl` for boolean/body-builder/source-guided cases.
    - `flat_recipe` for direct import/check/roundtrip cases.

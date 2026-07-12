@@ -58,6 +58,13 @@ def test_timeout_only_matches_timeout() -> None:
     assert signatures_match(expected, observed) == (True, "same_timeout")
 
 
+def test_crash_with_missing_observed_phase_is_unverified() -> None:
+    expected = {"kind": "crash", "exception_code": "0xC0000005", "phase": "topocheck"}
+    observed = {"kind": "crash", "exception_code": "0xC0000005", "phase": ""}
+
+    assert signatures_match(expected, observed) == (False, "crash_phase_unobserved")
+
+
 def test_matched_typed_status_enum_is_not_sdk_error() -> None:
     typed = {
         "status_semantics": "offset2d_status_enum",

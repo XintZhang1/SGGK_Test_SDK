@@ -229,7 +229,10 @@ def signatures_match(expected: Mapping[str, Any], observed: Mapping[str, Any]) -
         if expected_code and str(observed.get("exception_code") or "") != expected_code:
             return False, "exception_code_changed"
         expected_phase = str(expected.get("phase") or "")
-        if expected_phase and str(observed.get("phase") or "") != expected_phase:
+        observed_phase = str(observed.get("phase") or "")
+        if expected_phase and not observed_phase:
+            return False, "crash_phase_unobserved"
+        if expected_phase and observed_phase != expected_phase:
             return False, "crash_phase_changed"
     elif expected_kind == "runner_error":
         if int(observed.get("returncode", 0)) != int(expected.get("returncode", 0)):

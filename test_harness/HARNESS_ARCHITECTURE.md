@@ -5,10 +5,12 @@ authoring, new-API adaptation, SDK execution, and candidate bug localization.
 
 ## Non-negotiable boundaries
 
-- Production authoring is Message API only. There is no human-authored,
-  clipboard, UI, or checked-in-fixture path that can publish a model output.
-- `intranet` and `siliconflow-test` use the same manifest, `message.content`
-  JSON contract, fixed gates, execution code, and selection policy. SiliconFlow
+- Production authoring and comment interpretation are Message API only. There
+  is no human-authored, clipboard, UI, or checked-in-fixture path that can
+  publish a model output. The user supplies only a function name and comments.
+- `intranet` and `siliconflow-test` use the same profile-bound manifest schema,
+  `message.content` JSON contract, fixed gates, execution code, and selection policy.
+  Each endpoint gets its own provider-bound manifest; artifacts are not replayed across profiles. SiliconFlow
   is an explicit protocol simulator, never a fallback endpoint.
 - A model response is always an untrusted candidate. Only the host can
   normalize, validate, compile, execute, select, and atomically promote it.
@@ -18,10 +20,16 @@ authoring, new-API adaptation, SDK execution, and candidate bug localization.
 
 ```mermaid
 flowchart LR
-    M["Message API manifest"] --> P["Parallel candidate pool"]
+    U["Public function"] --> M["Host internal IR + Message API task"]
+    M --> P["Parallel candidate pool"]
     P --> G["Normalize + fixed gate"]
     G --> D["Canonical SHA-256 de-duplication"]
-    D --> E["Independent SDK execution or isolated plugin build"]
+    D --> W["Immutable Chinese review round"]
+    W --> C["Natural-language comment"]
+    C --> QW["Qwen typed interpretation"]
+    QW -->|"revise"| M
+    QW -->|"explicit approval comment"| AP["Host approval attestation"]
+    AP --> E["Exact-candidate SDK execution or isolated plugin build"]
     E --> S["Deterministic host selection"]
     S --> A["Atomic accepted JSON + provenance"]
     E --> Q["Deterministic failure qualification"]
@@ -29,7 +37,7 @@ flowchart LR
     R --> V{"Every attempt matches immutable signature?"}
     V -->|"yes"| D2["Signature-bound reduction"]
     D2 --> B["Failure bundle + failure registry"]
-    V -->|"no"| C["Inconclusive triage; no reproducer"]
+    V -->|"no"| IC["Inconclusive triage; no reproducer"]
     B --> I["Parallel tool-bounded Qwen investigators"]
     I --> H["Candidate-only multi-hypothesis report"]
 ```
@@ -37,19 +45,23 @@ flowchart LR
 ## Parallel authoring and promotion
 
 `run_message_harness_pipeline.py` creates one to eight independent branches.
-The intranet default is three candidates; the external SiliconFlow smoke
-default is one to control external calls. Candidate roles cycle through:
+Every endpoint profile defaults to three candidates and the same bounded
+selection policy. Candidate roles cycle through:
 
 - `implementation`
 - `test_design`
 - `adversarial_review`
 - `minimal_reproducer`
 
-Generation and fixed gates may overlap. Each unique gate-passing candidate is
-executed independently in an isolated artifact directory. Completion order,
+Generation and fixed gates may overlap. Before review, no SDK call or plugin
+build occurs: the host selects one fixed-gate candidate and writes an immutable
+Chinese review round. After explicit approval, only that exact hash-bound
+candidate is executed in an isolated artifact directory. Completion order,
 latency, token usage, and model self-ratings do not affect selection.
-`sggk_candidate_score_v1` uses only host evidence: eligibility, execution,
+`sggk_candidate_score_v1` uses only pre-review host evidence: eligibility,
 case/oracle coverage, warnings/repairs, normalized size, and canonical hash.
+Execution evidence belongs only to the already reviewed and approved candidate;
+it cannot retroactively select an unreviewed sibling.
 
 Selection goals are host-owned:
 
@@ -58,9 +70,9 @@ Selection goals are host-owned:
 | `fixed_gate_only` | deterministic gate pass |
 | `must_pass_execution` | SDK and semantic-oracle pass |
 | `must_reproduce_target_signature` | exact target signature plus stable replay |
-| `extension_backlog` | valid non-executing extension intake |
+| `extension_backlog` | valid non-executing extension resolution |
 | `adapter_build_pass` | isolated new-API compile, registry, schema, smoke, and stable hash pass |
-| `auto` | execution pass when `--execute` is present; fixed gate otherwise |
+| `auto` | fixed gate before review; approved execution goal selected from the reviewed candidate kind |
 
 No eligible candidate means no formal output. Promotion writes the accepted
 JSON and provenance atomically only after selection. Post-promotion tools
@@ -69,22 +81,16 @@ require hash-matching provenance with `authoring_accepted=true`,
 
 ## New API adaptation
 
-A trusted operator supplies API facts in `test_harness/api_intakes/`; those
-facts are not model output. The host builds a bounded task:
+There is no operator-filled API intake. The review-session resolver starts from
+the public function, discovers bound declarations/definitions, and either maps
+the API to a registered fixed archetype or returns a reviewed
+`needs_harness_extension` candidate. Until an archetype is registered, the
+Harness fails closed instead of asking a user to author adaptation JSON.
 
-```powershell
-python .\test_harness\tools\build_api_adaptation_task.py `
-  .\test_harness\api_intakes\<api>.json `
-  --out .\artifacts\api_adaptation\<api>
-
-python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
-  --candidate-count 3 `
-  --candidate-parallelism 3 `
-  --selection-goal adapter_build_pass `
-  --execute `
-  .\artifacts\api_adaptation\<api>\model_task_manifest.json
-```
+When automatic archetype mapping is available, its discovery-bound contract is
+reviewed through the same immutable `start` / `comment` session. The low-level
+pipeline cannot generate and execute an adapter in one command; execution still
+requires the host approval attestation for the unchanged reviewed candidate.
 
 Qwen returns `api_plugin_candidate` JSON containing only a registered adapter
 archetype, recipe schema, positive/negative recipes, capability metadata, and a
@@ -176,8 +182,8 @@ hash-chained evidence ledger.
 Tools expose failure/replay summaries, paired TopoTrack evidence, bbox
 relations, bounded artifact reports, and optional literal source search. Source
 tools accept no filesystem path from the model. A trusted source root is mapped
-to opaque `source_ref_id` values. SiliconFlow source excerpts are disabled by
-default and require explicit operator opt-in; absent source evidence must be
+to opaque `source_ref_id` values. Proprietary source evidence is restricted to
+the intranet profile with no external override; absent source evidence must be
 reported as `source_unavailable`.
 
 The root-cause lane accepts only `stable_same_failure`. The host derives and
@@ -190,9 +196,9 @@ reference. Unknown evidence/source/tool IDs, mismatched signatures, and any
 
 ## Using abundant local tokens safely
 
-The intranet profile defaults candidate and investigation outputs to 32,768
-tokens; the external simulator defaults to 8,192. Local Qwen can use still
-larger `--max-tokens`, more bounded repair/investigation rounds, several
+Every endpoint profile defaults candidate and investigation outputs to 32,768
+tokens. Local Qwen can use still larger `--max-tokens`, more bounded
+repair/investigation rounds, several
 independent roles, and repeated candidate generation. Host
 budgets remain finite: response bytes, candidates (maximum eight), parallelism,
 contract/gate repairs, tool calls, source excerpt sizes, SDK timeout/jobs,
@@ -209,7 +215,7 @@ Start staged large-scale tests only after all of these are green:
 - all self-contained API smokes, including `api_combine_bodies`;
 - parallel candidate proof: bad candidate rejected, good candidate promoted,
   canonical duplicates executed once, selection stable;
-- new-API intake-to-plugin proof with three identical semantic hashes;
+- new-API discovery-to-plugin proof with three identical semantic hashes;
 - known bad generated cases excluded by qualification;
 - stable replay, signature-preserving reduction, and paired TopoTrack evidence;
 - at least one schema-valid real Qwen multi-hypothesis investigation without

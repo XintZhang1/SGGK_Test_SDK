@@ -4,7 +4,7 @@
   "target_api": "api_boolean",
   "sdk_source_refs": [
     "SGGK Modeling sweep API: api_sweep_entity",
-    "OCC surrogate: BRepAlgoAPI_BuilderAlgo forwards fuzzy value into PaveFiller"
+    "generic-source-pattern:forwarded-operation-tolerance"
   ],
   "test_goal": "Exercise sweep-generated side topology as target and tool in near-contact booleans.",
   "risk_summary": "Generated sweep faces and PCurves are high-risk inputs for split/imprint logic, especially around exact tangency and tolerance-sized overlaps.",

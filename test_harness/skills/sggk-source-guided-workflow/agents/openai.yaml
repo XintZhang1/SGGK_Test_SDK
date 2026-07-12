@@ -1,4 +1,0 @@
-interface:
-  display_name: "SGGK Source Guided Workflow"
-  short_description: "Compose source scans, clusters, and harness runs."
-  default_prompt: "Use $sggk-source-guided-workflow to turn source findings into reviewed SGGK harness attacks."

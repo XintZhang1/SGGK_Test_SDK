@@ -12,7 +12,7 @@ following:
 - compiled adapter registry agrees with every plugin manifest hash/version;
 - parallel candidate E2E rejects a bad candidate, promotes an SDK-proven good
   candidate, de-duplicates canonical repeats, and selects deterministically;
-- new API intake -> `api_plugin_candidate` -> isolated Release build ->
+- new API discovery/resolution -> `api_plugin_candidate` -> isolated Release build ->
   positive/negative schema -> runtime registry -> three equal semantic hashes;
 - known-invalid generated geometry is excluded by deterministic failure
   qualification while SDK status/crash and ambiguous oracles remain candidates;
@@ -23,7 +23,8 @@ following:
   locations or `source_unavailable`, registered falsification tools, and a
   stable reproduction reference.
 
-SiliconFlow and intranet runs must consume the same manifest and fixed gates;
+SiliconFlow and intranet runs must consume the same profile-bound manifest schema and fixed gates;
+each run generates its own provider-bound manifest instead of replaying one artifact across endpoints;
 the simulator proves protocol equivalence, not identical token sampling.
 
 Scale in explicit stages: one Message task, all API smokes, 100 cases, 1,000
@@ -49,7 +50,9 @@ Use the ABC dataset as a broad and difficult modeling corpus. Prioritize:
 - exchange roundtrip drift through STEP and IGES
 - sharded large campaigns with artifact verification, geometry audit, triage, previews, and bug-record promotion
 
-The Windows workspace `C:\Develop\SGGK_Agent` is the SDK runtime environment. Keep ABC data and campaign artifacts out of Git.
+Use a dedicated local Windows workspace containing this repository, the SDK,
+and ignored `artifacts/` directories. Keep ABC data and campaign artifacts out
+of Git; do not rely on a machine-specific absolute path.
 
 ## Required Input
 

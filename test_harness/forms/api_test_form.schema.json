@@ -77,7 +77,17 @@
           "seam_periodic",
           "generated_topology",
           "roundtrip_drift",
-          "import_topology"
+          "import_topology",
+          "interior_section",
+          "interior_intersection",
+          "distance_tolerance",
+          "positive_offset",
+          "analytic_extent",
+          "transverse_intersection",
+          "connectivity",
+          "curve_degeneration",
+          "plugin_registration",
+          "strict_recipe_schema"
         ]
       },
       "default": []

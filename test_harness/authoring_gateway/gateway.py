@@ -31,9 +31,17 @@ Never return credentials, provider configuration, shell commands, patches, or Gi
 Follow the task's output_contract exactly; deterministic local code validates the result.
 """
 
+SOURCE_TASK_TYPES = frozenset({"source_attack", "sggk_source_attack"})
+
 
 class GatewayError(ValueError):
     """A task or manifest violates the gateway's fixed boundary."""
+
+
+def is_source_task_type(task_type: str) -> bool:
+    """Return whether a task type carries proprietary source evidence."""
+
+    return str(task_type).strip() in SOURCE_TASK_TYPES
 
 
 def _safe_id(value: str) -> str:
@@ -424,6 +432,7 @@ Fixed diagnostics:
             "run_id": run_id,
             "attempt": attempt,
             "prompt_sha256": _sha256_text(prompt),
+            "task_prompt_sha256": _sha256_text(task.prompt),
             "candidate_sha256": candidate_hash,
             "message_content_sha256": _sha256_text(completion.content),
             "reasoning_content_sha256": completion.reasoning_content_sha256,
@@ -482,6 +491,8 @@ Fixed diagnostics:
         candidate_hash = _sha256_bytes(canonical_json_bytes(candidate))
         if provenance.get("candidate_sha256") != candidate_hash:
             return False, "existing formal output does not match provenance candidate_sha256"
+        if provenance.get("task_prompt_sha256") != _sha256_text(task.prompt):
+            return False, "existing formal output was authored from a different task prompt"
         expected_relative = _repo_relative(self.repo_root, output_path)
         if provenance.get("output_path") != expected_relative:
             return False, "existing provenance output_path does not match the formal output"
@@ -589,6 +600,58 @@ Fixed diagnostics:
     ) -> GatewayRunResult:
         if not task.task_id.strip():
             raise GatewayError("task_id must be non-empty")
+        classification = str(task.metadata.get("data_classification") or "")
+        source_task = is_source_task_type(task.task_type)
+        authored_profile = str(task.metadata.get("provider_profile") or "")
+        authored_category = str(task.metadata.get("provider_profile_category") or "")
+        if authored_profile and authored_profile != self.config.profile.name:
+            raise GatewayError(
+                "task provider_profile does not match the configured Message API profile"
+            )
+        if authored_category and authored_category != self.config.profile.category:
+            raise GatewayError(
+                "task provider_profile_category does not match the configured Message API category"
+            )
+        if source_task and classification != "proprietary_source":
+            raise GatewayError(
+                "source authoring tasks must declare data_classification=proprietary_source"
+            )
+        allowed_categories = task.metadata.get("allowed_profile_categories")
+        if source_task and allowed_categories != ["intranet"]:
+            raise GatewayError(
+                "source authoring tasks must declare allowed_profile_categories=['intranet']"
+            )
+        if allowed_categories is not None:
+            if (
+                not isinstance(allowed_categories, list)
+                or not allowed_categories
+                or not all(isinstance(item, str) and item for item in allowed_categories)
+            ):
+                raise GatewayError("allowed_profile_categories must be a non-empty string array")
+        if classification == "proprietary_source":
+            if allowed_categories != ["intranet"]:
+                raise GatewayError(
+                    "proprietary source evidence must declare allowed_profile_categories=['intranet']"
+                )
+            if self.config.profile.category != "intranet":
+                raise GatewayError(
+                    "proprietary source evidence is restricted to the intranet profile category"
+                )
+        if (
+            isinstance(allowed_categories, list)
+            and self.config.profile.category not in allowed_categories
+        ):
+            raise GatewayError(
+                "task data is not allowed for the configured Message API profile category"
+            )
+        if self.config.profile.category != "intranet" and (
+            authored_profile != self.config.profile.name
+            or authored_category != self.config.profile.category
+        ):
+            raise GatewayError(
+                "external Message API tasks must be explicitly bound to the configured "
+                "provider profile and category"
+            )
         if not 0 <= max_repairs <= 3:
             raise GatewayError("max_repairs must be between 0 and 3")
         if not task.prompt.strip():

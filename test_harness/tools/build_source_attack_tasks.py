@@ -10,8 +10,16 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 import time
 from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from test_harness.authoring_gateway.source_evidence import build_source_contract  # noqa: E402
 
 
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -144,6 +152,26 @@ def excerpt_for(path: Path, line_number: int, radius: int) -> dict[str, Any]:
     }
 
 
+def approved_source_root(report: dict[str, Any], source_path: Path) -> Path:
+    scan = as_dict(report.get("scan"))
+    scan_cwd = Path(str(scan.get("cwd") or Path.cwd())).resolve()
+    matches: list[Path] = []
+    for raw in as_list(scan.get("paths")):
+        candidate = Path(str(raw))
+        if not candidate.is_absolute():
+            candidate = scan_cwd / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+            root = resolved if resolved.is_dir() else resolved.parent
+            source_path.resolve(strict=True).relative_to(root)
+            matches.append(root)
+        except (OSError, ValueError):
+            continue
+    if not matches:
+        raise ValueError(f"source file is outside the roots recorded by the scan: {source_path}")
+    return max(matches, key=lambda item: len(item.parts))
+
+
 def passes_filters(finding: dict[str, Any], args: argparse.Namespace) -> bool:
     severity = str(finding.get("severity") or "low")
     if SEVERITY_RANK.get(severity, 99) > SEVERITY_RANK[args.min_severity]:
@@ -168,10 +196,14 @@ def model_prompt(finding: dict[str, Any]) -> str:
     values = ", ".join(str(item.get("raw")) for item in as_list(finding.get("numeric_literals"))[:6]) or "none"
     categories = ", ".join(str(item) for item in as_list(finding.get("categories")))
     return (
-        "Read the source excerpt and produce SGGK attack DSL for the cited risk. "
+        "Read the bound source excerpt, summarize the risky control flow, and produce SGGK attack DSL "
+        "for the cited risk. Include source_review bound to the host-issued task, finding, source "
+        "contract, opaque source references, and generated case IDs. Connect source references to "
+        "risky branches, branches to at least two failure hypotheses, and hypotheses to test "
+        "enhancements and cases. "
         "Use the exact source values where relevant, add nearby variants around geom_tol=1e-5 "
         "and topo_tol=1e-2, prefer legal adversarial geometry, and include hard validation "
-        "oracles plus screenshot/geometry-audit commands. "
+        "oracles. The host owns every command and post-processing action. "
         f"Source: {source.get('file')}:{source.get('line')}. "
         f"Risk categories: {categories}. Numeric literals: {values}."
     )
@@ -179,14 +211,16 @@ def model_prompt(finding: dict[str, Any]) -> str:
 
 def required_output_contract() -> dict[str, Any]:
     return {
-        "format": "markdown_with_json",
-        "sections": ["Findings", "Attack DSL", "Run"],
+        "format": "json_object",
+        "allowed_kinds": ["attack_dsl", "cluster_seed", "needs_harness_extension"],
         "rules": [
-            "Emit valid JSON attack DSL, not pseudo-JSON.",
+            "Emit exactly one JSON object with no Markdown wrapper.",
             "Use needs_harness_extension when the harness does not support the API directly.",
             "Include stable chain operation id fields for generated topology provenance.",
             "Add measurable expectations for result bodies, properties, point/face/body relation, clash, distance, or exact plane-extreme checks.",
-            "Include compile --check, compile, run, preview, and geometry-audit commands.",
+            "Do not emit commands, runners, paths, environment variables, or source patches.",
+            "Bind source_review task/finding/contract hashes and opaque source references to the exact task values.",
+            "Connect every generated case to a test enhancement through resolvable IDs.",
         ],
     }
 
@@ -226,13 +260,33 @@ def build_tasks(report: dict[str, Any], report_dir: Path, args: argparse.Namespa
         source_path = resolve_source_path(source_file, scan_cwd, report_dir)
         seed = seed_by_source.get(source_key(finding)) or seed_by_source.get((source_file.replace("/", "\\").lower(), line_number, ""))
         tid = task_id(args.task_prefix, index, finding)
+        excerpt = excerpt_for(source_path, line_number, args.context_lines)
+        if not excerpt.get("available"):
+            raise ValueError(f"cannot build a source task without a readable excerpt: {source_path}")
+        source_root = approved_source_root(report, source_path)
+        contract, host_bindings = build_source_contract(
+            task_id=tid,
+            finding=finding,
+            source_path=source_path,
+            source_root=source_root,
+            line_start=int(excerpt["start_line"]),
+            line_end=int(excerpt["end_line"]),
+        )
+        source_ref = contract["source_refs"][0]
+        excerpt["path"] = source_ref["relative_path"]
+        excerpt_sha256 = str(source_ref["content_sha256"])
         task: dict[str, Any] = {
             "schema_version": 1,
             "task_id": tid,
             "task_type": "sggk_source_attack",
+            "data_classification": "proprietary_source",
+            "allowed_profile_categories": ["intranet"],
             "review_required": True,
-            "source_ref": f"{source_file}:{line_number}",
-            "source_excerpt": excerpt_for(source_path, line_number, args.context_lines),
+            "source_ref": source_ref["source_ref_id"],
+            "source_contract": contract,
+            "host_source_bindings": host_bindings,
+            "source_excerpt": excerpt,
+            "source_excerpt_sha256": excerpt_sha256,
             "finding": finding,
             "seed_draft": seed,
             "model_prompt": model_prompt(finding),

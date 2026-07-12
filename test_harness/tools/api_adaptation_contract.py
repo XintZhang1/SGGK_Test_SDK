@@ -54,7 +54,7 @@ def sha256_text(value: str) -> str:
 
 
 def build_adaptation_contract(intake: Mapping[str, Any]) -> dict[str, Any]:
-    """Create the immutable host-side contract from a validated API intake."""
+    """Create the immutable host-side contract from validated resolver evidence."""
 
     function_signature = str(intake["function_signature"])
     return {

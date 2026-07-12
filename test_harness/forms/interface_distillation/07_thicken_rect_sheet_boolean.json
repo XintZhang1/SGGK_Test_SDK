@@ -4,7 +4,7 @@
   "target_api": "api_boolean",
   "sdk_source_refs": [
     "SGGK Offset/API.h: api_thicken_body",
-    "OCC surrogate: tolerance growth around generated topology"
+    "generic-source-pattern:generated-topology-tolerance-growth"
   ],
   "test_goal": "Exercise a thickened rectangular sheet through boolean subtraction and side-contact tolerance clusters.",
   "risk_summary": "Thicken/offset can create side and cap topology whose tolerances differ from the input sheet; downstream boolean can expose invalid topology or bad volume relation.",

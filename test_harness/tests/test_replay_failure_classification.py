@@ -25,6 +25,23 @@ def test_nonzero_changed_failure_is_not_stable_reproduction() -> None:
     assert classify_attempts(attempts, EXPECTED) == "changed_failure"
 
 
+def test_missing_crash_phase_is_unverified_not_changed() -> None:
+    attempts = [
+        {
+            "returncode": -1073741819,
+            "matches_expected": False,
+            "match_reason": "crash_phase_unobserved",
+        },
+        {
+            "returncode": -1073741819,
+            "matches_expected": False,
+            "match_reason": "crash_phase_unobserved",
+        },
+    ]
+
+    assert classify_attempts(attempts, EXPECTED) == "unverified_failure"
+
+
 def test_mixed_match_is_flaky_same_failure() -> None:
     attempts = [attempt(-1073741819, True), attempt(0, False)]
 

@@ -110,6 +110,171 @@ def file_sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def recipe_review_record(recipe_path: Path, index: int) -> dict[str, Any]:
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(recipe, dict):
+        raise ValueError(f"recipe root must be object: {recipe_path}")
+    api = str(recipe.get("api") or "unknown")
+    target_kind = str(recipe.get("target_kind") or "")
+    tool_kind = str(recipe.get("tool_kind") or "")
+    source_file = str(recipe.get("source_file") or recipe.get("target_source_file") or "")
+    inputs = [f"API={api}"]
+    if target_kind:
+        inputs.append(f"target={target_kind}")
+    if tool_kind:
+        inputs.append(f"tool={tool_kind}")
+    if source_file:
+        inputs.append(f"输入资产={source_file}")
+    expectations = recipe.get("expectations") if isinstance(recipe.get("expectations"), dict) else {}
+    oracle_names = sorted(str(key) for key in expectations)
+    source_review = recipe.get("source_review") if isinstance(recipe.get("source_review"), dict) else {}
+    risk_summary = str(
+        source_review.get("summary")
+        or recipe.get("hypothesis")
+        or recipe.get("notes")
+        or "重点审查复杂输入、容差边界、拓扑有效性和 Oracle 完整性。"
+    )
+    return {
+        "schema_version": 1,
+        "language": "zh-CN",
+        "index": index,
+        "case_id": recipe_case_id(recipe_path),
+        "api": api,
+        "recipe_path": str(recipe_path.resolve()),
+        "recipe_sha256": file_sha256(recipe_path),
+        "purpose_zh_cn": f"验证 {api} 在当前几何与参数组合下的行为。",
+        "input_summary_zh_cn": "；".join(inputs),
+        "expected_behavior_zh_cn": (
+            "验证确定性 Oracle：" + "、".join(oracle_names)
+            if oracle_names
+            else "用例未声明 expectations；用户复核时必须确认其固定执行判据。"
+        ),
+        "risk_summary_zh_cn": risk_summary,
+        "oracles": oracle_names,
+        "source_evidence": {
+            "source_ref": str(recipe.get("source_ref") or ""),
+            "source_task_id": str(recipe.get("source_task_id") or ""),
+            "source_risk_id": str(recipe.get("source_risk_id") or ""),
+            "source_review": source_review,
+        },
+        "generator": {
+            "dsl_source": str(recipe.get("dsl_source") or ""),
+            "dsl_case_id": str(recipe.get("dsl_case_id") or ""),
+            "dsl_variant": str(recipe.get("dsl_variant") or ""),
+        },
+        "machine_validation": {"recipe_schema": "passed"},
+        "review_workflow": {
+            "status": "awaiting_natural_language_comment",
+            "managed_by": "harness_session_orchestrator",
+            "user_editable": False,
+        },
+    }
+
+
+def write_recipe_review_index(out_root: Path, selected_recipes: list[Path]) -> dict[str, Any]:
+    out_root.mkdir(parents=True, exist_ok=True)
+    index_path = out_root / "recipe_review_index.jsonl"
+    report_path = out_root / "recipe_review_report.zh-CN.md"
+    state_path = out_root / "recipe_review_state.internal.json"
+    by_api: dict[str, int] = {}
+    by_oracle: dict[str, int] = {}
+    preview: list[dict[str, Any]] = []
+    with index_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for index, recipe_path in enumerate(selected_recipes):
+            record = recipe_review_record(recipe_path, index)
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            api = str(record["api"])
+            by_api[api] = by_api.get(api, 0) + 1
+            for oracle in record["oracles"]:
+                by_oracle[str(oracle)] = by_oracle.get(str(oracle), 0) + 1
+            if len(preview) < 50:
+                preview.append(record)
+    index_sha256 = file_sha256(index_path)
+    state = {
+        "schema_version": 1,
+        "review_index": str(index_path),
+        "review_index_sha256": index_sha256,
+        "status": "awaiting_natural_language_comment",
+        "managed_by": "harness_session_orchestrator",
+        "user_editable": False,
+        "instructions_zh_cn": (
+            "用户只通过 Harness 提交自然语言 comment；轮次、状态、ID、索引哈希和批准证明"
+            "均由宿主管理。请勿编辑本内部状态文件。"
+        ),
+    }
+    write_json(state_path, state)
+    lines = [
+        "# SGGK 测试用例中文审查索引",
+        "",
+        "> 本报告由固定宿主生成。每个 recipe 在 JSONL 中恰好对应一条哈希记录；"
+        "机器校验通过不会自动触发 SDK 执行。用户不需要编辑任何审批 JSON。",
+        "",
+        f"- 用例总数：`{len(selected_recipes)}`",
+        f"- JSONL 索引：`{index_path}`",
+        f"- 索引 SHA-256：`{index_sha256}`",
+        f"- Harness 内部状态：`{state_path}`（只读）",
+        "- 当前用户复核状态：`awaiting_comment`",
+        "",
+        "## API 分布",
+        "",
+    ]
+    lines.extend(f"- `{key}`：`{value}`" for key, value in sorted(by_api.items()))
+    lines.extend(["", "## Oracle 覆盖", ""])
+    lines.extend(f"- `{key}`：`{value}`" for key, value in sorted(by_oracle.items()))
+    lines.extend(
+        [
+            "",
+            "## 前 50 条审查预览",
+            "",
+            "| case_id | API | 输入 | 预期/Oracle | 风险 | recipe SHA-256 |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for record in preview:
+        lines.append(
+            f"| `{record['case_id']}` | `{record['api']}` | {record['input_summary_zh_cn']} | "
+            f"{record['expected_behavior_zh_cn']} | {record['risk_summary_zh_cn']} | "
+            f"`{record['recipe_sha256']}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 用户复核要点",
+            "",
+            "- [ ] 输入资产、target/tool 构造与 API 目标一致。",
+            "- [ ] 复杂几何链、容差带和变体没有退化成重复基本体。",
+            "- [ ] 每条用例至少有一个可观测判据，且预期值不过度拟合单次运行。",
+            "- [ ] 源码风险摘要、source_ref 和生成的参数变化能够对应。",
+            "- [ ] 对失败用例检查 triage、稳定重放、TopoTrack 和 reduction 证据。",
+            "- [ ] 如需调整，只提交自然语言 comment；任何调整都会产生新的不可变审查轮次。",
+            "",
+        ]
+    )
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "schema_version": 1,
+        "language": "zh-CN",
+        "record_count": len(selected_recipes),
+        "index_path": str(index_path),
+        "index_sha256": index_sha256,
+        "report_path": str(report_path),
+        "report_sha256": file_sha256(report_path),
+        "review_state_path": str(state_path),
+        "review_state_sha256": file_sha256(state_path),
+        "review_status": "awaiting_natural_language_comment",
+        "by_api": dict(sorted(by_api.items())),
+        "by_oracle": dict(sorted(by_oracle.items())),
+    }
+
+
 def read_recipe_list(path: Path) -> list[str]:
     try:
         lines = path.read_text(encoding="utf-8-sig").splitlines()
@@ -475,6 +640,7 @@ def write_manifest(
     selected_recipes: list[Path],
     started_at: str,
 ) -> None:
+    review = write_recipe_review_index(out_root, selected_recipes)
     entries: list[dict[str, Any]] = []
     for index, recipe_path in enumerate(selected_recipes):
         item: dict[str, Any] = {
@@ -482,6 +648,8 @@ def write_manifest(
             "recipe": str(recipe_path),
             "case_id": recipe_case_id(recipe_path),
             "size_bytes": recipe_path.stat().st_size if recipe_path.exists() else 0,
+            "sha256": file_sha256(recipe_path) if recipe_path.exists() else "",
+            "review_status": "awaiting_natural_language_comment",
         }
         if args.hash_recipes and recipe_path.exists():
             item["sha1"] = file_sha1(recipe_path)
@@ -507,6 +675,7 @@ def write_manifest(
         "scanned_count": len(scanned_recipes),
         "selected_count": len(selected_recipes),
         "inputs": entries,
+        "generated_artifact_review": review,
     }
     write_json(path, manifest)
 

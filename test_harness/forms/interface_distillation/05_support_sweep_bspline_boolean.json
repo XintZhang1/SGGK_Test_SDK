@@ -31,5 +31,5 @@
   "case_count": 6,
   "run_profile": "smoke",
   "input_assets": {},
-  "notes": "Use this as the public surrogate for ABC BSpline-heavy imported topology."
+  "notes": "Use this as the deterministic generated-geometry companion for ABC BSpline-heavy imported topology."
 }

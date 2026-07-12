@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build deterministic SGGK model prompts and a gateway task manifest.
 
-The builder is provider-neutral and performs no model call.  It writes one
+The builder performs no model call and binds every diagnostic task to one
+explicit provider profile. It writes one
 self-contained prompt per task plus ``model_task_manifest.json``.  A Message
 API gateway can consume the manifest, validate each output contract, and write
 the formal output and provenance sidecar atomically.
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from build_api_test_task import build_task, validate_form
+from test_harness.authoring_gateway.config import PROFILE_SPECS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FORMS_DIR = "test_harness/forms/interface_distillation"
@@ -43,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-prompt-chars", type=int, default=60000)
     parser.add_argument("--max-context-tokens", type=int, default=200000)
     parser.add_argument("--run-tag", default="", help="Stable run label stored in the task manifest")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILE_SPECS),
+        default="intranet",
+        help="Bind every generated task manifest to one Message API provider profile",
+    )
     return parser.parse_args()
 
 
@@ -159,7 +167,7 @@ Contract policy:
 
 def contract_for(preferred: Any, *, source_task: bool = False) -> dict[str, Any]:
     if source_task:
-        allowed = ["attack_dsl", "cluster_seed", "needs_harness_extension"]
+        allowed = ["attack_dsl", "flat_recipe", "cluster_seed", "needs_harness_extension"]
     else:
         kind = str(preferred or "").strip()
         allowed = [kind] if kind in ALLOWED_OUTPUT_KINDS else sorted(ALLOWED_OUTPUT_KINDS)
@@ -229,19 +237,83 @@ def interface_prompt(task: dict[str, Any], form: dict[str, Any], expected_output
 
 def source_prompt(task: dict[str, Any], expected_output: str) -> str:
     finding = task.get("finding") if isinstance(task.get("finding"), dict) else {}
-    source_excerpt = task.get("source_excerpt") if isinstance(task.get("source_excerpt"), dict) else {}
-    seed = task.get("seed_draft")
+    source_excerpts_raw = task.get("source_excerpts")
+    if isinstance(source_excerpts_raw, list):
+        source_excerpts = [item for item in source_excerpts_raw if isinstance(item, dict)]
+    else:
+        source_excerpt = task.get("source_excerpt")
+        source_excerpts = [source_excerpt] if isinstance(source_excerpt, dict) else []
+    source_contract = task.get("source_contract") if isinstance(task.get("source_contract"), dict) else {}
+    source_refs = source_contract.get("source_refs") if isinstance(source_contract.get("source_refs"), list) else []
+    source_ref_examples = [
+        {
+            "source_ref_id": item.get("source_ref_id", ""),
+            "line_start": item.get("line_start", 0),
+            "line_end": item.get("line_end", 0),
+            "content_sha256": item.get("content_sha256", ""),
+        }
+        for item in source_refs
+        if isinstance(item, dict)
+    ]
+    branch_examples = [
+        {
+            "branch_id": f"branch_{index:02d}",
+            "source_ref_ids": [item["source_ref_id"]],
+            "condition": "the exact risky branch condition in this bound definition",
+            "risk": "why this branch can produce an observable failure",
+        }
+        for index, item in enumerate(source_ref_examples, 1)
+    ]
+    branch_ids = [item["branch_id"] for item in branch_examples]
+    hypothesis_examples = [
+        {
+            "hypothesis_id": "hyp_01",
+            "branch_ids": branch_ids,
+            "trigger": "first falsifiable trigger",
+            "observable_failure": "first measurable failure",
+        },
+        {
+            "hypothesis_id": "hyp_02",
+            "branch_ids": branch_ids,
+            "trigger": "second independent falsifiable trigger",
+            "observable_failure": "second measurable failure",
+        },
+    ]
+    source_sections = []
+    for index, excerpt in enumerate(source_excerpts, 1):
+        source_sections.append(
+            "\n".join(
+                [
+                    f"### Definition {index}",
+                    "",
+                    f"Path: `{excerpt.get('path', '')}`",
+                    f"Lines: `{excerpt.get('start_line', 0)}-{excerpt.get('end_line', 0)}`",
+                    "",
+                    "```text",
+                    str(excerpt.get("text", "")),
+                    "```",
+                ]
+            )
+        )
+    source_sections_text = "\n\n".join(source_sections)
+    supplied_contract = task.get("output_contract")
+    output_contract = (
+        dict(supplied_contract)
+        if isinstance(supplied_contract, dict)
+        else contract_for(None, source_task=True)
+    )
     task_context = {
         "task_type": "source_attack",
         "task_id": task.get("task_id"),
-        "source_ref": task.get("source_ref"),
+        "data_classification": "proprietary_source",
+        "allowed_profile_categories": ["intranet"],
+        "source_contract": source_contract,
         "expected_output_path": expected_output,
-        "output_contract": contract_for(None, source_task=True),
+        "output_contract": output_contract,
         "review_required": True,
         "constants": constants(),
         "post_generation_checks": task.get("post_generation_checks", []),
     }
-    seed_text = json.dumps(seed, indent=2, ensure_ascii=False) if isinstance(seed, dict) else "null"
     return f"""# SGGK Model Source-Attack Task
 
 {model_rules()}
@@ -255,6 +327,36 @@ def source_prompt(task: dict[str, Any], expected_output: str) -> str:
 ## Output Contract
 
 {output_contract_text()}
+
+For `attack_dsl`, place this object at `dsl.source_review`; for `flat_recipe`,
+place it at `recipe.source_review`; for `cluster_seed` or
+`needs_harness_extension`, place it at the candidate payload root. Replace the
+example IDs and case IDs with complete, internally
+linked values, but copy all bound contract fields exactly. Every issued
+`source_ref_id` must appear in at least one risky branch:
+
+```json
+{{
+  "source_review": {{
+    "schema_version": 1,
+    "task_id": "{task.get('task_id', '')}",
+    "finding_id": "{source_contract.get('finding_id', '')}",
+    "source_contract_sha256": "{source_contract.get('source_contract_sha256', '')}",
+    "summary": "bounded explanation of the risky source behavior",
+    "source_refs": {json.dumps(source_ref_examples, indent=6, ensure_ascii=False)},
+    "risky_branches": {json.dumps(branch_examples, indent=6, ensure_ascii=False)},
+    "failure_hypotheses": {json.dumps(hypothesis_examples, indent=6, ensure_ascii=False)},
+    "test_enhancements": [{{
+      "enhancement_id": "enh_01",
+      "hypothesis_ids": ["hyp_01", "hyp_02"],
+      "case_ids": ["exact generated case_id values"],
+      "strategy": "test strategy",
+      "perturbations": ["parameter perturbation"],
+      "oracles": ["measurable oracle"]
+    }}]
+  }}
+}}
+```
 
 ## Model Prompt
 
@@ -270,21 +372,11 @@ def source_prompt(task: dict[str, Any], expected_output: str) -> str:
 
 ## Source Excerpt
 
-Path: `{source_excerpt.get("path", "")}`
-Lines: `{source_excerpt.get("start_line", 0)}-{source_excerpt.get("end_line", 0)}`
+{source_sections_text}
 
-```text
-{source_excerpt.get("text", "")}
-```
-
-## Optional Scanner Seed Draft
-
-Use this only as a review-required starting point.  Emit cluster_seed,
-attack_dsl, or needs_harness_extension when the seed does not fit the source.
-
-```json
-{seed_text}
-```
+The scanner's runnable seed draft is deliberately not included. Derive the
+branch analysis and test enhancement from the bound excerpt and finding rather
+than copying a heuristic recipe.
 """
 
 
@@ -298,6 +390,7 @@ def budget_record(prompt: str, max_chars: int) -> dict[str, Any]:
 
 
 def build_interface_prompts(args: argparse.Namespace, out_root: Path, tasks: list[dict[str, Any]]) -> None:
+    profile = PROFILE_SPECS[args.profile]
     forms_dir = repo_path(args.forms_dir)
     manifest_path = repo_path(args.manifest) if args.manifest else forms_dir / "00_manifest.json"
     manifest = read_json(manifest_path)
@@ -322,6 +415,11 @@ def build_interface_prompts(args: argparse.Namespace, out_root: Path, tasks: lis
             {
                 "task_type": "interface_form",
                 "task_id": request_id,
+                "provider_profile": profile.name,
+                "provider_profile_category": profile.category,
+                "data_classification": "public_interface",
+                "allowed_profile_categories": [profile.category],
+                "review_required_before_execute": True,
                 "request_id": request_id,
                 "form_path": repo_relative(form_path),
                 "prompt_path": repo_relative(prompt_path),
@@ -344,7 +442,11 @@ def build_interface_prompts(args: argparse.Namespace, out_root: Path, tasks: lis
 
 
 def build_source_prompts(args: argparse.Namespace, out_root: Path, tasks: list[dict[str, Any]]) -> None:
-    for index, task in enumerate(load_source_tasks(args), start=1):
+    profile = PROFILE_SPECS[args.profile]
+    source_tasks = load_source_tasks(args)
+    if profile.category != "intranet" and source_tasks:
+        raise ValueError("source prompt packs are restricted to the intranet provider profile")
+    for index, task in enumerate(source_tasks, start=1):
         task_id = str(task.get("task_id") or f"source_task_{index:04d}")
         expected_path = repo_path(args.source_output_root) / f"{safe_id(task_id)}.json"
         prompt_path = out_root / "prompts" / "source" / f"{index:04d}_{safe_id(task_id)}.md"
@@ -355,10 +457,18 @@ def build_source_prompts(args: argparse.Namespace, out_root: Path, tasks: list[d
             {
                 "task_type": "source_attack",
                 "task_id": task_id,
+                "provider_profile": profile.name,
+                "provider_profile_category": profile.category,
+                "data_classification": "proprietary_source",
+                "allowed_profile_categories": ["intranet"],
+                "review_required_before_execute": True,
                 "prompt_path": repo_relative(prompt_path),
                 "expected_output_path": repo_relative(expected_path),
                 "output_contract": contract_for(None, source_task=True),
                 "source_ref": task.get("source_ref"),
+                "source_excerpt_sha256": task.get("source_excerpt_sha256"),
+                "source_contract": task.get("source_contract"),
+                "host_source_bindings": task.get("host_source_bindings"),
                 "severity": finding.get("severity"),
                 "risk_family": finding.get("suggested_attack_family"),
                 "output_exists": expected_path.is_file(),

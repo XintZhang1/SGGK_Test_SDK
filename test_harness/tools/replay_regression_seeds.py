@@ -306,6 +306,13 @@ def classify_attempts(
         return "stable_same_failure"
     if matches:
         return "flaky_same_failure"
+    unobserved_failures = [
+        item
+        for item in failures
+        if str(item.get("match_reason") or "").endswith("_unobserved")
+    ]
+    if len(unobserved_failures) == len(failures):
+        return "unverified_failure" if len(failures) == len(attempts) else "flaky_unverified"
     return "changed_failure"
 
 

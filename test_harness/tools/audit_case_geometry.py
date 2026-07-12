@@ -4,7 +4,10 @@
 The preview screenshots are still the human-facing check. This tool adds a
 machine-readable pass over the same artifact reports: bbox-only geometry hashes,
 nearest target/tool bbox contact, and tolerance-band checks inferred from common
-variant names such as overlap_geom, exact, and gap_topo.
+variant names such as overlap_geom, exact, and gap_topo. Report bboxes may be
+inflated by the SDK's modeling tolerance, so their tolerance-family checks use
+the sibling ``exact`` variant as a baseline instead of claiming absolute input
+clearance. Exact plane-distance probes continue to use absolute checks.
 """
 
 from __future__ import annotations
@@ -341,6 +344,122 @@ def tolerance_ok(actual: float, expected: float, topo_tol: float, geom_tol: floa
     return abs(actual - expected) <= allowed, allowed
 
 
+def tolerance_family_key(name: str, token: str) -> str | None:
+    """Return the stable part of a tolerance-variant name.
+
+    Generated case ids end in ``_<variant>_<content hash>`` while DSL variants
+    commonly end directly in the variant. Keeping this parser deliberately
+    narrow prevents an unrelated occurrence of words such as ``exact`` from
+    merging independent cases into one comparison family.
+    """
+
+    stem = re.sub(r"_[0-9a-f]{8,64}$", "", name.strip().lower())
+    for suffix in (f"_{token}_tol", f"_{token}"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    if stem in {token, f"{token}_tol"}:
+        return ""
+    return None
+
+
+def apply_relative_tolerance_checks(
+    cases: list[dict[str, Any]],
+    topo_tol: float,
+    geom_tol: float,
+    slack: float,
+) -> None:
+    """Resolve report-bbox checks against each family's exact sibling.
+
+    The runner's report bbox is suitable for hashing and duplicate detection,
+    but it can be expanded by a modeling tolerance. Subtracting the exact
+    sibling's reported clearance cancels that common expansion and verifies the
+    generated gap/overlap delta without presenting the expanded bbox as exact.
+    """
+
+    buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for case in cases:
+        check = case.get("tolerance_check")
+        if not isinstance(check, dict) or check.get("mode") != "relative_family_pending":
+            continue
+        family = tolerance_family_key(as_str(case.get("variant_name")), as_str(check.get("token")))
+        if family is None:
+            check.update(
+                {
+                    "mode": "relative_to_exact_variant",
+                    "verification_status": "unverified",
+                    "reason": "variant_family_not_inferable",
+                    "ok": None,
+                }
+            )
+            continue
+        key = (
+            as_str(case.get("api")),
+            as_str(case.get("boolean_type")),
+            as_str(case.get("dsl_case")),
+            family,
+        )
+        buckets[key].append(case)
+
+    for family_cases in buckets.values():
+        baselines = [
+            case
+            for case in family_cases
+            if isinstance(case.get("tolerance_check"), dict)
+            and case["tolerance_check"].get("token") in {"exact", "flush"}
+            and isinstance(case.get("input_contact"), dict)
+        ]
+        baseline = baselines[0] if len(baselines) == 1 else None
+        for case in family_cases:
+            check = case["tolerance_check"]
+            check["mode"] = "relative_to_exact_variant"
+            if baseline is None:
+                check.update(
+                    {
+                        "verification_status": "unverified",
+                        "reason": "missing_exact_baseline" if not baselines else "ambiguous_exact_baseline",
+                        "ok": None,
+                    }
+                )
+                continue
+            contact = case.get("input_contact")
+            baseline_contact = baseline.get("input_contact")
+            if not isinstance(contact, dict) or not isinstance(baseline_contact, dict):
+                check.update(
+                    {
+                        "verification_status": "unverified",
+                        "reason": "missing_input_contact",
+                        "ok": None,
+                    }
+                )
+                continue
+            actual_axis = contact.get("signed_axis")
+            baseline_axis = baseline_contact.get("signed_axis")
+            if actual_axis != baseline_axis:
+                check.update(
+                    {
+                        "baseline_case_id": baseline.get("case_id"),
+                        "baseline_signed_clearance": baseline_contact.get("signed_clearance"),
+                        "verification_status": "mismatch",
+                        "reason": "nearest_contact_axis_changed",
+                        "ok": False,
+                    }
+                )
+                continue
+            delta = float(contact["signed_clearance"]) - float(baseline_contact["signed_clearance"])
+            ok, allowed = tolerance_ok(delta, float(check["expected_signed_clearance"]), topo_tol, geom_tol, slack)
+            check.update(
+                {
+                    "baseline_case_id": baseline.get("case_id"),
+                    "baseline_signed_clearance": baseline_contact.get("signed_clearance"),
+                    "actual_offset_from_baseline": delta,
+                    "evaluated_signed_clearance": delta,
+                    "allowed_abs_error": allowed,
+                    "verification_status": "verified" if ok else "mismatch",
+                    "ok": ok,
+                }
+            )
+
+
 def read_case(
     case_dir: Path,
     round_digits: int,
@@ -391,12 +510,26 @@ def read_case(
     inferred = expected_signed_clearance(name, topo_tol, geom_tol)
     tolerance_check = None
     if inferred is not None and contact is not None:
-        ok, allowed = tolerance_ok(float(contact["signed_clearance"]), float(inferred["expected"]), topo_tol, geom_tol, slack)
+        exact_inputs = all(source == "plane_distance_extrema" for source in input_bbox_sources.values())
+        ok: bool | None = None
+        allowed: float | None = None
+        mode = "relative_family_pending"
+        if exact_inputs:
+            ok, allowed = tolerance_ok(
+                float(contact["signed_clearance"]),
+                float(inferred["expected"]),
+                topo_tol,
+                geom_tol,
+                slack,
+            )
+            mode = "absolute_exact_bbox"
         tolerance_check = {
             "token": inferred["token"],
+            "mode": mode,
             "expected_signed_clearance": inferred["expected"],
             "actual_signed_clearance": contact["signed_clearance"],
             "allowed_abs_error": allowed,
+            "verification_status": "verified" if ok is True else ("mismatch" if ok is False else "pending"),
             "ok": ok,
         }
 
@@ -465,6 +598,7 @@ def markdown_report(summary: dict[str, Any]) -> str:
     lines.append(f"- Same-boolean duplicate input groups: {len(summary['same_boolean_duplicate_input_groups'])}")
     lines.append(f"- Full geometry duplicate groups: {len(summary['duplicate_geometry_groups'])}")
     lines.append(f"- Tolerance mismatches: {len(summary['tolerance_mismatches'])}")
+    lines.append(f"- Tolerance checks unverified: {len(summary['tolerance_unverified'])}")
     exact = summary.get("exact_input_bbox")
     if isinstance(exact, dict):
         lines.append(f"- Exact input bbox: `{exact.get('enabled')}`")
@@ -480,7 +614,7 @@ def markdown_report(summary: dict[str, Any]) -> str:
                     case_id=item.get("case_id"),
                     variant=item.get("variant_name"),
                     expected=check.get("expected_signed_clearance"),
-                    actual=check.get("actual_signed_clearance"),
+                    actual=check.get("evaluated_signed_clearance", check.get("actual_signed_clearance")),
                     axis=(item.get("input_contact") or {}).get("signed_axis"),
                 )
             )
@@ -553,9 +687,15 @@ def main() -> int:
         )
         for case_dir in cases_dirs
     ]
+    apply_relative_tolerance_checks(cases, args.topo_tol, args.geom_tol, args.expectation_slack)
     tolerance_mismatches = [
         case for case in cases
         if isinstance(case.get("tolerance_check"), dict) and case["tolerance_check"].get("ok") is False
+    ]
+    tolerance_unverified = [
+        case for case in cases
+        if isinstance(case.get("tolerance_check"), dict)
+        and case["tolerance_check"].get("verification_status") == "unverified"
     ]
     duplicate_geometry = duplicate_groups(cases, "geometry_hash", same_boolean_only=False)
     same_boolean_duplicate_inputs = duplicate_groups(cases, "input_hash", same_boolean_only=True)
@@ -575,6 +715,7 @@ def main() -> int:
         "duplicate_geometry_groups": duplicate_geometry,
         "same_boolean_duplicate_input_groups": same_boolean_duplicate_inputs,
         "tolerance_mismatches": tolerance_mismatches,
+        "tolerance_unverified": tolerance_unverified,
     }
 
     write_json(out_dir / "geometry_audit.json", summary)

@@ -45,9 +45,21 @@ from test_harness.authoring_gateway.gateway import (  # noqa: E402
     AuthoringGateway,
     GatewayError,
     TaskSpec,
+    is_source_task_type,
     load_manifest_tasks,
 )
+from test_harness.authoring_gateway.source_evidence import (  # noqa: E402
+    generated_case_ids,
+    sha256_json,
+    validate_source_review,
+    verify_current_source,
+)
 from test_harness.tools.failure_predicate import signatures_match  # noqa: E402
+from test_harness.tools.generated_artifact_review import (  # noqa: E402
+    ReviewPacketError,
+    verify_review_attestation,
+    write_review_packet,
+)
 
 
 class PipelineError(ValueError):
@@ -397,6 +409,11 @@ class PipelineTaskResult:
     message_calls: int = 0
     accepted_path: str = ""
     provenance_path: str = ""
+    review_packet_path: str = ""
+    review_packet_sha256: str = ""
+    review_report_path: str = ""
+    review_report_sha256: str = ""
+    review_status: str = ""
     staging_path: str = ""
     candidate_count: int = 1
     selected_candidate_id: str = ""
@@ -420,6 +437,11 @@ class PipelineTaskResult:
             "message_calls": self.message_calls,
             "accepted_path": self.accepted_path,
             "provenance_path": self.provenance_path,
+            "review_packet_path": self.review_packet_path,
+            "review_packet_sha256": self.review_packet_sha256,
+            "review_report_path": self.review_report_path,
+            "review_report_sha256": self.review_report_sha256,
+            "review_status": self.review_status,
             "staging_path": self.staging_path,
             "candidate_count": self.candidate_count,
             "selected_candidate_id": self.selected_candidate_id,
@@ -597,7 +619,85 @@ class FixedGateRunner:
                     "Return a kind declared by the task output_contract.",
                 )
             )
+        if is_source_task_type(task.task_type):
+            self._gate_source_review(result, normalized_path, task, gate_root)
         return self._finish(result, gate_root)
+
+    def _gate_source_review(
+        self,
+        result: FixedGateResult,
+        normalized_path: Path,
+        task: TaskSpec,
+        gate_root: Path,
+    ) -> None:
+        contract = task.metadata.get("source_contract")
+        bindings = task.metadata.get("host_source_bindings")
+        normalized = _read_json(normalized_path) if normalized_path.is_file() else {}
+        review = normalized.get("source_review") if isinstance(normalized, dict) else None
+        errors: list[str] = []
+        current_refs: list[dict[str, Any]] = []
+        case_ids: list[str] = []
+        if not isinstance(contract, dict):
+            errors.append("source task metadata is missing the host-issued source_contract")
+        if not isinstance(bindings, list):
+            errors.append("source task metadata is missing host_source_bindings")
+        if isinstance(contract, dict) and isinstance(bindings, list):
+            current_errors, current_refs = verify_current_source(contract, bindings)
+            errors.extend(current_errors)
+        if not isinstance(review, dict):
+            errors.append("source output must include source_review for every candidate kind")
+        case_source = normalized
+        if result.kind == "cluster_seed":
+            expanded_raw = result.artifacts.get("expanded_cluster_dsl", "")
+            try:
+                expanded_path = _inside(self.repo_root, expanded_raw, label="expanded_cluster_dsl")
+                case_source = _read_json(expanded_path) if expanded_path.is_file() else {}
+            except (PipelineError, OSError, json.JSONDecodeError):
+                case_source = {}
+        if isinstance(case_source, dict):
+            case_ids = generated_case_ids(result.kind, case_source)
+        if not case_ids:
+            errors.append("source-guided output must expose at least one stable generated case ID")
+        if isinstance(review, dict) and isinstance(contract, dict):
+            errors.extend(validate_source_review(review, contract, case_ids))
+
+        for message in errors:
+            result.diagnostics.append(
+                _diagnostic(
+                    "SOURCE_REVIEW_BINDING_FAILED",
+                    "$.source_review",
+                    message,
+                    (
+                        "Copy the host-issued task/finding/contract/reference values exactly and "
+                        "connect every branch, hypothesis, enhancement, and generated case by ID."
+                    ),
+                )
+            )
+        if errors:
+            result.ok = False
+        attestation = {
+            "schema_version": 1,
+            "ok": not errors,
+            "task_id": task.task_id,
+            "source_contract_sha256": (
+                contract.get("source_contract_sha256") if isinstance(contract, dict) else ""
+            ),
+            "source_review_sha256": sha256_json(review) if isinstance(review, dict) else "",
+            "validated_source_refs": current_refs,
+            "generated_case_ids": case_ids,
+            "error_count": len(errors),
+            "errors": errors,
+        }
+        attestation_path = gate_root / "source_review_attestation.json"
+        _write_json(attestation_path, attestation)
+        result.artifacts.update(
+            {
+                "source_review_attestation": _relative(self.repo_root, attestation_path),
+                "source_review_attestation_sha256": _sha256_bytes(attestation_path.read_bytes()),
+                "source_contract_sha256": str(attestation["source_contract_sha256"] or ""),
+                "source_review_sha256": str(attestation["source_review_sha256"] or ""),
+            }
+        )
 
     def _finish(self, result: FixedGateResult, gate_root: Path) -> FixedGateResult:
         result.ok = result.ok and not any(item.get("severity") == "error" for item in result.diagnostics)
@@ -756,7 +856,7 @@ class FixedGateRunner:
                     "API_ADAPTATION_CONTRACT_MISSING",
                     "$.task.metadata.adaptation_contract",
                     message,
-                    "Build this task with build_api_adaptation_task.py; do not author plugin tasks manually.",
+                    "Only the review-session resolver may issue a discovery-bound adaptation contract.",
                 )
             )
             _write_json(identity_report_path, {"schema_version": 1, "ok": False, "errors": [message]})
@@ -858,7 +958,6 @@ class MessageHarnessPipeline:
         max_repair_prompt_chars: int = 220_000,
         enable_bug_investigation: bool = False,
         bug_source_roots: Sequence[str | Path] = (),
-        allow_external_source_evidence: bool = False,
         bug_investigator_roles: Sequence[str] = (),
         bug_investigator_parallelism: int = 4,
         bug_investigation_max_rounds: int = 16,
@@ -898,7 +997,6 @@ class MessageHarnessPipeline:
         missing_source_roots = [str(path) for path in self.bug_source_roots if not path.is_dir()]
         if missing_source_roots:
             raise PipelineError(f"bug source roots do not exist: {missing_source_roots}")
-        self.allow_external_source_evidence = allow_external_source_evidence
         self.bug_investigator_roles = list(bug_investigator_roles)
         unknown_bug_roles = sorted(set(self.bug_investigator_roles) - BUG_INVESTIGATOR_ROLES)
         if unknown_bug_roles:
@@ -993,6 +1091,8 @@ Previous candidate:
             for key in ("run_id", "prompt_sha256", "message_content_sha256", "candidate_sha256")
         ):
             return False
+        if provenance.get("task_prompt_sha256") != _sha256_bytes(task.prompt.encode("utf-8")):
+            return False
         acceptance = provenance.get("acceptance")
         if acceptance != {
             "authoring_accepted": True,
@@ -1013,6 +1113,63 @@ Previous candidate:
         fixed_gate = provenance.get("fixed_gate") if isinstance(provenance, dict) else None
         if not isinstance(fixed_gate, dict) or fixed_gate.get("ok") is not True:
             return False
+        review = provenance.get("generated_artifact_review")
+        if not isinstance(review, dict):
+            return False
+        review_ok, _review_reason = verify_review_attestation(
+            self.repo_root,
+            review,
+            expected_candidate_sha256=str(provenance.get("candidate_sha256") or ""),
+        )
+        if not review_ok:
+            return False
+        if is_source_task_type(task.task_type):
+            if self.config.profile.category != "intranet":
+                return False
+            contract = task.metadata.get("source_contract")
+            bindings = task.metadata.get("host_source_bindings")
+            source_attestation = provenance.get("source_review_attestation")
+            if (
+                not isinstance(contract, dict)
+                or not isinstance(bindings, list)
+                or not isinstance(source_attestation, dict)
+                or source_attestation.get("ok") is not True
+            ):
+                return False
+            current_errors, current_refs = verify_current_source(contract, bindings)
+            if current_errors:
+                return False
+            attestation_path_raw = source_attestation.get("path")
+            try:
+                attestation_path = _inside(
+                    self.repo_root,
+                    str(attestation_path_raw or ""),
+                    label="source_review_attestation.path",
+                )
+                if (
+                    not attestation_path.is_file()
+                    or _sha256_bytes(attestation_path.read_bytes())
+                    != source_attestation.get("sha256")
+                ):
+                    return False
+                attestation = _read_json(attestation_path)
+            except (PipelineError, OSError, json.JSONDecodeError):
+                return False
+            if not isinstance(attestation, dict) or attestation.get("ok") is not True:
+                return False
+            if attestation.get("task_id") != task.task_id:
+                return False
+            if attestation.get("validated_source_refs") != current_refs:
+                return False
+            if (
+                attestation.get("source_contract_sha256")
+                != contract.get("source_contract_sha256")
+                or source_attestation.get("source_contract_sha256")
+                != contract.get("source_contract_sha256")
+                or source_attestation.get("source_review_sha256")
+                != attestation.get("source_review_sha256")
+            ):
+                return False
         report_path_raw = fixed_gate.get("report_path")
         if not isinstance(report_path_raw, str) or not report_path_raw:
             return False
@@ -1027,6 +1184,138 @@ Previous candidate:
             and report.get("kind") == fixed_gate.get("kind")
             and report.get("normalized_path") == fixed_gate.get("normalized_path")
         )
+
+    def _execution_review_required(
+        self,
+        task: TaskSpec,
+        provenance_path: Path,
+    ) -> bool:
+        """All Message-authored candidates require session-host approval."""
+
+        del task, provenance_path
+        return True
+
+    def _execution_approval_error(
+        self,
+        task: TaskSpec,
+        output_path: Path,
+        provenance_path: Path,
+        runner: str | Path,
+    ) -> str:
+        """Verify the host approval bound to an orchestrated review round.
+
+        A model decision is never execution authority.  The approval file is
+        emitted by the session host only after a natural-language comment has
+        been interpreted as an explicit approval.  Direct callers of this
+        lower-level pipeline therefore cannot bypass review with ``--execute``.
+        """
+
+        provenance = _read_json(provenance_path) if provenance_path.is_file() else {}
+        if not self._execution_review_required(task, provenance_path):
+            return ""
+        raw_path = task.metadata.get("approval_attestation_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return "reviewed session task requires a host execution approval attestation"
+        try:
+            approval_path = _inside(self.repo_root, raw_path, label="approval_attestation_path")
+            artifacts_root = (self.repo_root / "artifacts").resolve()
+            approval_path.relative_to(artifacts_root)
+        except (PipelineError, ValueError):
+            return "execution approval attestation must stay under repository artifacts/"
+        if not approval_path.is_file():
+            return "execution approval attestation is missing"
+        try:
+            approval = _read_json(approval_path)
+            candidate = _read_json(output_path)
+        except (OSError, json.JSONDecodeError):
+            return "execution approval or accepted candidate is unreadable"
+        if not isinstance(approval, dict) or not isinstance(candidate, dict):
+            return "execution approval and accepted candidate must be JSON objects"
+        unsigned = {key: value for key, value in approval.items() if key != "approval_sha256"}
+        if approval.get("approval_sha256") != _sha256_bytes(canonical_json_bytes(unsigned)):
+            return "execution approval self-hash mismatch"
+        if (
+            approval.get("schema_version") != 1
+            or approval.get("record_type") != "execution_approval"
+            or approval.get("decision") != "approved_for_execution"
+        ):
+            return "execution approval has an invalid fixed decision contract"
+        if approval.get("task_id") != task.task_id:
+            return "execution approval task identity mismatch"
+        candidate_sha256 = _sha256_bytes(canonical_json_bytes(candidate))
+        if approval.get("candidate_sha256") != candidate_sha256:
+            return "execution approval candidate hash mismatch"
+        if task.metadata.get("approved_candidate_sha256") != candidate_sha256:
+            return "execution manifest is not bound to the approved candidate"
+        round_sha256 = task.metadata.get("approved_round_sha256")
+        if not isinstance(round_sha256, str) or len(round_sha256) != 64:
+            return "execution manifest has no valid approved round hash"
+        if approval.get("round_sha256") != round_sha256:
+            return "execution approval round hash mismatch"
+        if approval.get("task_prompt_sha256") != _sha256_bytes(task.prompt.encode("utf-8")):
+            return "execution approval prompt hash mismatch"
+        review = provenance.get("generated_artifact_review") if isinstance(provenance, dict) else {}
+        if not isinstance(review, dict) or approval.get("review_packet_sha256") != review.get(
+            "review_packet_sha256"
+        ):
+            return "execution approval review packet hash mismatch"
+        for path_key, hash_key, canonical in (
+            ("comment_path", "comment_sha256", False),
+            ("interpretation_path", "interpretation_sha256", True),
+        ):
+            raw_evidence_path = approval.get(path_key)
+            expected_evidence_hash = approval.get(hash_key)
+            if not isinstance(raw_evidence_path, str) or not raw_evidence_path:
+                return f"execution approval has no valid {path_key}"
+            if not isinstance(expected_evidence_hash, str) or len(expected_evidence_hash) != 64:
+                return f"execution approval has no valid {hash_key}"
+            try:
+                evidence_path = _inside(
+                    self.repo_root,
+                    raw_evidence_path,
+                    label=path_key,
+                )
+                evidence_path.relative_to((self.repo_root / "artifacts").resolve())
+            except (PipelineError, ValueError):
+                return f"execution approval {path_key} must stay under artifacts/"
+            if not evidence_path.is_file():
+                return f"execution approval evidence is missing: {path_key}"
+            if canonical:
+                try:
+                    evidence = _read_json(evidence_path)
+                except (OSError, json.JSONDecodeError):
+                    return "execution comment interpretation is unreadable"
+                actual_evidence_hash = (
+                    _sha256_bytes(canonical_json_bytes(evidence))
+                    if isinstance(evidence, dict)
+                    else ""
+                )
+                decision = evidence.get("decision") if isinstance(evidence, dict) else {}
+                if (
+                    not isinstance(decision, dict)
+                    or decision.get("decision") != "approve"
+                    or evidence.get("record_type") != "review_comment_decision"
+                    or evidence.get("status") != "model_interpreted"
+                    or evidence.get("qwen_called") is not True
+                ):
+                    return "execution comment interpretation is not a validated Qwen approval decision"
+            else:
+                actual_evidence_hash = _sha256_bytes(evidence_path.read_bytes())
+            if actual_evidence_hash != expected_evidence_hash:
+                return f"execution approval {hash_key} mismatch"
+        runner_hash = str(approval.get("runner_sha256") or "")
+        if runner:
+            try:
+                runner_path = _inside(self.repo_root, runner, label="runner")
+            except PipelineError:
+                return "approved runner escapes the repository"
+            if not runner_path.is_file():
+                return "approved runner is missing"
+            if not runner_hash or _sha256_bytes(runner_path.read_bytes()) != runner_hash:
+                return "runner bytes do not match the execution approval"
+        elif runner_hash:
+            return "execution approval names runner bytes but execution omitted the runner"
+        return ""
 
     def _promote_accepted(
         self,
@@ -1046,6 +1335,7 @@ Previous candidate:
         selection_reason: str,
         candidate_pool: Sequence[Mapping[str, Any]],
         selected_execution: ExecutionResult,
+        generated_review: Mapping[str, Any],
         overwrite: bool,
     ) -> None:
         if not overwrite and (output_path.exists() or provenance_path.exists()):
@@ -1082,6 +1372,7 @@ Previous candidate:
                 "saved_at": _utc_iso(),
                 "run_id": run_id,
                 "candidate_sha256": candidate_hash,
+                "task_prompt_sha256": _sha256_bytes(task.prompt.encode("utf-8")),
                 "api_adaptation": (
                     {
                         "identity_bound": True,
@@ -1143,6 +1434,28 @@ Previous candidate:
                         "artifacts": dict(selected_execution.artifacts),
                     },
                 },
+                "generated_artifact_review": dict(generated_review),
+                "execution_approval_policy": {
+                    "required": True,
+                    "harness_session_id": str(task.metadata.get("harness_session_id") or ""),
+                    "harness_round_number": int(task.metadata.get("harness_round_number") or 0),
+                    "approval_authority": "fixed_harness_session_host",
+                },
+                "source_review_attestation": (
+                    {
+                        "ok": True,
+                        "path": gate.artifacts.get("source_review_attestation", ""),
+                        "sha256": gate.artifacts.get("source_review_attestation_sha256", ""),
+                        "source_contract_sha256": gate.artifacts.get(
+                            "source_contract_sha256", ""
+                        ),
+                        "source_review_sha256": gate.artifacts.get(
+                            "source_review_sha256", ""
+                        ),
+                    }
+                    if is_source_task_type(task.task_type)
+                    else None
+                ),
                 "boundary": {
                     "model_calls": True,
                     "direct_api_calls": True,
@@ -1261,7 +1574,10 @@ Previous candidate:
                 "candidate_id": "existing_accepted",
                 "role_id": "revalidation",
                 "candidate_count": 0,
-                "selection_reason": "existing Message API candidate revalidated against the current fixed gate and selection goal",
+                "selection_reason": (
+                    "existing Message API candidate revalidated against the current fixed gate "
+                    "and selection goal"
+                ),
                 "independent_branches": False,
                 "execution": {
                     "requested": execution.requested,
@@ -1296,6 +1612,16 @@ Previous candidate:
                 },
             }
         )
+        if is_source_task_type(task.task_type):
+            provenance["source_review_attestation"] = {
+                "ok": True,
+                "path": gate.artifacts.get("source_review_attestation", ""),
+                "sha256": gate.artifacts.get("source_review_attestation_sha256", ""),
+                "source_contract_sha256": gate.artifacts.get(
+                    "source_contract_sha256", ""
+                ),
+                "source_review_sha256": gate.artifacts.get("source_review_sha256", ""),
+            }
         if gate.kind == "api_plugin_candidate" and selection_goal == "adapter_build_pass":
             if not self._plugin_execution_attested(execution):
                 raise PipelineError("API plugin execution lacks a complete hash-bound build attestation")
@@ -1694,6 +2020,28 @@ Previous candidate:
             candidate_count=candidate_count,
             selection_policy=resolved_selection_goal,
         )
+        if execute and self._execution_review_required(task, provenance_path):
+            if overwrite:
+                result.error = (
+                    "reviewed session tasks cannot execute with --overwrite; approval is bound "
+                    "to the unchanged fixed-gate candidate"
+                )
+                self._write_task_summary(task_root, result)
+                return result
+            if not output_path.is_file() or not provenance_path.is_file():
+                result.error = (
+                    "reviewed session tasks cannot generate and execute in one step; "
+                    "generate a fixed-gate review round, submit a comment, and bind host approval first"
+                )
+                self._write_task_summary(task_root, result)
+                return result
+        if is_source_task_type(task.task_type) and self.config.profile.category != "intranet":
+            result.error = (
+                "source_attack tasks contain source excerpts and are restricted to the intranet profile; "
+                "external simulator profiles are forbidden"
+            )
+            self._write_task_summary(task_root, result)
+            return result
         if output_path.exists() or provenance_path.exists():
             if not overwrite and self._accepted_pair_ok(task, output_path, provenance_path):
                 result.skipped = True
@@ -1736,16 +2084,30 @@ Previous candidate:
                     result.error = "existing accepted output no longer matches its recorded fixed-gate identity"
                     self._write_task_summary(task_root, result)
                     return result
-                result.execution = self._execute(
-                    task,
-                    existing_gate,
-                    task_root,
-                    execute=execute,
-                    runner=runner,
-                    jobs=jobs,
-                    timeout_seconds=timeout_seconds,
-                    campaign_dataset=campaign_dataset,
+                approval_error = (
+                    self._execution_approval_error(task, output_path, provenance_path, runner)
+                    if execute
+                    else ""
                 )
+                if approval_error:
+                    result.execution = ExecutionResult(
+                        True,
+                        False,
+                        "approval_required",
+                        error=approval_error,
+                        candidate_cause="missing_or_stale_execution_approval",
+                    )
+                else:
+                    result.execution = self._execute(
+                        task,
+                        existing_gate,
+                        task_root,
+                        execute=execute,
+                        runner=runner,
+                        jobs=jobs,
+                        timeout_seconds=timeout_seconds,
+                        campaign_dataset=campaign_dataset,
+                    )
                 selection_ok = False
                 selection_error = ""
                 if resolved_selection_goal == "fixed_gate_only":
@@ -1758,10 +2120,14 @@ Previous candidate:
                         existing_gate.kind == "api_plugin_candidate"
                         and self._plugin_execution_attested(result.execution)
                     )
-                    selection_error = "existing accepted output did not pass the API plugin build/runtime gate"
+                    selection_error = result.execution.error or (
+                        "existing accepted output did not pass the API plugin build/runtime gate"
+                    )
                 elif resolved_selection_goal == "must_pass_execution":
                     selection_ok = result.execution.requested and result.execution.ok
-                    selection_error = "existing accepted output did not pass requested SDK execution"
+                    selection_error = result.execution.error or (
+                        "existing accepted output did not pass requested SDK execution"
+                    )
                 elif resolved_selection_goal == "must_reproduce_target_signature":
                     signature_match, stable_replays = self._matches_target_signature(
                         result.execution,
@@ -1770,7 +2136,7 @@ Previous candidate:
                     selection_ok = (
                         result.execution.requested and signature_match and stable_replays > 0
                     )
-                    selection_error = (
+                    selection_error = result.execution.error or (
                         "existing accepted output did not stably reproduce the requested immutable signature"
                     )
                 if selection_ok:
@@ -1891,6 +2257,30 @@ Previous candidate:
             label="candidate_provenance_path",
         )
         try:
+            result.accepted_path = _relative(self.repo_root, output_path)
+            result.provenance_path = _relative(self.repo_root, provenance_path)
+            result.execution = selected.execution
+            review_result = result.as_dict()
+            review_result["authoring_accepted"] = True
+            generated_review = write_review_packet(
+                repo_root=self.repo_root,
+                task_root=task_root,
+                task_context={
+                    "task_id": task.task_id,
+                    "task_type": task.task_type,
+                    "prompt_path": task.prompt_path,
+                    "manifest_path": task.manifest_path,
+                    "metadata": dict(task.metadata),
+                },
+                result=review_result,
+                candidate_path=candidate_path,
+                planned_output_path=result.accepted_path,
+            )
+            result.review_packet_path = str(generated_review["review_packet_path"])
+            result.review_packet_sha256 = str(generated_review["review_packet_sha256"])
+            result.review_report_path = str(generated_review["review_report_path"])
+            result.review_report_sha256 = str(generated_review["review_report_sha256"])
+            result.review_status = str(generated_review["review_status"])
             self._promote_accepted(
                 task,
                 candidate_path,
@@ -1918,14 +2308,13 @@ Previous candidate:
                     for branch in branches
                 ],
                 selected_execution=selected.execution,
+                generated_review=generated_review,
                 overwrite=overwrite,
             )
-        except (OSError, PipelineError, GatewayError, json.JSONDecodeError) as exc:
+        except (OSError, PipelineError, GatewayError, ReviewPacketError, json.JSONDecodeError) as exc:
             result.error = f"accepted promotion failed: {exc}"
             self._write_task_summary(task_root, result)
             return result
-        result.accepted_path = _relative(self.repo_root, output_path)
-        result.provenance_path = _relative(self.repo_root, provenance_path)
         result.authoring_accepted = True
         result.execution = selected.execution
         # A target-signature reproducer is intentionally a failing SDK/oracle
@@ -2246,8 +2635,6 @@ Previous candidate:
                     investigation_argv.extend(["--source-root", str(source_root)])
                 for role_id in self.bug_investigator_roles:
                     investigation_argv.extend(["--role", role_id])
-                if self.allow_external_source_evidence:
-                    investigation_argv.append("--allow-external-source-evidence")
                 investigation_command = self.gates._run(  # noqa: SLF001
                     "run_bug_investigation",
                     investigation_argv,
@@ -2518,7 +2905,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tokens",
         type=int,
         default=0,
-        help="Candidate output budget; default 32768 for intranet and 8192 for siliconflow-test",
+        help="Candidate output budget; default 32768 for every Message API endpoint profile",
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--max-contract-repairs", type=int, default=1)
@@ -2527,7 +2914,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-count",
         type=int,
         default=0,
-        help="Independent authoring subagents per task; default is 3 for intranet and 1 for siliconflow-test",
+        help="Independent authoring subagents per task; default is 3 for every endpoint profile",
     )
     parser.add_argument(
         "--candidate-parallelism",
@@ -2578,11 +2965,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Trusted read-only SDK source snapshot root for opaque source search tools",
     )
     parser.add_argument(
-        "--allow-external-source-evidence",
-        action="store_true",
-        help="Explicitly allow source excerpts with siliconflow-test; intranet permits configured roots by default",
-    )
-    parser.add_argument(
         "--bug-investigator-role",
         action="append",
         choices=sorted(BUG_INVESTIGATOR_ROLES),
@@ -2595,7 +2977,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--bug-investigation-max-tokens",
         type=int,
         default=0,
-        help="Per-investigator output budget; default 32768 for intranet and 8192 for siliconflow-test",
+        help="Per-investigator output budget; default 32768 for every endpoint profile",
     )
     parser.add_argument(
         "--reduce-bug-candidates",
@@ -2619,10 +3001,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_retry_delay_seconds=args.max_retry_delay,
             response_bytes_limit=args.response_bytes_limit,
         )
-        authoring_max_tokens = args.max_tokens or (32_768 if args.profile == "intranet" else 8_192)
-        investigation_max_tokens = args.bug_investigation_max_tokens or (
-            32_768 if args.profile == "intranet" else 8_192
-        )
+        authoring_max_tokens = args.max_tokens or 32_768
+        investigation_max_tokens = args.bug_investigation_max_tokens or 32_768
         if authoring_max_tokens <= 0 or investigation_max_tokens <= 0:
             raise PipelineError("Message API token budgets must be positive")
         options = CompletionOptions(
@@ -2632,7 +3012,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             thinking_mode=args.thinking_mode,
             seed=args.seed,
         )
-        candidate_count = args.candidate_count or (3 if args.profile == "intranet" else 1)
+        candidate_count = args.candidate_count or 3
         candidate_parallelism = args.candidate_parallelism or min(candidate_count, 3)
         target_failure_signature: dict[str, Any] = {}
         if args.target_failure_signature:
@@ -2655,7 +3035,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             gate_timeout_seconds=args.gate_timeout,
             enable_bug_investigation=args.analyze_bugs,
             bug_source_roots=args.bug_source_root,
-            allow_external_source_evidence=args.allow_external_source_evidence,
             bug_investigator_roles=args.bug_investigator_role,
             bug_investigator_parallelism=args.bug_investigator_parallelism,
             bug_investigation_max_rounds=args.bug_investigation_max_rounds,

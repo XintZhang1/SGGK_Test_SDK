@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SGGK Generated Artifact Review Packet",
+  "$defs": {
+    "stableId": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "finding_id",
+        "source_contract_sha256",
+        "summary",
+        "source_refs",
+        "risky_branches",
+        "failure_hypotheses",
+        "test_enhancements"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "task_id": {"$ref": "#/$defs/stableId"},
+        "finding_id": {"type": "string"},
+        "source_contract_sha256": {"$ref": "#/$defs/hash"},
+        "summary": {"type": "string", "minLength": 20},
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_ref_id", "line_start", "line_end", "content_sha256"],
+            "properties": {
+              "source_ref_id": {"$ref": "#/$defs/stableId"},
+              "line_start": {"type": "integer", "minimum": 1},
+              "line_end": {"type": "integer", "minimum": 1},
+              "content_sha256": {"$ref": "#/$defs/hash"}
+            }
+          }
+        },
+        "risky_branches": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["branch_id", "source_ref_ids", "condition", "risk"],
+            "properties": {
+              "branch_id": {"$ref": "#/$defs/stableId"},
+              "source_ref_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}},
+              "condition": {"type": "string", "minLength": 8},
+              "risk": {"type": "string", "minLength": 8}
+            }
+          }
+        },
+        "failure_hypotheses": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hypothesis_id", "branch_ids", "trigger", "observable_failure"],
+            "properties": {
+              "hypothesis_id": {"$ref": "#/$defs/stableId"},
+              "branch_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}},
+              "trigger": {"type": "string", "minLength": 8},
+              "observable_failure": {"type": "string", "minLength": 8}
+            }
+          }
+        },
+        "test_enhancements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enhancement_id", "hypothesis_ids", "case_ids", "strategy", "perturbations", "oracles"],
+            "properties": {
+              "enhancement_id": {"$ref": "#/$defs/stableId"},
+              "hypothesis_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}},
+              "case_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}},
+              "strategy": {"type": "string", "minLength": 8},
+              "perturbations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+              "oracles": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "language",
+    "generated_at",
+    "task",
+    "generation",
+    "review_summary",
+    "source_review",
+    "cases",
+    "artifacts",
+    "machine_verification",
+    "review_workflow"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "language": {"const": "zh-CN"},
+    "generated_at": {"type": "string", "minLength": 1},
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "task_type", "target_api", "form_path", "prompt_path", "manifest_path"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "task_type": {"type": "string", "minLength": 1},
+        "target_api": {"type": "string"},
+        "form_path": {"type": "string"},
+        "prompt_path": {"type": "string"},
+        "manifest_path": {"type": "string"}
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "profile",
+        "model",
+        "output_kind",
+        "candidate_id",
+        "role_id",
+        "selection_policy",
+        "candidate_sha256",
+        "prompt_sha256",
+        "message_content_sha256"
+      ],
+      "properties": {
+        "run_id": {"type": "string"},
+        "profile": {"type": "string"},
+        "model": {"type": "string"},
+        "output_kind": {"type": "string"},
+        "candidate_id": {"type": "string"},
+        "role_id": {"type": "string"},
+        "selection_policy": {"type": "string"},
+        "candidate_sha256": {"type": "string"},
+        "prompt_sha256": {"type": "string"},
+        "message_content_sha256": {"type": "string"}
+      }
+    },
+    "review_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose_zh_cn", "input_summary_zh_cn", "expected_behavior_zh_cn", "risk_summary_zh_cn", "oracles", "source_refs"],
+      "properties": {
+        "purpose_zh_cn": {"type": "string", "minLength": 1},
+        "input_summary_zh_cn": {"type": "string", "minLength": 1},
+        "expected_behavior_zh_cn": {"type": "string", "minLength": 1},
+        "risk_summary_zh_cn": {"type": "string", "minLength": 1},
+        "oracles": {"type": "array", "items": {"type": "string"}},
+        "source_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "source_review": {
+      "oneOf": [
+        {"type": "object", "maxProperties": 0},
+        {"$ref": "#/$defs/sourceReview"}
+      ]
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["case_id", "api", "input_summary_zh_cn", "oracle_summary_zh_cn"]
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "source_path", "exists", "size_bytes", "sha256"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "source_path": {"type": "string"},
+          "exists": {"type": "boolean"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string"}
+        }
+      }
+    },
+    "machine_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authoring_accepted", "fixed_gate_ok", "execution_requested", "execution_ok", "execution_status"],
+      "properties": {
+        "authoring_accepted": {"type": "boolean"},
+        "fixed_gate_ok": {"type": "boolean"},
+        "execution_requested": {"type": "boolean"},
+        "execution_ok": {"type": "boolean"},
+        "execution_status": {"type": "string"}
+      }
+    },
+    "review_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "managed_by", "user_editable"],
+      "properties": {
+        "status": {"const": "awaiting_natural_language_comment"},
+        "managed_by": {"const": "harness_session_orchestrator"},
+        "user_editable": {"const": false}
+      }
+    }
+  }
+}

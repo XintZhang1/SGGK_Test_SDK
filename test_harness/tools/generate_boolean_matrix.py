@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate OCC-style flat boolean attack recipes for the SGGK harness."""
+"""Generate flat boolean attack recipes for the SGGK harness."""
 
 from __future__ import annotations
 
