@@ -1,0 +1,643 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "confusion_tol": 0.000001,
+    "max_model_size": 500000,
+    "tau": "2 * pi",
+    "roundtrip_abs_tol": 0.01,
+    "roundtrip_rel_tol": 0.00001
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "modeling_tol": "topo_tol",
+    "max_model_size": "max_model_size",
+    "check_valid": true,
+    "topo_track": false,
+    "non_destructive": true
+  },
+  "cases": [
+    {
+      "case_id": "source_pattern_tolerance_clamp_near_tangent",
+      "source_ref": "generic-source-pattern:tolerance-clamp",
+      "hypothesis": "A tolerance clamp against a lower precision floor can flip a side-tangent boolean near exact contact.",
+      "target": {
+        "kind": "solid_cylinder",
+        "radius": 150,
+        "height": 260,
+        "angle": "tau"
+      },
+      "tool": {
+        "kind": "solid_cylinder",
+        "radius": 40,
+        "height": 300,
+        "angle": "tau",
+        "translate_x": 190,
+        "translate_y": 0,
+        "translate_z": -20
+      },
+      "expectations": {
+        "result_bodies": {
+          "min": 1
+        },
+        "require_property_calculations": true,
+        "require_finite_properties": true,
+        "require_nonnegative_length_area": true,
+        "require_nonnegative_volume": false,
+        "boolean_volume_relation": true,
+        "volume_relation_abs_tol": "topo_tol",
+        "volume_relation_rel_tol": 1e-8,
+        "sample_input_properties": true
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {
+              "suffix": "sub_overlap_topo",
+              "values": [
+                "SUBTRACTION",
+                "190.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_overlap_geom",
+              "values": [
+                "SUBTRACTION",
+                "190.0 - geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_exact",
+              "values": [
+                "SUBTRACTION",
+                190,
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_geom",
+              "values": [
+                "SUBTRACTION",
+                "190.0 + geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_topo",
+              "values": [
+                "SUBTRACTION",
+                "190.0 + topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_topo",
+              "values": [
+                "INTERSECTION",
+                "190.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_confusion",
+              "values": [
+                "INTERSECTION",
+                "190.0 - confusion_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_overlap_geom",
+              "values": [
+                "INTERSECTION",
+                "190.0 - geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_exact",
+              "values": [
+                "INTERSECTION",
+                190,
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_geom",
+              "values": [
+                "INTERSECTION",
+                "190.0 + geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_topo",
+              "values": [
+                "INTERSECTION",
+                "190.0 + topo_tol",
+                0
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "source_pattern_forwarded_tolerance_generated_side",
+      "source_ref": "generic-source-pattern:forwarded-tolerance",
+      "hypothesis": "Forwarding a user tolerance into intersection and same-domain stages can expose generated sweep/extrude side-face contact inconsistencies.",
+      "target": {
+        "chain": [
+          {
+            "id": "target_rect_profile",
+            "op": "rect_profile",
+            "length": 500,
+            "width": 260
+          },
+          {
+            "id": "target_rect_extrude",
+            "op": "extrude",
+            "height": 220,
+            "operation_tol": "topo_tol"
+          },
+          {
+            "id": "target_origin",
+            "op": "transform",
+            "translate": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {
+            "id": "tool_circle_profile",
+            "op": "circle_profile",
+            "radius": 40,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "tool_line_sweep",
+            "op": "sweep_line",
+            "height": 300,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "tool_side_tolerance_place",
+            "op": "transform",
+            "translate_x": 290,
+            "translate_y": 0,
+            "translate_z": -40
+          }
+        ]
+      },
+      "expectations": {
+        "result_bodies": {
+          "min": 1
+        },
+        "require_property_calculations": true,
+        "require_finite_properties": true,
+        "require_nonnegative_length_area": true,
+        "require_nonnegative_volume": false,
+        "boolean_volume_relation": true,
+        "volume_relation_abs_tol": "topo_tol",
+        "volume_relation_rel_tol": 1e-8,
+        "sample_input_properties": true
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {
+              "suffix": "sub_overlap_topo",
+              "values": [
+                "SUBTRACTION",
+                "290.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_overlap_geom",
+              "values": [
+                "SUBTRACTION",
+                "290.0 - geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_exact",
+              "values": [
+                "SUBTRACTION",
+                290,
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_geom",
+              "values": [
+                "SUBTRACTION",
+                "290.0 + geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_topo",
+              "values": [
+                "SUBTRACTION",
+                "290.0 + topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_topo",
+              "values": [
+                "INTERSECTION",
+                "290.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_geom",
+              "values": [
+                "INTERSECTION",
+                "290.0 - geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_exact",
+              "values": [
+                "INTERSECTION",
+                290,
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_geom",
+              "values": [
+                "INTERSECTION",
+                "290.0 + geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_topo",
+              "values": [
+                "INTERSECTION",
+                "290.0 + topo_tol",
+                0
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "source_pattern_tolerance_growth_preboolean_recut",
+      "source_ref": "generic-source-pattern:tolerance-growth",
+      "hypothesis": "Edge and vertex tolerance growth plus spatial-box expansion can make a generated pre-boolean split region recut differently across topology and geometry offsets.",
+      "target": {
+        "chain": [
+          {
+            "id": "pre_base_cylinder",
+            "op": "primitive",
+            "kind": "solid_cylinder",
+            "radius": 180,
+            "height": 360,
+            "angle": "tau"
+          },
+          {
+            "id": "pre_cut_boolean",
+            "op": "boolean",
+            "boolean_type": "SUBTRACTION",
+            "operation_tol": "topo_tol",
+            "tool": {
+              "chain": [
+                {
+                  "id": "pre_tool_wedge",
+                  "op": "primitive",
+                  "kind": "solid_wedge",
+                  "length": 140,
+                  "width": 240,
+                  "height": 200
+                },
+                {
+                  "id": "pre_tool_place",
+                  "op": "transform",
+                  "translate": [
+                    40,
+                    0,
+                    0
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {
+            "id": "recut_circle_profile",
+            "op": "circle_profile",
+            "radius": 45,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "recut_line_sweep",
+            "op": "sweep_line",
+            "height": 420,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "recut_tolerance_place",
+            "op": "transform",
+            "translate_x": 225,
+            "translate_y": 0,
+            "translate_z": -30
+          }
+        ]
+      },
+      "expectations": {
+        "result_bodies": {
+          "min": 1
+        },
+        "require_property_calculations": true,
+        "require_finite_properties": true,
+        "require_nonnegative_length_area": true,
+        "require_nonnegative_volume": false,
+        "boolean_volume_relation": true,
+        "volume_relation_abs_tol": "topo_tol",
+        "volume_relation_rel_tol": 1e-8,
+        "sample_input_properties": true
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {
+              "suffix": "sub_overlap_topo",
+              "values": [
+                "SUBTRACTION",
+                "225.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_overlap_geom",
+              "values": [
+                "SUBTRACTION",
+                "225.0 - geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_exact",
+              "values": [
+                "SUBTRACTION",
+                225,
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_geom",
+              "values": [
+                "SUBTRACTION",
+                "225.0 + geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_gap_topo",
+              "values": [
+                "SUBTRACTION",
+                "225.0 + topo_tol",
+                1
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "source_pattern_precision_layers_large_coordinate",
+      "source_ref": "generic-source-pattern:precision-layers",
+      "hypothesis": "Distinct classification, intersection, and approximation tolerances should not blur exact-versus-fuzzy behavior for generated bodies near max_model_size.",
+      "target": {
+        "chain": [
+          {
+            "id": "large_rect_profile",
+            "op": "rect_profile",
+            "length": 260,
+            "width": 180
+          },
+          {
+            "id": "large_rect_extrude",
+            "op": "extrude",
+            "height": 220,
+            "operation_tol": "topo_tol"
+          },
+          {
+            "id": "large_target_place",
+            "op": "transform",
+            "translate": [
+              399800,
+              0,
+              0
+            ]
+          }
+        ]
+      },
+      "tool": {
+        "chain": [
+          {
+            "id": "large_tool_profile",
+            "op": "circle_profile",
+            "radius": 40,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "large_tool_sweep",
+            "op": "sweep_line",
+            "height": 260,
+            "operation_tol": "topo_tol",
+            "g1_tol": 0.1
+          },
+          {
+            "id": "large_tool_tolerance_place",
+            "op": "transform",
+            "translate_x": 399970,
+            "translate_y": 0,
+            "translate_z": -20
+          }
+        ]
+      },
+      "expectations": {
+        "result_bodies": {
+          "min": 1
+        },
+        "require_property_calculations": true,
+        "require_finite_properties": true,
+        "require_nonnegative_length_area": true,
+        "require_nonnegative_volume": false,
+        "boolean_volume_relation": true,
+        "volume_relation_abs_tol": "topo_tol",
+        "volume_relation_rel_tol": 1e-8,
+        "sample_input_properties": true
+      },
+      "paired_sweeps": [
+        {
+          "paths": [
+            "options.boolean_type",
+            "tool.chain.2.translate_x",
+            "expectations.result_bodies.min"
+          ],
+          "values": [
+            {
+              "suffix": "sub_overlap_topo",
+              "values": [
+                "SUBTRACTION",
+                "399970.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_overlap_geom",
+              "values": [
+                "SUBTRACTION",
+                "399970.0 - geom_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "sub_exact",
+              "values": [
+                "SUBTRACTION",
+                399970,
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_topo",
+              "values": [
+                "INTERSECTION",
+                "399970.0 - topo_tol",
+                1
+              ]
+            },
+            {
+              "suffix": "int_overlap_geom",
+              "values": [
+                "INTERSECTION",
+                "399970.0 - geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_exact",
+              "values": [
+                "INTERSECTION",
+                399970,
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_geom",
+              "values": [
+                "INTERSECTION",
+                "399970.0 + geom_tol",
+                0
+              ]
+            },
+            {
+              "suffix": "int_gap_topo",
+              "values": [
+                "INTERSECTION",
+                "399970.0 + topo_tol",
+                0
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "source_pattern_exchange_precision_roundtrip_drift",
+      "api": "iges_roundtrip",
+      "source_ref": "generic-source-pattern:exchange-precision",
+      "hypothesis": "When fixed exchange precision is not forced, writer precision derived from source shape tolerance should preserve roundtrip properties within explicit drift tolerances.",
+      "source_file": "test_harness/fixtures/bug_records/freecad_e67361f3777637c2/target.sgt",
+      "source_body_index": 0,
+      "roundtrip_abs_tol": "roundtrip_abs_tol",
+      "roundtrip_rel_tol": "roundtrip_rel_tol",
+      "iges_face_only_mode": false,
+      "iges_write_sgk_specified_data": false,
+      "variants": [
+        {
+          "suffix": "derived_shape_tolerance",
+          "set": {
+            "options.iges_write_sgk_specified_data": false
+          }
+        },
+        {
+          "suffix": "fixed_sgk_specified_data",
+          "set": {
+            "options.iges_write_sgk_specified_data": true
+          }
+        }
+      ]
+    }
+  ],
+  "source_review": {
+    "summary": "Generic source-risk patterns map tolerance branches, propagated options, topology growth, scale effects, and exchange precision into deterministic adversarial geometry.",
+    "risky_branches": [
+      "lower-bound tolerance clamp",
+      "tolerance propagation across algorithm stages",
+      "topology tolerance growth and spatial expansion",
+      "large-coordinate precision classification",
+      "derived versus fixed exchange precision"
+    ],
+    "failure_hypotheses": [
+      "A threshold branch can change result topology at exact, geometry-tolerance, and topology-tolerance offsets.",
+      "Generated or imported topology can amplify the same branch through history, tolerance growth, or precision drift."
+    ],
+    "test_enhancements": [
+      "pair exact contact with plus/minus geometry and topology tolerance variants",
+      "include sweep, extrude, pre-boolean, imported topology, and large-coordinate siblings",
+      "require result-count, property, topology, distance, and roundtrip drift oracles"
+    ],
+    "source_refs": [
+      "generic-source-pattern:tolerance-clamp",
+      "generic-source-pattern:forwarded-tolerance",
+      "generic-source-pattern:tolerance-growth",
+      "generic-source-pattern:precision-layers",
+      "generic-source-pattern:exchange-precision"
+    ],
+    "source_excerpt_sha256": "host-authored-generic-patterns"
+  }
+}
+

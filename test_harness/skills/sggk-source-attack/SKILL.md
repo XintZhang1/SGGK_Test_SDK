@@ -1,6 +1,6 @@
 ---
 name: sggk-source-attack
-description: Convert bounded SGGK source-risk evidence into Message API task manifests, run candidates through fixed harness gates and the SDK, and qualify/replay/localize resulting failures.
+description: Prepare bounded intranet SGGK source-risk evidence for the reviewed Message API session, then qualify/replay/localize approved execution failures.
 ---
 
 # SGGK Source Attack
@@ -20,40 +20,21 @@ accept a model response or create authoring provenance.
 
 ## Production Workflow
 
-1. Inspect bounded source context for fragile predicates: tolerances, special-case branches, disabled checks, degeneracies, topology mutation, seams, periodicity, singularities, merge/split behavior, and exchange conversion.
-2. For broad source roots, run `scan_source_risks.py`, then build bounded JSONL tasks with `build_source_attack_tasks.py`. Treat scanner seed DSL as optional prompt context only.
-3. Build a provider-neutral `model_task_manifest.json` with `build_model_prompt_pack.py --source-task-dir`.
-4. Run the manifest with `run_message_harness_pipeline.py --profile intranet`. The pipeline owns candidate generation, contract repair, cluster expansion, DSL/recipe checks, isolated SDK execution, deterministic selection, provenance, and atomic promotion.
-5. Use `--profile siliconflow-test` only for explicit external simulation of the same production protocol. It is never an intranet fallback.
-6. Keep deterministic baseline coverage alongside the authored lane: generated boolean matrices, corpus import/roundtrip checks, loaded-SGT recuts, API smoke, and known-bug replay.
-7. Qualify failures before calling them SDK defects. Require stable same-signature replay, preserve real-result oracle evidence, reduce only when the signature survives, and use paired isolated TopoTrack capture/control for localization.
-8. Keep bug reports candidate-only until deterministic qualification, replay, portability audit, and maintainer review are complete.
+1. Configure the approved intranet source root and start the ordinary public-function review session. Definition discovery, namespace/overload binding, prompt construction, fixed gates, review rounds, and approval are host-owned.
+2. Use `scan_source_risks.py` and `build_source_attack_tasks.py` only as optional bounded diagnostics for broad source roots. Their seed DSL remains prompt context, never executable model output.
+3. Review and revise only with natural-language `harness.ps1 comment` commands. Source-derived candidates never move to an external endpoint and never execute through a raw pipeline command.
+4. Keep deterministic baseline coverage alongside the reviewed lane: generated boolean matrices, corpus import/roundtrip checks, loaded-SGT recuts, API smoke, and known-bug replay.
+5. Qualify failures before calling them SDK defects. Require stable same-signature replay, preserve real-result oracle evidence, reduce only when the signature survives, and use paired isolated TopoTrack capture/control for localization.
+6. Keep bug reports candidate-only until deterministic qualification, replay, portability audit, and maintainer review are complete.
 
 ## Production Commands
 
 ```powershell
-python .\test_harness\tools\scan_source_risks.py <source-root> `
-  --out .\artifacts\source_risk_scan `
-  --max-findings 120 `
-  --max-seeds 30
-
-python .\test_harness\tools\build_source_attack_tasks.py `
-  .\artifacts\source_risk_scan `
-  --out .\artifacts\source_attack_tasks `
-  --max-tasks 80 `
-  --context-lines 12 `
-  --write-dsl-seeds
-
-python .\test_harness\tools\build_model_prompt_pack.py `
-  --source-task-dir .\artifacts\source_attack_tasks `
-  --out .\artifacts\source_model_prompt_pack
-
-python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
-  --run-id source_attack_batch `
-  --execute `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  .\artifacts\source_model_prompt_pack\model_task_manifest.json
+$env:SGGK_HARNESS_PROFILE = "intranet"
+$env:SGGK_SOURCE_ROOT = "<approved-intranet-source-root>"
+.\harness.ps1 start api_boolean
+.\harness.ps1 comment "增加源码分支对应的容差两侧、退化输入和可观测 Oracle。"
+.\harness.ps1 comment "明确同意当前方案，可以开始执行真实测试。"
 ```
 
 For large deterministic baselines, use `plan_large_campaign.py` or

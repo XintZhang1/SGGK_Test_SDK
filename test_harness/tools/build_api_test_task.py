@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic small-model task from an SGGK API test form."""
+"""Build a deterministic model task from a host-generated internal API-test IR."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import re
 import sys
 import time
 from typing import Any
+
+from jsonschema import Draft202012Validator
 
 from harness_capabilities import (
     api_guidance,
@@ -32,22 +34,13 @@ SUPPORTED_ORACLES = supported_oracles(CAPABILITIES)
 API_GUIDANCE: dict[str, dict[str, Any]] = api_guidance(CAPABILITIES)
 ORACLE_GUIDANCE: dict[str, str] = oracle_guidance(CAPABILITIES)
 RUN_PROFILES: dict[str, dict[str, Any]] = run_profiles(CAPABILITIES)
-
-REQUIRED_FIELDS = [
-    "request_id",
-    "owner",
-    "target_api",
-    "test_goal",
-    "risk_summary",
-    "geometry",
-    "oracles",
-    "run_profile",
-]
-
+FORM_SCHEMA_PATH = REPO_ROOT / "test_harness/forms/api_test_form.schema.json"
+FORM_SCHEMA = json.loads(FORM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+FORM_VALIDATOR = Draft202012Validator(FORM_SCHEMA)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("form", help="Developer-filled API test form JSON")
+    parser.add_argument("form", help="Harness-generated internal API-test IR JSON")
     parser.add_argument("--out", help="Output task path. Defaults to stdout.")
     parser.add_argument(
         "--format",
@@ -460,14 +453,9 @@ def validate_form(form: Any) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     if not isinstance(form, dict):
         return ["form root must be an object"], warnings
-
-    for field in REQUIRED_FIELDS:
-        if field not in form:
-            errors.append(f"missing required field: {field}")
-
-    request_id = form.get("request_id")
-    if not isinstance(request_id, str) or not request_id.strip():
-        errors.append("request_id must be a non-empty string")
+    for item in sorted(FORM_VALIDATOR.iter_errors(form), key=lambda error: list(error.absolute_path)):
+        field = ".".join(str(part) for part in item.absolute_path) or "$"
+        errors.append(f"{field}: {item.message}")
 
     target_api = form.get("target_api")
     if target_api not in SUPPORTED_APIS:
@@ -475,23 +463,11 @@ def validate_form(form: Any) -> tuple[list[str], list[str]]:
             f"target_api {target_api!r} is not currently runnable; model output should be needs_harness_extension"
         )
 
-    geometry = form.get("geometry")
-    if not isinstance(geometry, dict):
-        errors.append("geometry must be an object")
-    elif not isinstance(geometry.get("family"), str) or not geometry.get("family"):
-        errors.append("geometry.family must be a non-empty string")
-
     oracles = form.get("oracles")
-    if not isinstance(oracles, list) or not oracles:
-        errors.append("oracles must be a non-empty list")
-    else:
+    if isinstance(oracles, list):
         for oracle in oracles:
             if oracle not in SUPPORTED_ORACLES:
                 warnings.append(f"unknown oracle {oracle!r}; model should map it to a supported oracle or request extension")
-
-    case_count = form.get("case_count", 3)
-    if not isinstance(case_count, int) or isinstance(case_count, bool) or case_count < 1 or case_count > 100:
-        warnings.append("case_count should be an integer from 1 to 100; using model judgment")
 
     run_profile = form.get("run_profile")
     if run_profile not in RUN_PROFILES:
@@ -642,9 +618,10 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
     campaign_profiles = allowed_campaign_profiles([campaign_profile_id]) if campaign_profile_id else {}
     campaign_bindings: dict[str, dict[str, str]] = {}
     if campaign_profile_id == "abc_boolean_mass_recut":
+        input_assets = form.get("input_assets") if isinstance(form.get("input_assets"), dict) else {}
         campaign_bindings[campaign_profile_id] = {
             "runner": "build/test_harness/Release/sggk_case_runner.exe",
-            "dataset": "artifacts/interface_distillation_windows_full_40chunk_v2/abc_sample_smoke/top_complex_import",
+            "dataset": str(input_assets.get("dataset_root") or "artifacts/datasets/abc/imported_sgt"),
             "out": "artifacts/abc_boolean_mass_recut",
         }
         guidance = dict(guidance)

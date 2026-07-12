@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -288,3 +289,222 @@ def test_pipeline_cannot_accept_output_into_harness_source_tree(tmp_path: Path) 
 
     with pytest.raises(GatewayError, match="must stay under repository artifacts"):
         pipeline.run_task(task, run_id="unsafe_formal_path", overwrite=True)
+
+
+def test_review_session_candidate_cannot_execute_without_host_approval(tmp_path: Path) -> None:
+    accepted_path = tmp_path / "artifacts/sessions/round_0001/candidate.json"
+    _invalid, valid = candidate_pair()
+    gateway_config = config()
+    transport = RepairQueueTransport([provider_response(valid)], accepted_path)
+    pipeline = MessageHarnessPipeline(
+        gateway_config,
+        repo_root=tmp_path,
+        tool_repo_root=TOOL_REPO_ROOT,
+        client=OpenAICompatibleMessageClient(gateway_config, transport=transport),
+        gate_timeout_seconds=30.0,
+    )
+    task = TaskSpec(
+        task_id="session_round_0001",
+        task_type="interface_form",
+        prompt="Generate one bounded api_boolean review candidate.",
+        expected_output_path=accepted_path,
+        output_contract={"type": "json_object", "allowed_kinds": ["attack_dsl"]},
+        metadata={
+            "review_required_before_execute": True,
+            "harness_session_id": "session_001",
+            "harness_round_number": 1,
+            "approval_attestation_path": "",
+        },
+    )
+
+    fresh_execute = pipeline.run_task(
+        task,
+        run_id="fresh_generate_execute_forbidden",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="must_pass_execution",
+        execute=True,
+        runner="artifacts/fake_runner.exe",
+    )
+    reviewed = pipeline.run_task(
+        task,
+        run_id="review_only",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="fixed_gate_only",
+        execute=False,
+    )
+    assert not fresh_execute.ok
+    assert not fresh_execute.execution.requested
+    assert "cannot generate and execute in one step" in fresh_execute.error
+    assert reviewed.ok
+    assert reviewed.authoring_accepted
+    assert not reviewed.execution.requested
+
+    direct_execute = pipeline.run_task(
+        task,
+        run_id="direct_execute_forbidden",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="must_pass_execution",
+        execute=True,
+        runner="artifacts/fake_runner.exe",
+    )
+    overwrite_execute = pipeline.run_task(
+        task,
+        run_id="overwrite_execute_forbidden",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="must_pass_execution",
+        overwrite=True,
+        execute=True,
+        runner="artifacts/fake_runner.exe",
+    )
+    stripped_manifest_task = TaskSpec(
+        task_id=task.task_id,
+        task_type=task.task_type,
+        prompt=task.prompt,
+        expected_output_path=task.expected_output_path,
+        output_contract=task.output_contract,
+        metadata={},
+    )
+    stripped_overwrite_execute = pipeline.run_task(
+        stripped_manifest_task,
+        run_id="stripped_overwrite_execute_forbidden",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="must_pass_execution",
+        overwrite=True,
+        execute=True,
+        runner="artifacts/fake_runner.exe",
+    )
+
+    assert not direct_execute.ok
+    assert direct_execute.execution.requested
+    assert direct_execute.execution.status == "approval_required"
+    assert "approval" in direct_execute.execution.error
+    assert not overwrite_execute.ok
+    assert not overwrite_execute.execution.requested
+    assert "--overwrite" in overwrite_execute.error
+    assert not stripped_overwrite_execute.ok
+    assert not stripped_overwrite_execute.execution.requested
+    assert "--overwrite" in stripped_overwrite_execute.error
+    assert len(transport.requests) == 1, "execution bypass must not trigger another model call"
+
+
+def test_execution_approval_binds_round_candidate_review_prompt_and_runner(tmp_path: Path) -> None:
+    accepted_path = tmp_path / "artifacts/sessions/round_0001/candidate.json"
+    _invalid, valid = candidate_pair()
+    gateway_config = config()
+    pipeline = MessageHarnessPipeline(
+        gateway_config,
+        repo_root=tmp_path,
+        tool_repo_root=TOOL_REPO_ROOT,
+        client=OpenAICompatibleMessageClient(
+            gateway_config,
+            transport=RepairQueueTransport([provider_response(valid)], accepted_path),
+        ),
+        gate_timeout_seconds=30.0,
+    )
+    prompt = "Generate one bounded api_boolean review candidate."
+    base_task = TaskSpec(
+        task_id="session_round_0001_bound",
+        task_type="interface_form",
+        prompt=prompt,
+        expected_output_path=accepted_path,
+        output_contract={"type": "json_object", "allowed_kinds": ["attack_dsl"]},
+        metadata={
+            "review_required_before_execute": True,
+            "harness_session_id": "session_001",
+            "harness_round_number": 1,
+            "approval_attestation_path": "",
+        },
+    )
+    reviewed = pipeline.run_task(
+        base_task,
+        run_id="review_bound",
+        max_contract_repairs=0,
+        max_gate_repairs=0,
+        selection_goal="fixed_gate_only",
+    )
+    assert reviewed.ok
+    provenance_path = accepted_path.with_name("candidate.provenance.json")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    runner = tmp_path / "artifacts/fake_runner.exe"
+    runner.write_bytes(b"immutable-runner-bytes")
+    canonical = lambda value: json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    candidate_sha256 = hashlib.sha256(canonical(valid)).hexdigest()
+    round_sha256 = "a" * 64
+    comment_path = tmp_path / "artifacts/sessions/comment.txt"
+    comment_path.write_text("这一版可以开始执行真实测试。", encoding="utf-8")
+    interpretation = {
+        "schema_version": 1,
+        "record_type": "review_comment_decision",
+        "status": "model_interpreted",
+        "qwen_called": True,
+        "decision": {
+            "decision": "approve",
+            "summary_zh_cn": "用户明确同意执行。",
+            "requested_changes": [],
+            "constraints": [],
+        },
+    }
+    interpretation_path = tmp_path / "artifacts/sessions/interpretation.json"
+    interpretation_path.write_text(json.dumps(interpretation), encoding="utf-8")
+    approval_unsigned = {
+        "schema_version": 1,
+        "record_type": "execution_approval",
+        "decision": "approved_for_execution",
+        "session_id": "session_001",
+        "task_id": base_task.task_id,
+        "round_number": 1,
+        "round_sha256": round_sha256,
+        "candidate_sha256": candidate_sha256,
+        "task_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "review_packet_sha256": provenance["generated_artifact_review"]["review_packet_sha256"],
+        "comment_path": comment_path.relative_to(tmp_path).as_posix(),
+        "comment_sha256": hashlib.sha256(comment_path.read_bytes()).hexdigest(),
+        "interpretation_path": interpretation_path.relative_to(tmp_path).as_posix(),
+        "interpretation_sha256": hashlib.sha256(canonical(interpretation)).hexdigest(),
+        "runner_sha256": hashlib.sha256(runner.read_bytes()).hexdigest(),
+        "approved_at": "2026-07-12T00:00:00Z",
+        "authority": "fixed_harness_host_after_qwen_comment_interpretation",
+    }
+    approval = {
+        **approval_unsigned,
+        "approval_sha256": hashlib.sha256(canonical(approval_unsigned)).hexdigest(),
+    }
+    approval_path = tmp_path / "artifacts/sessions/approval.json"
+    approval_path.write_text(json.dumps(approval), encoding="utf-8")
+    approved_task = TaskSpec(
+        task_id=base_task.task_id,
+        task_type=base_task.task_type,
+        prompt=prompt,
+        expected_output_path=accepted_path,
+        output_contract=base_task.output_contract,
+        metadata={
+            "review_required_before_execute": True,
+            "approval_attestation_path": approval_path.relative_to(tmp_path).as_posix(),
+            "approved_round_sha256": round_sha256,
+            "approved_candidate_sha256": candidate_sha256,
+        },
+    )
+
+    assert (
+        pipeline._execution_approval_error(  # noqa: SLF001
+            approved_task,
+            accepted_path,
+            provenance_path,
+            runner.relative_to(tmp_path),
+        )
+        == ""
+    )
+    runner.write_bytes(b"changed-runner")
+    assert "runner bytes" in pipeline._execution_approval_error(  # noqa: SLF001
+        approved_task,
+        accepted_path,
+        provenance_path,
+        runner.relative_to(tmp_path),
+    )

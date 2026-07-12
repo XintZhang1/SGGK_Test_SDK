@@ -1,7 +1,7 @@
 {
   "suite_id": "interface_distillation_v1",
   "goal": "Run every currently known harness-supported interface family through the source-guided small-model workflow: form -> model-authored DSL/recipe -> case cluster -> SDK run -> report.",
-  "branch": "codex/abc-dataset-harness",
+  "branch": "main",
   "runner": ".\\build\\test_harness\\Release\\sggk_case_runner.exe",
   "abc_inputs": {
     "preferred_fetch_root": ".\\artifacts\\abc_fetch_smoke",

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sggk.local/schemas/review_comment_response.schema.json",
+  "title": "SGGK Review Comment Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision",
+    "summary_zh_cn",
+    "requested_changes",
+    "constraints"
+  ],
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "revise", "reject", "question"]
+    },
+    "summary_zh_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "[\\u3400-\\u4dbf\\u4e00-\\u9fff]"
+    },
+    "requested_changes": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "instruction", "priority"],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "adapter",
+              "campaign",
+              "coverage",
+              "dataset",
+              "geometry",
+              "schema",
+              "smoke",
+              "negative",
+              "oracles",
+              "plan",
+              "recipes",
+              "cases",
+              "provenance",
+              "source",
+              "execution",
+              "documentation",
+              "other"
+            ]
+          },
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["blocker", "high", "medium", "low"]
+          }
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"decision": {"const": "revise"}},
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {"requested_changes": {"minItems": 1}}
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {"enum": ["approve", "reject", "question"]}
+        },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {"requested_changes": {"maxItems": 0}}
+      }
+    }
+  ]
+}

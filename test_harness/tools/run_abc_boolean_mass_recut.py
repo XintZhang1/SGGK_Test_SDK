@@ -3,7 +3,7 @@
 
 This is a fixed-code wrapper for the distillation workflow:
 
-developer form -> generated large ABC recut recipes -> SDK run -> triage ->
+host internal IR -> generated large ABC recut recipes -> SDK run -> triage ->
 bug-only report with explicit unsupported failures filtered out.
 """
 
@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-mode", choices=["passed", "completed"], default="completed")
     parser.add_argument("--plan-only", action="store_true", help="Generate recipes/report only; do not execute SDK cases")
+    parser.add_argument(
+        "--postprocess-only",
+        action="store_true",
+        help="Reuse an existing recipe manifest, run summary, and triage summary to rebuild reports",
+    )
     parser.add_argument("--require-exact-bbox-probe", action="store_true")
     parser.add_argument("--no-exact-bbox-probe", action="store_true")
     parser.add_argument("--sample-input-properties", action="store_true")
@@ -90,7 +95,7 @@ def recipes_per_source(preset: str) -> int:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if not args.dataset and not args.dataset_list:
+    if not args.postprocess_only and not args.dataset and not args.dataset_list:
         raise ValueError("pass at least one --dataset or --dataset-list")
     if args.target_cases <= 0:
         raise ValueError("--target-cases must be positive")
@@ -108,6 +113,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--preview-limit must be >= 0")
     if args.require_exact_bbox_probe and args.no_exact_bbox_probe:
         raise ValueError("--require-exact-bbox-probe cannot be combined with --no-exact-bbox-probe")
+    if args.plan_only and args.postprocess_only:
+        raise ValueError("--plan-only cannot be combined with --postprocess-only")
 
 
 def run_command(name: str, cmd: list[str], acceptable: set[int] | None = None) -> dict[str, Any]:
@@ -339,6 +346,81 @@ def write_bug_report(
     write_text(path, "\n".join(lines) + "\n")
 
 
+def write_bug_report_zh_cn(
+    path: Path,
+    *,
+    args: argparse.Namespace,
+    manifest: dict[str, Any] | None,
+    run_summary: dict[str, Any] | None,
+    triage_summary: dict[str, Any] | None,
+    candidate_groups: list[dict[str, Any]],
+    unsupported_groups: list[dict[str, Any]],
+) -> None:
+    manifest = manifest or {}
+    run_summary = run_summary or {}
+    triage_summary = triage_summary or {}
+    review_root = (
+        Path(args.out)
+        / "run"
+        / f"shard_{args.shard_index:04d}_of_{args.shard_count:04d}"
+    )
+    lines = [
+        "# ABC 复杂布尔重切测试中文报告",
+        "",
+        f"- 生成时间：`{now_iso_like()}`",
+        f"- 预设/目标用例：`{args.preset}` / `{args.target_cases}`",
+        f"- 实际生成/使用源体：`{manifest.get('recipe_count', 0)}` / `{manifest.get('used_source_count', 0)}`",
+        f"- 执行/通过/失败/超时：`{run_summary.get('executed', 0)}` / `{run_summary.get('passed', 0)}` / `{triage_summary.get('failed_cases', 0)}` / `{run_summary.get('timed_out', 0)}`",
+        f"- 显式不支持组：`{len(unsupported_groups)}`",
+        f"- 待复核候选组：`{len(candidate_groups)}`",
+        f"- 逐用例中文审查：`{review_root / 'recipe_review_report.zh-CN.md'}`",
+        f"- 逐用例审查索引：`{review_root / 'recipe_review_index.jsonl'}`",
+        "- 当前用户复核状态：`awaiting_comment`",
+        "",
+        "> 候选组只是可复现性调查入口，不等于已确认 SDK 缺陷。显式不支持、基础设施错误、Oracle 设计问题和不稳定结果必须先排除。",
+        "",
+        "## 显式不支持分组",
+        "",
+    ]
+    if unsupported_groups:
+        for group in unsupported_groups[: args.max_bug_groups or None]:
+            lines.append(
+                f"- `{group.get('fingerprint')}`：{group.get('count')} 例；"
+                f"代表 `{group.get('representative_case_id')}`；匹配 `{group.get('unsupported_match', [])}`"
+            )
+    else:
+        lines.append("- 无。")
+    lines.extend(["", "## 待复核候选分组", ""])
+    if not candidate_groups:
+        lines.append("没有剩余候选分组。")
+    for index, group in enumerate(candidate_groups[: args.max_bug_groups or None], 1):
+        runner = group.get("representative_runner") if isinstance(group.get("representative_runner"), dict) else {}
+        lines.extend(
+            [
+                f"### {index}. {group.get('fingerprint')}",
+                "",
+                f"- 数量/API：`{group.get('count')}` / `{group.get('apis', [])}`",
+                f"- 原因：`{group.get('reasons', [])}`",
+                f"- 代表 case：`{group.get('representative_case_id')}`",
+                f"- 代表目录：`{group.get('representative_case_dir')}`",
+                f"- runner returncode/timeout：`{runner.get('returncode')}` / `{runner.get('timed_out')}`",
+                f"- validation：`{group.get('representative_validation_failures', [])}`",
+                "- 下一步：固定同一 recipe 和失败签名至少重放三次，再决定是否最小化和提交缺陷。",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## 用户自然语言复核建议",
+            "",
+            "使用者只需在上层 review 流程中写自然语言 comment，例如“批准执行稳定重放”、"
+            "“这个体积 Oracle 对开放体不适用，请调整后再生成”，无需填写分组号、轮次或内部 ID。",
+            "",
+        ]
+    )
+    write_text(path, "\n".join(lines))
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -350,14 +432,29 @@ def main() -> int:
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
     command_records: list[dict[str, Any]] = []
-    manifest = generate_recipes(args, out_root, command_records)
+    manifest = (
+        read_json(out_root / "recipes_manifest.json")
+        if args.postprocess_only
+        else generate_recipes(args, out_root, command_records)
+    )
     if manifest is None:
         write_json(out_root / "abc_boolean_mass_recut_summary.json", {"ok": False, "commands": command_records})
         return 2
 
     run_summary: dict[str, Any] | None = None
     triage_summary: dict[str, Any] | None = None
-    if not args.plan_only:
+    if args.postprocess_only:
+        run_summary = read_json(
+            out_root
+            / "run"
+            / f"shard_{args.shard_index:04d}_of_{args.shard_count:04d}"
+            / "recipe_summary.json"
+        )
+        triage_summary = load_triage_summary(out_root, args)
+        if not isinstance(run_summary, dict) or not isinstance(triage_summary, dict):
+            print("postprocess-only requires existing run and triage summaries", file=sys.stderr)
+            return 2
+    elif not args.plan_only:
         run_summary = run_shard(args, out_root, command_records)
         triage_summary = load_triage_summary(out_root, args)
 
@@ -386,6 +483,7 @@ def main() -> int:
             "run_summary": str(out_root / "run" / f"shard_{args.shard_index:04d}_of_{args.shard_count:04d}" / "recipe_summary.json"),
             "triage_summary": str(out_root / "triage" / f"shard_{args.shard_index:04d}_of_{args.shard_count:04d}_raw" / "triage_summary.json"),
             "bug_report": str(out_root / "abc_boolean_mass_recut_bug_report.md"),
+            "bug_report_zh_cn": str(out_root / "abc_boolean_mass_recut_bug_report.zh-CN.md"),
         },
         "commands": command_records,
     }
@@ -399,6 +497,15 @@ def main() -> int:
         candidate_groups=candidate_groups,
         unsupported_groups=unsupported_groups,
         command_records=command_records,
+    )
+    write_bug_report_zh_cn(
+        out_root / "abc_boolean_mass_recut_bug_report.zh-CN.md",
+        args=args,
+        manifest=manifest,
+        run_summary=run_summary,
+        triage_summary=triage_summary,
+        candidate_groups=candidate_groups,
+        unsupported_groups=unsupported_groups,
     )
     print(json.dumps(summary["paths"], indent=2))
     print(

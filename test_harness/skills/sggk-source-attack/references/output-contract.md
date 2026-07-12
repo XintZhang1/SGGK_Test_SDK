@@ -13,8 +13,8 @@ Return concise Markdown with three sections:
 2. `Authoring`: pipeline summary, candidate count, selected candidate, accepted output/provenance, fixed-gate status, and any bounded repair diagnostics.
 3. `Execution`: SDK/semantic result, triage, replay, reduction, TopoTrack, and candidate-only bug-report evidence.
 
-Production authoring commands are limited to
-`build_model_prompt_pack.py` followed by `run_message_harness_pipeline.py`.
+Production authoring and approval are limited to the public-function
+`harness.ps1 start` / natural-language `harness.ps1 comment` session.
 Low-level DSL/compiler/validator/runner commands may appear only as pipeline
 fixed-gate evidence or as explicit debugging of checked-in deterministic
 fixtures. They cannot accept captured model output.
@@ -142,7 +142,9 @@ Run commands:
 python .\test_harness\tools\scan_source_risks.py .\SGK1.4.10\SGGK\include --out .\artifacts\sdk_include_source_risk_scan --max-findings 120 --max-seeds 30
 python .\test_harness\tools\build_source_attack_tasks.py .\artifacts\sdk_include_source_risk_scan --out .\artifacts\sdk_include_source_attack_tasks --max-tasks 80 --context-lines 12 --write-dsl-seeds
 python .\test_harness\tools\build_model_prompt_pack.py --source-task-dir .\artifacts\sdk_include_source_attack_tasks --out .\artifacts\source_model_prompt_pack
-python .\test_harness\tools\run_message_harness_pipeline.py --profile intranet --run-id source_attack_batch --execute --runner .\build\test_harness\Release\sggk_case_runner.exe .\artifacts\source_model_prompt_pack\model_task_manifest.json
+.\harness.ps1 start api_boolean
+.\harness.ps1 comment "增加源码分支对应的容差两侧和可观测 Oracle。"
+.\harness.ps1 comment "明确同意当前方案，可以开始执行真实测试。"
 python .\test_harness\tools\generate_corpus_recut_matrix.py --dataset-list .\artifacts\dataset_index.json --out .\artifacts\corpus_recut_recipes --preset smoke --case-prefix corpus_recut --runner .\build\test_harness\Release\sggk_case_runner.exe
 python .\test_harness\tools\audit_corpus_dataset.py --dataset-list .\artifacts\dataset_index.json --out .\artifacts\dataset_audit
 python .\test_harness\tools\triage_artifacts.py .\artifacts --out .\artifacts\triage

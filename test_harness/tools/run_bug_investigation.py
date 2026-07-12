@@ -33,7 +33,6 @@ def main() -> int:
     parser.add_argument("--bundle-index", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--source-root", action="append", default=[])
-    parser.add_argument("--allow-external-source-evidence", action="store_true")
     parser.add_argument("--role", action="append", choices=sorted(INVESTIGATOR_ROLES), default=[])
     parser.add_argument("--parallelism", type=int, default=4)
     parser.add_argument("--max-rounds", type=int, default=16)
@@ -43,7 +42,7 @@ def main() -> int:
         "--max-tokens",
         type=int,
         default=0,
-        help="Default 32768 for intranet and 8192 for siliconflow-test",
+        help="Default 32768 for every Message API endpoint profile",
     )
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
@@ -58,8 +57,8 @@ def main() -> int:
         missing_roots = [str(path) for path in source_roots if not path.is_dir()]
         if missing_roots:
             raise ValueError(f"source roots do not exist: {missing_roots}")
-        allow_source = args.profile == "intranet" or args.allow_external_source_evidence
-        max_tokens = args.max_tokens or (32_768 if args.profile == "intranet" else 8_192)
+        allow_source = args.profile == "intranet"
+        max_tokens = args.max_tokens or 32_768
         if max_tokens <= 0:
             raise ValueError("--max-tokens must be positive")
         options = CompletionOptions(

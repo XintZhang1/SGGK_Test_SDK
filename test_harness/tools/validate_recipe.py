@@ -87,6 +87,7 @@ PROVENANCE_RECIPE_KEYS = {
     "source_risk_id",
     "source_risk_family",
     "source_risk_categories",
+    "source_review",
 }
 BODY_COMMON_SUFFIXES = {
     "kind",
@@ -1397,6 +1398,8 @@ def validate_recipe(recipe: dict[str, Any], *, check_assets: bool = False, asset
         return errors
 
     reject_unknown_keys(recipe, allowed_recipe_keys(recipe), "recipe", errors)
+    if "source_review" in recipe and not isinstance(recipe.get("source_review"), dict):
+        errors.append("source_review must be an object")
     validate_expectations(recipe, errors)
 
     if api == "api_boolean":

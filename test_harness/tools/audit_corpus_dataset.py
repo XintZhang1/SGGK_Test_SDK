@@ -11,6 +11,9 @@ import time
 from typing import Any
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 EXTENSION_TO_API = {
     ".sgt": "check_sgt",
     ".step": "step_import",
@@ -69,7 +72,26 @@ def as_str(value: Any) -> str:
 
 def resolve_entry_path(raw: str, dataset_path: Path) -> Path:
     path = Path(raw)
-    return path if path.is_absolute() else (dataset_path.parent / path).resolve()
+    if path.is_absolute():
+        return path.resolve()
+    candidates = [
+        (REPO_ROOT / path).resolve(),
+        (Path.cwd() / path).resolve(),
+        (dataset_path.parent / path).resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    # Repository-relative paths are the canonical portable format for indexes
+    # generated inside this project. Plain sibling names remain relative to the
+    # dataset list so hand-authored text lists continue to work.
+    if len(path.parts) > 1 and path.parts[0].lower() in {
+        "artifacts",
+        "test_harness",
+        "sgk1.4.10",
+    }:
+        return candidates[0]
+    return candidates[2]
 
 
 def infer_api(extension: str) -> str:

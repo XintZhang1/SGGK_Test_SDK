@@ -286,7 +286,7 @@ def _validate_api_plugin_candidate(
                     f"API_PLUGIN_{key.upper()}_MISSING",
                     f"$.{key}",
                     f"api_plugin_candidate requires a non-empty {key}.",
-                    f"Provide {key} from the trusted API intake evidence.",
+                    f"Provide {key} from the host-bound API resolution evidence.",
                 )
             )
     for key in (

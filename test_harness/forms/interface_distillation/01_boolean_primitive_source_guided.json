@@ -4,7 +4,7 @@
   "target_api": "api_boolean",
   "sdk_source_refs": [
     "SGGK Boolean/API.h: api_boolean",
-    "OCC surrogate: BOPAlgo_Options::SetFuzzyValue clamps fuzzy tolerance to Precision::Confusion"
+    "generic-source-pattern:tolerance-lower-bound"
   ],
   "test_goal": "Exercise primitive cylinder/wedge boolean across subtraction and intersection near exact contact and tolerance bands.",
   "risk_summary": "Source-level fuzzy/tolerance branches can make a near-tangent boolean report success while silently returning an empty, invalid, or topologically inconsistent result.",

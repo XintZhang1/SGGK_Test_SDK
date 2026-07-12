@@ -6,21 +6,56 @@ For the Message API-only trust boundary, parallel candidate selection, new-API
 plugins, failure qualification, paired TopoTrack capture, and Qwen investigation
 flow, read `test_harness/HARNESS_ARCHITECTURE.md` first.
 
+## Primary User Workflow
+
+普通用户只从仓库根目录启动 Harness，并且只输入需要测试的 SGGK public function：
+
+```powershell
+.\harness.ps1 start api_boolean
+```
+
+Harness 会通过 Message API 自动解析接口、生成候选和固定门禁结果，并写出第 1 轮中文审查文档。用户不填写 API form，不指定 task/run/candidate ID、round、hash、manifest、JSON、runner 或并行参数。
+
+需要调整方案时，只提交自然语言意见：
+
+```powershell
+.\harness.ps1 comment "增加退化输入、近容差相交和空结果检查"
+```
+
+每条 comment 都被原样保存为不可变事件，Qwen 必须输出中文理解并判断其语义。涉及代码、用例、参数、Oracle 或范围修改时，Harness 才生成新的不可变候选/审查轮次，并列出采纳项、未采纳原因和相对上一轮的变化；问题在当前轮回答，拒绝终止任务。满意后批准当前最新轮次：
+
+```powershell
+.\harness.ps1 comment "这一版可以开始执行真实测试。"
+```
+
+明确批准的 comment 不生成新候选轮；Qwen 先解释其语义，固定宿主再验证明确执行同意并绑定当前最新轮次及其内部哈希链，然后自动执行真实 SGGK SDK 测试；完成后生成 `final_report.zh-CN.md`。辅助命令：
+
+```powershell
+.\harness.ps1 status
+.\harness.ps1 show
+.\harness.ps1 retry
+```
+
+底层统一入口是 `test_harness/tools/sggk_harness.py`。它负责 session、活动轮次、内部 ID/哈希、审批绑定和执行恢复；后文的 form、raw Message pipeline、runner 和 campaign 命令只供 Harness 维护、固定门禁诊断或大规模基础设施运维，不是普通用户流程。
+
 ## Build
 
 ```powershell
-cmake -S .\test_harness -B .\build\test_harness `
-  -DSGGK_SDK_DIR="C:/Develop/SGGK_Agent/SGK1.4.10/SGGK" `
-  -G "Visual Studio 18 2026" `
-  -A x64
-
-cmake --build .\build\test_harness --config Release --parallel
+$env:SGGK_SDK_DIR = "<本机 SGGK SDK 根目录>"
+Push-Location .\test_harness
+cmake --fresh --preset windows-local
+cmake --build --preset windows-release --parallel
+Pop-Location
 ```
 
 The build copies runtime DLLs and `sggk.lic` next to `sggk_case_runner.exe`.
 It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index.
 
-## Run
+## Advanced Runner Maintenance: Direct Case Run
+
+This direct runner path is for deterministic fixture maintenance, SDK smoke
+tests, and fixed-host diagnostics. It is not the review-session user flow and
+must not be used to execute a model-authored candidate before an explicit approval comment.
 
 ```powershell
 .\build\test_harness\Release\sggk_case_runner.exe `
@@ -254,17 +289,26 @@ fixed-gate debugging:
 ```
 
 This direct command is not a model-output acceptance path. Model-authored DSL
-must come from `message.content` through `run_message_harness_pipeline.py`,
-which owns normalization, fixed gates, execution, selection, provenance, and
-promotion.
+must enter through `harness.ps1` / `sggk_harness.py`; the session orchestrator
+uses the raw Message pipeline internally for normalization, fixed gates,
+selection, and provenance, and withholds real SDK execution until the latest
+immutable review round is approved.
 
-## API Form Workflow
+## Advanced Internal Appendix: API Forms and Raw Message Pipeline
 
-For intranet Message API authoring, use `test_harness/skills/sggk-api-form-workflow`.
-Developers fill `test_harness/forms/api_test_form.schema.json`, then deterministic code converts the form into a constrained model task:
+This section is for Harness maintainers and fixed-gate diagnostics. It is not a
+second user workflow. Normal users run `harness.ps1 start <public-function>`;
+`sggk_harness.py` derives and persists the form, manifest, IDs, hashes, runner
+configuration, and round state internally.
+
+When debugging the internal intake layer, maintainers can inspect
+`test_harness/skills/sggk-api-review-workflow` and
+`test_harness/forms/api_test_form.schema.json`. Deterministic code converts the
+internal form into a constrained model task:
 
 Use `test_harness/INTERFACE_TEST_MATRIX.md` as the current checklist of supported runner APIs, body builders, validation oracles, source-guided cluster flow, and known extension gaps.
-Use `test_harness/forms/interface_distillation/00_manifest.json` as the first distillation campaign manifest. It enumerates ready forms for:
+`test_harness/forms/interface_distillation/00_manifest.json` remains an internal
+regression inventory. It enumerates host-owned fixtures for:
 
 - primitive `api_boolean`
 - ABC `step_import` and `iges_import`
@@ -277,14 +321,9 @@ Use `test_harness/forms/interface_distillation/00_manifest.json` as the first di
   and heterogeneous `api_topology_section` Edge/Vertex results
 - 100k+ ABC `loaded_sgt` boolean mass recut with unsupported-filtered bug reporting
 
-Build all current interface-distillation tasks and prompts without requiring the SDK:
-
-```powershell
-python .\test_harness\tools\run_interface_distillation.py `
-  --out .\artifacts\interface_distillation
-```
-
-Build a bounded provider-neutral prompt pack, then run the integrated Message API pipeline:
+The following raw commands reproduce the pre-review authoring layer for an
+internal diagnostic. They do not create a user approval, must not be used to
+bypass the review session, and intentionally omit real SDK execution:
 
 ```powershell
 python .\test_harness\tools\build_model_prompt_pack.py `
@@ -293,20 +332,21 @@ python .\test_harness\tools\build_model_prompt_pack.py `
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
-  --run-id qwen36_interface_distillation `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
 Every candidate response is exactly one JSON object from
 `choices[0].message.content`. A task may author several candidates in parallel;
-the host stages, normalizes, gates, de-duplicates, and independently executes
-them before a deterministic selection promotes one formal output/provenance
-pair. There is no human-authored or fixture-seeding production path. The
-lower-level `run_authoring_gateway.py` is transport diagnostics only and cannot
-set `authoring_accepted=true`. The explicit `siliconflow-test` profile exercises
-the same protocol outside the intranet and is never an implicit fallback. See
-`test_harness/SILICONFLOW_MESSAGE_API_TESTING.md` for profile configuration and
-failure semantics.
+the host stages, normalizes, gates, de-duplicates, and selects review candidates.
+The review-session layer owns approval and starts real SDK execution only after
+the current round is approved. There is no human-authored, fixture-seeding, or
+standalone gateway CLI production path.
+
+SiliconFlow is only a replaceable test endpoint for the same Message API
+contract and the same model behavior expected in the intranet. It is not a
+provider-specific authoring path, implicit fallback, or separate user workflow.
+See `test_harness/MESSAGE_API_ENDPOINTS.md` for endpoint compatibility
+testing and failure semantics.
 
 For the 100k+ ABC boolean recut lane, use the fixed typed campaign request;
 individual-case emission is not part of this lane:
@@ -351,9 +391,9 @@ python .\test_harness\tools\manage_regression_assets.py compare `
 
 The comparison report separates fixed baseline bugs, new issues from baseline-passing cases, changed failures, still-failing bugs, and unsupported behavior changes.
 
-For the automatic authoring-to-report path, execute the same provider-neutral
-manifest. The intranet profile defaults to three independent authoring
-candidates and promotes only an SDK/oracle execution pass:
+For raw pipeline diagnosis, maintainers may reproduce candidate generation from
+a freshly generated provider-bound diagnostic manifest. This command remains pre-review and does not
+constitute approval or a normal user run:
 
 ```powershell
 python .\test_harness\tools\build_model_prompt_pack.py `
@@ -361,50 +401,17 @@ python .\test_harness\tools\build_model_prompt_pack.py `
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
-  --run-id qwen36_interface_campaign `
-  --execute `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --jobs 1 `
-  --timeout 120 `
-  --campaign-dataset .\artifacts\abc_fetch_smoke `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
-When the ABC sample fetch and local SGGK source tree are available, extend the same run with corpus and source-guided task evidence:
+When ABC data or protected source is available, configure it for the session
+orchestrator. The approved session invokes the registered corpus, source, and
+runner lanes; maintainers must not execute saved model-output directories as a
+parallel workflow.
 
-```powershell
-python .\test_harness\tools\run_interface_distillation.py `
-  --out .\artifacts\interface_distillation `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
-  --execute `
-  --api-smoke `
-  --abc-sample-smoke `
-  --abc-fetch-root .\artifacts\abc_fetch_smoke `
-  --source-root $env:SGGK_SOURCE_ROOT `
-  --jobs 1 `
-  --timeout 180
-```
-
-On the Windows SDK machine, the same build/check/execute/report flow can be run through a wrapper:
-
-```powershell
-.\test_harness\scripts\run_interface_distillation_windows.ps1 `
-  -SdkDir $env:SGGK_SDK_DIR `
-  -AbcFetchRoot $env:SGGK_DATA_ROOT `
-  -SourceRoot $env:SGGK_SOURCE_ROOT `
-  -Jobs 1 `
-  -Timeout 180
-```
-
-The wrapper writes `artifacts/interface_distillation_windows/windows_run_report.md`, keeps logs under `artifacts/interface_distillation_windows/logs/`, and executes only Message-API-promoted outputs plus API smoke, ABC sample, and source-task lanes with the local runner.
-
-```powershell
-python .\test_harness\tools\build_api_test_task.py `
-  .\test_harness\forms\api_test_form.example.json `
-  --out .\artifacts\model_tasks\boolean_thicken_generated_sheet_001.json
-```
-
-After the integrated pipeline promotes a gate-passing output, run the current API capability smoke suite sequentially:
+After an explicit approval comment has approved the latest round, the session
+orchestrator runs the required API capability suite automatically. The direct
+command below is only for runner maintenance and isolated diagnosis:
 
 ```powershell
 python .\test_harness\tools\run_recipes.py `
@@ -506,10 +513,12 @@ Additional smoke recipes:
 
 The thicken operation-chain smoke lives in `test_harness/dsl/thicken_chain_smoke.json`. Compile it with `compile_attack_dsl.py --check` or run it through `run_recipes.py` like the other DSL smoke lanes; it uses `rect_profile -> thicken` to call `api_thicken_body` before the outer boolean and validates the result with property, point/body relation, distance, and exact plane-extreme checks.
 
-## Source Risk Scan
+## Advanced Internal Appendix: Source Risk Scan and Raw Source Pipeline
 
-For source-directed attacks, run the deterministic scanner before building
-bounded source tasks for the Message API pipeline:
+Normal users still start with only a public function. When `SGGK_SOURCE_ROOT` is
+configured, `sggk_harness.py` attaches bounded source evidence to the same
+review session automatically. The scanner and raw commands below are for
+maintainers diagnosing that internal source-evidence layer.
 
 ```powershell
 python .\test_harness\tools\scan_source_risks.py `
@@ -527,9 +536,9 @@ It writes:
 - `attack_seed_drafts.json`: deterministic seed context for a later Message API
   task; these drafts are never accepted or executed as model output
 
-Build source-task packs from a scan report, then wrap them in the production
-prompt manifest and submit that manifest through the integrated Message API
-pipeline:
+Build source-task packs from a scan report, then wrap them in an internal prompt
+manifest. The raw pipeline invocation is pre-review diagnostics only, so it does
+not execute the SDK or create an approval:
 
 ```powershell
 python .\test_harness\tools\build_source_attack_tasks.py `
@@ -545,9 +554,6 @@ python .\test_harness\tools\build_model_prompt_pack.py `
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
-  --run-id source_attack_batch `
-  --execute `
-  --runner .\build\test_harness\Release\sggk_case_runner.exe `
   .\artifacts\source_model_prompt_pack\model_task_manifest.json
 ```
 
@@ -558,8 +564,9 @@ includes a wider source excerpt, the scanner finding, required output contract,
 harness constants, fixed post-generation checks, and optional seed context.
 
 Seed drafts are prompt context, not runnable tests or bug reports. Qwen must
-return a fresh candidate through the Message API; the pipeline then performs
-the DSL check, expansion, execution, and promotion. A developer may invoke the
+return a fresh candidate through the Message API; the raw pipeline performs the
+pre-review DSL check and expansion, while `sggk_harness.py` gates execution on
+the approved latest round. A developer may invoke the
 low-level compiler only to diagnose a checked-in deterministic fixture or a
 pipeline fixed-gate artifact, never to accept captured model output. For exact
 coordinate extrema, the candidate must use a concrete variant and expected
@@ -588,13 +595,17 @@ python .\test_harness\tools\run_recipes.py `
 
 Verified result: 17/17 recipes passed, triage found no failure groups, and geometry audit reported no duplicate inputs or tolerance mismatches. The audit confirmed signed clearances at exact contact, `+/- 1e-5`, and `+/- 1e-2`; the contact sheet is `artifacts/source_directed_scan_smoke_preview_v2/contact.png`.
 
-Use `test_harness/skills/sggk-source-guided-workflow` when source findings, developer API forms, and deterministic cluster expansion need to be combined. The public surrogate examples use OCCT links and line ranges only, with reviewed SGGK DSL mappings in `test_harness/dsl/occ_source_guided_surrogate_examples.json`:
+Source findings and deterministic cluster expansion are integrated into the
+same public-function review session.
+Repository-owned generic source-risk patterns for transport and fixed-gate tests
+live in `test_harness/dsl/source_risk_pattern_examples.json`; they are not
+evidence about SGGK behavior:
 
 ```powershell
 python .\test_harness\tools\compile_attack_dsl.py `
-  .\test_harness\dsl\occ_source_guided_surrogate_examples.json `
+  .\test_harness\dsl\source_risk_pattern_examples.json `
   --check `
-  --report .\artifacts\occ_source_guided_surrogate_check.json
+  --report .\artifacts\source_risk_pattern_check.json
 ```
 
 The production pipeline expands `kind=cluster_seed` automatically before its
@@ -619,13 +630,13 @@ The cluster wrapper emits exact contact, `+/- geom_tol`, `+/- topo_tol`, source-
 
 For larger generated attacks, compile DSL into one flat recipe per case and run them with process isolation. This prevents one crash or timeout from taking down the whole generated lane.
 
-Generate a baseline OCC-style boolean matrix:
+Generate a baseline boolean matrix:
 
 ```powershell
 python .\test_harness\tools\generate_boolean_matrix.py `
   --out .\artifacts\generated_boolean_matrix_smoke `
   --preset smoke `
-  --case-prefix occ_smoke
+  --case-prefix boolean_smoke
 ```
 
 The generator writes flat recipes and a sibling manifest such as `generated_boolean_matrix_smoke_manifest.json`. Presets:

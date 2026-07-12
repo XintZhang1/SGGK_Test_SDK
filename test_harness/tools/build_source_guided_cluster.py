@@ -231,6 +231,7 @@ def make_case(seed: dict[str, Any], override: dict[str, Any], suffix: str) -> di
         "case_id": case_id,
         "source_ref": require_string(override.get("source_ref", seed.get("source_ref")), "source_ref"),
         "hypothesis": require_string(override.get("hypothesis", seed.get("hypothesis")), "hypothesis"),
+        "source_review": deepcopy(override.get("source_review", seed.get("source_review", {}))),
         "target": deepcopy(override.get("target", seed.get("target"))),
         "tool": deepcopy(override.get("tool", seed.get("tool"))),
         "expectations": expectations,
@@ -287,6 +288,7 @@ def build_dsl(seed: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "dsl_version": 1,
+        "source_review": deepcopy(seed.get("source_review", {})),
         "metadata": {
             "kind": "source_guided_cluster",
             "cluster_id": sanitize_id(require_string(seed.get("cluster_id"), "cluster_id")),

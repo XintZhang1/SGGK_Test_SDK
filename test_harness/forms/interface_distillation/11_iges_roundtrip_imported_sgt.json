@@ -5,7 +5,7 @@
   "sdk_source_refs": [
     "SGGK IgesExchange/API.h: api_iges_export",
     "SGGK IgesExchange/API.h: api_iges_import",
-    "OCC surrogate: IGESControl_Writer derives precision from shape tolerance"
+    "generic-source-pattern:exchange-precision-policy"
   ],
   "test_goal": "Roundtrip a selected imported ABC SGT body through IGES and compare source/result properties.",
   "risk_summary": "IGES export precision and shape tolerance settings can lead to successful return codes with measurable geometry drift.",

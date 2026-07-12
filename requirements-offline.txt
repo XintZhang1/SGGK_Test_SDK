@@ -1,0 +1,5 @@
+# 供内网离线 wheelhouse 使用。Python 版本与系统架构必须和下载机器一致。
+jsonschema==4.26.0
+Pillow==12.1.1
+pytest==9.0.3
+ruff==0.12.2

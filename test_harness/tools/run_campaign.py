@@ -725,6 +725,11 @@ def run_recipe_lane(
             "recipe_dir": str(recipe_dir),
             "out": str(run_out),
             "summary_path": str(run_out / "recipe_summary.json"),
+            "recipe_review_index": str(run_out / "recipe_review_index.jsonl"),
+            "recipe_review_report_zh_cn": str(run_out / "recipe_review_report.zh-CN.md"),
+            "recipe_review_state": str(
+                run_out / "recipe_review_state.internal.json"
+            ),
             "triage_out": str(triage_out),
             "preview_out": str(preview_out) if not args.no_preview else "",
             "contact_sheet": str(preview_out / "contact.png") if not args.no_preview else "",
@@ -2088,6 +2093,75 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_report_zh_cn(summary: dict[str, Any], path: Path) -> None:
+    lines = [
+        "# SGGK 大规模测试活动中文报告",
+        "",
+        f"- 开始/更新时间：`{summary.get('started_at')}` / `{summary.get('updated_at')}`",
+        f"- runner：`{summary.get('runner')}`",
+        f"- 活动产物根目录：`{summary.get('out_root')}`",
+        "- 用户复核状态：`awaiting_comment`（机器通过不会自动触发 SDK 执行）",
+        "",
+        "## 执行 Lane 与用例审查入口",
+        "",
+        "| Lane | 类型 | 总数 | 通过 | 失败 | 超时 | 中文用例审查 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for lane in summary.get("lanes", []):
+        lines.append(
+            f"| `{lane.get('name', '')}` | `{lane.get('type', '')}` | "
+            f"{lane.get('total', 0)} | {lane.get('passed', 0)} | {lane.get('failed', 0)} | "
+            f"{lane.get('timed_out', 0)} | `{lane.get('recipe_review_report_zh_cn', '')}` |"
+        )
+    lines.extend(["", "逐 lane 产物位置：", ""])
+    for lane in summary.get("lanes", []):
+        lines.extend(
+            [
+                f"### {lane.get('name', '')}",
+                "",
+                f"- recipe 输入：`{lane.get('recipe_dir', '')}`",
+                f"- case 运行记录：`{lane.get('out', '')}`",
+                f"- 执行摘要：`{lane.get('summary_path', '')}`",
+                f"- 逐用例 JSONL 审查索引：`{lane.get('recipe_review_index', '')}`",
+                f"- 中文用例审查报告：`{lane.get('recipe_review_report_zh_cn', '')}`",
+                f"- Harness 内部审查状态：`{lane.get('recipe_review_state', '')}`（只读）",
+                f"- triage：`{lane.get('triage_out', '')}`",
+                f"- 预览/contact sheet：`{lane.get('contact_sheet', '')}`",
+                f"- 几何审计：`{lane.get('geometry_audit_report') or lane.get('geometry_audit_out', '')}`",
+                "",
+            ]
+        )
+    lines.extend(["## 失败定位与复现证据", ""])
+    for title, key in (
+        ("聚合 triage", "aggregate_triage"),
+        ("稳定重放", "replay"),
+        ("最小化", "reductions"),
+        ("失败包", "bundles"),
+        ("Bug 注册表", "bug_registry"),
+        ("调试交接", "debug_handoff"),
+        ("数据集审计", "dataset_audit"),
+        ("Oracle 覆盖", "oracle_coverage"),
+        ("活动产物校验", "artifact_verification"),
+    ):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            lines.append(f"- {title}：`{json.dumps(value, ensure_ascii=False, sort_keys=True)}`")
+    lines.extend(
+        [
+            "",
+            "## 审查原则",
+            "",
+            "- 先确认数据集输入和 recipe SHA-256，再审查参数、复杂几何构造和 Oracle。",
+            "- 区分 runner/许可证/路径等基础设施错误、SDK 受控错误、Oracle 失败、崩溃和超时。",
+            "- 只有至少三次同签名稳定重放才能进入正式复现；最小化必须保持原失败签名。",
+            "- 预览只用于辅助理解，不能替代属性、关系、距离、拓扑或往返一致性 Oracle。",
+            "- 用户只提交自然语言 comment；Harness 自动绑定当前审查索引哈希，产物变化后生成新轮次。",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> int:
     args = parse_args()
     if args.jobs <= 0:
@@ -2261,21 +2335,29 @@ def main() -> int:
     }
     summary_path = out_root / "campaign_summary.json"
     report_path = out_root / "campaign_report.md"
+    report_zh_cn_path = out_root / "campaign_report.zh-CN.md"
+    summary["summary_path"] = str(summary_path)
+    summary["report_path"] = str(report_path)
+    summary["report_zh_cn_path"] = str(report_zh_cn_path)
     write_json(summary_path, summary)
     write_report(summary, report_path)
+    write_report_zh_cn(summary, report_zh_cn_path)
     oracle_coverage = run_oracle_coverage(args, script_dir, out_root, command_records)
     summary["oracle_coverage"] = oracle_coverage
     summary["commands"] = command_records
     summary["updated_at"] = now_iso_like()
     write_json(summary_path, summary)
     write_report(summary, report_path)
+    write_report_zh_cn(summary, report_zh_cn_path)
     artifact_verification = run_artifact_verification(args, script_dir, out_root, command_records)
     summary["artifact_verification"] = artifact_verification
     summary["commands"] = command_records
     summary["updated_at"] = now_iso_like()
     write_json(summary_path, summary)
     write_report(summary, report_path)
+    write_report_zh_cn(summary, report_zh_cn_path)
     print(f"summary={summary_path}")
+    print(f"report_zh_cn={report_zh_cn_path}")
     print(f"report={report_path}")
 
     infrastructure_failed = any(

@@ -22,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recut-limit", type=int, default=36, help="Maximum recut recipes")
     parser.add_argument("--timeout", type=float, default=180.0, help="Per-case timeout")
     parser.add_argument("--jobs", type=int, default=1, help="Parallel runner jobs")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse completed corpus and recipe cases after an interrupted smoke run",
+    )
     parser.add_argument("--fail-on-import-failure", action="store_true", help="Stop when top-complex import has failures")
     return parser.parse_args()
 
@@ -237,8 +242,7 @@ def main() -> int:
 
     top_import_dir = out_root / "top_complex_import"
     top_triage_dir = out_root / "top_complex_import_triage"
-    commands["top_complex_import"] = run_tool(
-        [
+    top_import_command = [
             sys.executable,
             str(script_dir / "run_corpus.py"),
             "--runner",
@@ -258,7 +262,9 @@ def main() -> int:
             "--jobs",
             str(args.jobs),
         ]
-    )
+    if args.resume:
+        top_import_command.extend(["--resume", "--resume-mode", "completed"])
+    commands["top_complex_import"] = run_tool(top_import_command)
     if args.fail_on_import_failure and not commands["top_complex_import"]["ok"]:
         write_json(out_root / "abc_sample_smoke_summary.json", {"generated_at": now_iso_like(), "commands": commands})
         return 1
@@ -309,8 +315,7 @@ def main() -> int:
     recut_triage_dir = out_root / "top_complex_recut_triage"
     recut_preview_dir = out_root / "top_complex_recut_preview"
     recut_geometry_audit_dir = out_root / "top_complex_recut_geometry_audit"
-    commands["run_recut"] = run_tool(
-        [
+    recut_command = [
             sys.executable,
             str(script_dir / "run_recipes.py"),
             "--runner",
@@ -333,7 +338,9 @@ def main() -> int:
             "--geometry-audit-out",
             str(recut_geometry_audit_dir),
         ]
-    )
+    if args.resume:
+        recut_command.extend(["--resume", "--resume-mode", "completed"])
+    commands["run_recut"] = run_tool(recut_command)
 
     summary = {
         "generated_at": now_iso_like(),

@@ -123,6 +123,7 @@ PROVENANCE_FIELDS = {
     "source_risk_id",
     "source_risk_family",
     "source_risk_categories",
+    "source_review",
 }
 
 
@@ -1134,6 +1135,13 @@ def compile_one_case(
         metadata = concrete.get("metadata", {})
         if metadata is not None and not isinstance(metadata, dict):
             raise DslError(f"{base_id}: metadata must be an object")
+        option_metadata = options.get("metadata", {})
+        if option_metadata is not None and not isinstance(option_metadata, dict):
+            raise DslError(f"{base_id}: options.metadata must be an object")
+        metadata = merge_dicts(
+            option_metadata if isinstance(option_metadata, dict) else {},
+            metadata if isinstance(metadata, dict) else {},
+        )
         recipe["dsl_source"] = str(source_path)
         recipe["dsl_case_id"] = base_id
         if expansion.suffix:
@@ -1162,6 +1170,11 @@ def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
     defaults = dsl.get("defaults", {})
     if not isinstance(defaults, dict):
         raise DslError(f"{path}: defaults must be an object")
+    source_review = dsl.get("source_review")
+    if source_review is not None:
+        if not isinstance(source_review, dict):
+            raise DslError(f"{path}: source_review must be an object")
+        defaults = merge_dicts({"metadata": {"source_review": source_review}}, defaults)
     cases = dsl.get("cases")
     if not isinstance(cases, list) or not cases:
         raise DslError(f"{path}: cases must be a non-empty array")

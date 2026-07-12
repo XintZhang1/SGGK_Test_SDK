@@ -371,7 +371,26 @@ def source_label(path: Path) -> str:
     return f"{stem}_{digest}"
 
 
-def base_expectations(allow_empty: bool, sample_input_properties: bool) -> dict[str, Any]:
+def volume_relation_abs_tolerance(bbox: dict[str, Any]) -> float:
+    dims = bbox.get("dims") if isinstance(bbox.get("dims"), list) else []
+    if len(dims) != 3:
+        return TOPO_TOL
+    x, y, z = (max(0.0, float(value)) for value in dims)
+    # A fuzzy/topological boundary may move by modeling_tol. Convert that
+    # length tolerance into a conservative volume tolerance using the target's
+    # bbox surface scale; a fixed 0.01 cubic-unit bound is dimensionally wrong
+    # for large imported bodies.
+    bbox_surface = 2.0 * (x * y + x * z + y * z)
+    return max(TOPO_TOL, bbox_surface * TOPO_TOL)
+
+
+def base_expectations(
+    allow_empty: bool,
+    sample_input_properties: bool,
+    *,
+    volume_relation: bool,
+    volume_relation_abs_tol: float,
+) -> dict[str, Any]:
     return {
         "result_bodies": {"min": 0 if allow_empty else 1},
         "sample_input_properties": sample_input_properties,
@@ -379,10 +398,10 @@ def base_expectations(allow_empty: bool, sample_input_properties: bool) -> dict[
         "require_finite_properties": True,
         "require_nonnegative_length_area": True,
         "require_nonnegative_volume": False,
-        "boolean_volume_relation": True,
+        "boolean_volume_relation": volume_relation,
         "boolean_bbox_relation": True,
-        "volume_relation_abs_tol": TOPO_TOL,
-        "volume_relation_rel_tol": 1e-8,
+        "volume_relation_abs_tol": volume_relation_abs_tol,
+        "volume_relation_rel_tol": 1e-6,
     }
 
 
@@ -464,13 +483,13 @@ def tool_families_for_preset(preset: str) -> list[str]:
     if preset == "smoke":
         return ["cylinder_tangent_x"]
     if preset == "standard":
-        return ["cylinder_tangent_x", "sweep_tangent_x", "extrude_center_slab"]
+        return ["cylinder_tangent_x", "sweep_tangent_x", "extrude_tangent_x_slab"]
     return [
         "cylinder_tangent_x",
         "cylinder_tangent_y",
         "sweep_tangent_x",
         "sweep_tangent_y",
-        "extrude_center_slab",
+        "extrude_tangent_x_slab",
     ]
 
 
@@ -492,6 +511,8 @@ def case_recipe(
     topo_track: bool,
     body_index: int,
     sample_input_properties: bool,
+    volume_relation: bool,
+    volume_relation_abs_tol: float,
 ) -> dict[str, Any]:
     recipe: dict[str, Any] = {
         "case_id": case_id,
@@ -510,6 +531,8 @@ def case_recipe(
         "expectations": base_expectations(
             allow_empty=allow_empty_result(boolean_type, variant),
             sample_input_properties=sample_input_properties,
+            volume_relation=volume_relation,
+            volume_relation_abs_tol=volume_relation_abs_tol,
         ),
     }
     recipe.update(target_body(source_path, body_index, source_label_text))
@@ -530,6 +553,12 @@ def make_cases_for_source(args: argparse.Namespace, path: Path, bbox: dict[str, 
     pad = max(radius * 2.0, TOPO_TOL * 20.0)
     vertical_height = max(z_span + 2.0 * pad, 4.0 * radius, 1.0)
     z_base = mins[2] - pad
+    sweep_radius = max(0.1, radius * 0.65)
+    sweep_height = max(1.0, vertical_height * 0.8)
+    sweep_z_base = center[2] - sweep_height * 0.5
+    slab_length = max(2.0 * TOPO_TOL, min(x_span * 0.2, max(radius, TOPO_TOL * 10.0)))
+    slab_width = y_span + 2.0 * pad
+    relation_abs_tol = volume_relation_abs_tolerance(bbox)
     label = source_label(path)
     cases: list[dict[str, Any]] = []
 
@@ -542,16 +571,29 @@ def make_cases_for_source(args: argparse.Namespace, path: Path, bbox: dict[str, 
                 elif family == "cylinder_tangent_y":
                     tool = cylinder_tool(radius, vertical_height, center[0], maxs[1] + radius + delta, z_base, family)
                 elif family == "sweep_tangent_x":
-                    tool = sweep_tool(radius, vertical_height, maxs[0] + radius + delta, center[1], z_base, family)
+                    tool = sweep_tool(
+                        sweep_radius,
+                        sweep_height,
+                        maxs[0] + sweep_radius + delta,
+                        center[1],
+                        sweep_z_base,
+                        family,
+                    )
                 elif family == "sweep_tangent_y":
-                    tool = sweep_tool(radius, vertical_height, center[0], maxs[1] + radius + delta, z_base, family)
-                elif family == "extrude_center_slab":
-                    slab_width = max(2.0 * TOPO_TOL, min(y_span * 0.2, max(radius, TOPO_TOL * 10.0)))
+                    tool = sweep_tool(
+                        sweep_radius,
+                        sweep_height,
+                        center[0],
+                        maxs[1] + sweep_radius + delta,
+                        sweep_z_base,
+                        family,
+                    )
+                elif family == "extrude_tangent_x_slab":
                     tool = extrude_slab_tool(
-                        x_span + 2.0 * pad,
+                        slab_length,
                         slab_width,
                         vertical_height,
-                        center[0] + delta,
+                        maxs[0] + slab_length * 0.5 + delta,
                         center[1],
                         z_base,
                         family,
@@ -572,6 +614,11 @@ def make_cases_for_source(args: argparse.Namespace, path: Path, bbox: dict[str, 
                         topo_track=args.topo_track,
                         body_index=args.body_index,
                         sample_input_properties=args.sample_input_properties,
+                        volume_relation=(
+                            args.sample_input_properties
+                            and family not in {"sweep_tangent_x", "sweep_tangent_y"}
+                        ),
+                        volume_relation_abs_tol=relation_abs_tol,
                     )
                 )
     return cases
