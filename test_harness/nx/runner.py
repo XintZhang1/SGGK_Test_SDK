@@ -180,7 +180,14 @@ class NxJournalRunner:
             environment["SGGK_NX_PROBE_NONCE"] = nonce
             try:
                 execution = self.executor.execute(
-                    [str(self.installation.run_journal_path), str(probe_script)],
+                    [
+                        str(self.installation.run_journal_path),
+                        "-nx",
+                        str(probe_script),
+                        "-args",
+                        nonce,
+                        str(output_path),
+                    ],
                     cwd=probe_script.parent,
                     environment=environment,
                     timeout_seconds=timeout_seconds,
@@ -202,11 +209,15 @@ class NxJournalRunner:
             )
         elif not self._valid_probe_payload(payload, nonce):
             status = "invalid_result"
+            validation_detail = self._probe_validation_detail(payload, nonce)
             diagnostics.append(
                 NxDiagnostic(
                     "NX_RUNTIME_PROBE_RESULT_INVALID",
                     "error",
-                    "The NX journal process did not return an authenticated probe result.",
+                    "The NX journal process did not return a Harness-authenticated "
+                    "(nonce-validated) probe result; this is not a Siemens license "
+                    "authentication status. "
+                    + validation_detail,
                     "Inspect the bounded stdout/stderr tails and repair the NX Python runtime.",
                 )
             )
@@ -362,6 +373,19 @@ class NxJournalRunner:
             and payload.get("schema_version") == SCHEMA_VERSION
             and secrets.compare_digest(str(payload.get("nonce") or ""), nonce)
         )
+
+    @staticmethod
+    def _probe_validation_detail(payload: Mapping[str, Any], nonce: str) -> str:
+        if not payload:
+            return "No structured probe payload was captured."
+        failures: list[str] = []
+        if payload.get("kind") != PROBE_KIND:
+            failures.append("kind mismatch")
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            failures.append("schema version mismatch")
+        if not secrets.compare_digest(str(payload.get("nonce") or ""), nonce):
+            failures.append("nonce mismatch")
+        return "Validation failed: " + ", ".join(failures or ["unknown reason"]) + "."
 
     def _launch_failure(
         self,

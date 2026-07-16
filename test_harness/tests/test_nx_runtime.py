@@ -22,7 +22,7 @@ from test_harness.nx import (
     execute_nx_journal,
     probe_nx_python,
 )
-from test_harness.nx.runtime_probe import collect_probe
+from test_harness.nx.runtime_probe import _probe_inputs, collect_probe, main as runtime_probe_main
 import test_harness.nx.runner as nx_runner_module
 
 
@@ -220,7 +220,11 @@ def test_probe_uses_fixed_bundled_script_and_authenticates_result(tmp_path: Path
     command = call["command"]
     assert isinstance(command, list)
     assert command[0] == str((root / "NXBIN" / "run_journal.exe").resolve())
-    assert Path(command[1]).name == "runtime_probe.py"
+    assert command[1] == "-nx"
+    assert Path(command[2]).name == "runtime_probe.py"
+    assert command[3] == "-args"
+    assert command[4] == call["environment"]["SGGK_NX_PROBE_NONCE"]
+    assert command[5] == call["environment"]["SGGK_NX_PROBE_OUTPUT"]
     assert call["timeout_seconds"] == 9
     process_environment = call["environment"]
     assert isinstance(process_environment, dict)
@@ -359,6 +363,46 @@ def test_runtime_probe_returns_structured_import_failure(monkeypatch: pytest.Mon
     assert payload["ok"] is False
     assert payload["error_type"] == "ImportError"
     assert payload["error"] == "NXOpen is intentionally absent"
+
+
+def test_runtime_probe_arguments_override_stale_launcher_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGGK_NX_PROBE_NONCE", "stale-environment-nonce")
+    monkeypatch.setenv("SGGK_NX_PROBE_OUTPUT", "stale-environment-output.json")
+
+    assert _probe_inputs(["journal-nonce", "journal-output.json"]) == (
+        "journal-nonce",
+        "journal-output.json",
+    )
+
+
+def test_runtime_probe_stdout_survives_result_file_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = types.ModuleType("NXOpen")
+
+    class FakeSession:
+        @staticmethod
+        def GetSession() -> object:
+            return object()
+
+    fake.Session = FakeSession  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "NXOpen", fake)
+    monkeypatch.setattr(sys, "argv", ["runtime_probe.py", "journal-nonce", "blocked.json"])
+    monkeypatch.setattr(
+        "test_harness.nx.runtime_probe.write_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("blocked")),
+    )
+
+    assert runtime_probe_main() == 0
+    output = capsys.readouterr().out
+    assert output.startswith("SGGK_NX_PROBE_JSON=")
+    payload = json.loads(output.split("=", 1)[1])
+    assert payload["ok"] is True
+    assert payload["nonce"] == "journal-nonce"
+    assert payload["result_write_error_type"] == "PermissionError"
 
 
 def test_subprocess_executor_bounds_captured_output(tmp_path: Path) -> None:

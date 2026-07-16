@@ -80,10 +80,33 @@ def write_result(payload: dict[str, Any], output_path: str) -> None:
     temporary.replace(destination)
 
 
+def _probe_inputs(arguments: list[str] | None = None) -> tuple[str, str]:
+    """Prefer journal arguments because NX launchers may not preserve env vars.
+
+    ``run_journal.exe`` can hand a journal to an already-running NX process or
+    start NX through another launcher.  In either case, transient variables
+    added by the Harness parent process are less reliable than ``-args``.
+    Environment variables remain as a compatibility fallback for direct or
+    older invocations of this bundled script.
+    """
+
+    values = list(sys.argv[1:] if arguments is None else arguments)
+    nonce = values[0] if values else os.environ.get("SGGK_NX_PROBE_NONCE", "")
+    output_path = values[1] if len(values) > 1 else os.environ.get("SGGK_NX_PROBE_OUTPUT", "")
+    return nonce, output_path
+
+
 def main() -> int:
-    nonce = os.environ.get("SGGK_NX_PROBE_NONCE", "")
+    nonce, output_path = _probe_inputs()
     payload = collect_probe(nonce)
-    write_result(payload, os.environ.get("SGGK_NX_PROBE_OUTPUT", ""))
+    try:
+        write_result(payload, output_path)
+    except OSError as exc:
+        # stdout is an independent authenticated result channel.  A temp-path
+        # encoding, antivirus, or permission problem must not turn a working
+        # NXOpen session into an opaque "invalid_result" report.
+        payload["result_write_error_type"] = type(exc).__name__
+        payload["result_write_error"] = str(exc)[:1000]
     print(PROBE_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0 if payload["ok"] else 3
 
