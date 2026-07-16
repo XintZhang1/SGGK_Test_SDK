@@ -14,11 +14,12 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from run_message_harness_pipeline import (  # noqa: E402
+    FixedGateResult,
     MessageHarnessPipeline,
+    _storage_id,
     _triage_has_failures,
     build_parser,
 )
-
 from test_harness.authoring_gateway.client import (  # noqa: E402
     HttpResponse,
     OpenAICompatibleMessageClient,
@@ -27,6 +28,18 @@ from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig  
 from test_harness.authoring_gateway.gateway import GatewayError, TaskSpec  # noqa: E402
 
 TOOL_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_long_logical_ids_use_stable_collision_resistant_storage_tokens() -> None:
+    common = "20260716T172624Z_api_boolean_" + ("x" * 80)
+    first = common + "_first"
+    second = common + "_second"
+
+    assert _storage_id("short_run", "run") == "short_run"
+    assert _storage_id(first, "run") == _storage_id(first, "run")
+    assert _storage_id(first, "run").startswith("run_")
+    assert len(_storage_id(first, "run")) == 28
+    assert _storage_id(first, "run") != _storage_id(second, "run")
 
 
 def provider_response(candidate: dict[str, Any]) -> HttpResponse:
@@ -135,6 +148,7 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
             "kind_field": "kind",
             "allowed_kinds": ["attack_dsl"],
         },
+        metadata={"target_api": "api_boolean"},
     )
 
     result = pipeline.run_task(
@@ -149,6 +163,16 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
     assert result.gate_attempts == 2
     assert result.message_calls == 2
     assert len(transport.requests) == 2
+    path_identity = json.loads(
+        (tmp_path / result.staging_path / "path_identity.json").read_text(encoding="utf-8")
+    )
+    assert path_identity == {
+        "schema_version": 1,
+        "run_id": "mock_topocheck_repair",
+        "run_storage_id": "mock_topocheck_repair",
+        "task_id": task.task_id,
+        "task_storage_id": _storage_id(task.task_id, "task"),
+    }
     first_gate = result.attempts[0]["fixed_gate"]
     second_gate = result.attempts[1]["fixed_gate"]
     assert not first_gate["ok"]
@@ -160,6 +184,9 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
     repair_prompt = repair_request["messages"][1]["content"]
     assert "UNSUPPORTED_EXPECTATION_ORACLE" in repair_prompt
     assert "expectations.topocheck" in repair_prompt
+    assert "Deterministic api_boolean fixed-gate contract" in repair_prompt
+    assert "`point_relation` -> `expectations.point_relations`" in repair_prompt
+    assert "strictly greater than zero" in repair_prompt
     assert json.loads(accepted_path.read_text(encoding="utf-8")) == repaired
     provenance = json.loads(
         accepted_path.with_name("iface_01.provenance.json").read_text(encoding="utf-8")
@@ -174,6 +201,7 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
     }
     assert provenance["repair"]["gate_repair_output"] is True
     assert provenance["repair"]["gate_repair_iteration"] == 1
+
 
     resumed = pipeline.run_task(
         task,
@@ -200,6 +228,66 @@ def test_fixed_gate_diagnostic_repairs_unknown_topocheck_before_acceptance(tmp_p
     assert not wrong_goal.ok
     assert not wrong_goal.authoring_accepted
     assert "did not stably reproduce" in wrong_goal.error
+
+
+def test_fixed_gate_repair_prompt_preserves_pinned_context_when_candidate_is_huge(
+    tmp_path: Path,
+) -> None:
+    max_prompt_chars = 12_000
+    pipeline = MessageHarnessPipeline(
+        config(),
+        repo_root=tmp_path,
+        tool_repo_root=TOOL_REPO_ROOT,
+        max_repair_prompt_chars=max_prompt_chars,
+    )
+    task = TaskSpec(
+        task_id="bounded_repair_prompt",
+        task_type="interface_form",
+        prompt="Generate one bounded api_boolean attack_dsl with real semantic oracles.",
+        expected_output_path=tmp_path / "artifacts/accepted/bounded_repair_prompt.json",
+        output_contract={
+            "type": "json_object",
+            "kind_field": "kind",
+            "allowed_kinds": ["attack_dsl"],
+        },
+        metadata={"target_api": "api_boolean"},
+    )
+    candidate = {
+        "kind": "attack_dsl",
+        "dsl": {
+            "dsl_version": 1,
+            "cases": [
+                {
+                    "case_id": "oversized_candidate",
+                    "model_payload": "x" * 125_000,
+                }
+            ],
+        },
+        "notes": [],
+    }
+    gate = FixedGateResult(
+        ok=False,
+        kind="attack_dsl",
+        gate_root="artifacts/gates/bounded_repair_prompt",
+        diagnostics=[
+            {
+                "severity": "error",
+                "error_code": "UNSUPPORTED_EXPECTATION_ORACLE",
+                "path": "$.dsl.defaults.expectations.topocheck",
+                "message": "unsupported expectation/oracle key",
+                "repair_hint": "Remove expectations.topocheck.",
+            }
+        ],
+    )
+
+    repair_prompt = pipeline._repair_prompt(task, candidate, gate, 1)  # noqa: SLF001
+
+    assert len(json.dumps(candidate)) > 120_000
+    assert len(repair_prompt) <= max_prompt_chars
+    assert "<previous-candidate-truncated-for-repair>" in repair_prompt
+    assert "UNSUPPORTED_EXPECTATION_ORACLE" in repair_prompt
+    assert "Deterministic api_boolean fixed-gate contract" in repair_prompt
+    assert "dsl_oracle_checks_smoke" in repair_prompt
 
 
 def test_existing_pair_with_forged_acceptance_metadata_is_never_resumed(tmp_path: Path) -> None:

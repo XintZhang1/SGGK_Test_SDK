@@ -72,6 +72,10 @@ report = execute_nx_journal(
 python test_harness/tools/nx_runtime.py detect
 python test_harness/tools/nx_runtime.py detect --nx-root "C:\Program Files\Siemens\NX2512"
 python test_harness/tools/nx_runtime.py probe --timeout 120
+python test_harness/tools/nx_runtime.py measure-step `
+  --step artifacts/abc_step_import_smoke/_source/example.step `
+  --measurement-out artifacts/nx_sggk_compare/example/nx_measurement.json `
+  --timeout 300
 python test_harness/tools/nx_runtime.py run `
   --journal test_harness/nx_journals/session_smoke.py `
   --allow-root test_harness/nx_journals `
@@ -80,6 +84,28 @@ python test_harness/tools/nx_runtime.py run `
 ```
 
 所有命令向 stdout 输出 JSON；`--out PATH` 可额外写入报告。`ok=false` 时 CLI 返回非零状态。
+
+`measure-step` 不接受 journal 路径，而是固定映射到仓库审查过的
+`nx_journals/abc_step_measure.py`。该 journal 在临时毫米制 NX part 中导入一个 STEP，输出输入
+SHA-256、NX 版本、body 数量、总面积和总绝对体积，并关闭且不保存临时 part。结果符合
+`schemas/nx_step_measurement.schema.json`。
+
+取得同一 STEP 的 SGGK `step_import` case artifact 后，用固定比较器生成 JSON 与中文报告：
+
+```powershell
+python test_harness/tools/compare_nx_sggk_step.py `
+  --nx-measurement artifacts/nx_sggk_compare/example/nx_measurement.json `
+  --sggk-case artifacts/abc_step_import_smoke/example_case `
+  --out artifacts/nx_sggk_compare/example `
+  --abs-tol 0.01 `
+  --rel-tol 1e-5
+```
+
+比较器重新计算 SGGK case 内 `input/source.step` 或 `input/source.stp` 的 SHA-256，要求其与 NX
+measurement 完全一致；NX 与 SGGK 导入都必须成功，body 数量精确相等。总面积和总绝对体积按
+`abs(nx-sggk) <= abs_tol + rel_tol * max(abs(nx), abs(sggk))` 判定。输出符合
+`schemas/nx_sggk_step_comparison.schema.json`；比较未通过时返回码为 `2`，输入 artifact 无效时返回
+码为 `1`。
 
 ## 静态检测 JSON
 

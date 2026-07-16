@@ -21,7 +21,7 @@ def test_ui_settings_default_to_siliconflow_glm52(tmp_path) -> None:
     assert settings.profile == "siliconflow"
     assert settings.base_url == DEFAULT_BASE_URL
     assert settings.model == DEFAULT_MODEL
-    assert settings.thinking_mode == "enabled"
+    assert settings.thinking_mode == "disabled"
 
 
 def test_ui_settings_use_siliconflow_environment_key_without_persisting_it(tmp_path, monkeypatch) -> None:
@@ -92,7 +92,7 @@ def test_ui_settings_migrate_legacy_intranet_ui_config_to_external_defaults(tmp_
     assert settings.profile == "siliconflow"
     assert settings.base_url == DEFAULT_BASE_URL
     assert settings.model == DEFAULT_MODEL
-    assert settings.thinking_mode == "enabled"
+    assert settings.thinking_mode == "disabled"
     assert settings.source_root == ""
 
 
@@ -102,6 +102,28 @@ def test_ui_settings_validate_nx_probe_timeout_without_requiring_nx_path(tmp_pat
     assert saved.nx_root_dir.endswith("not-installed-yet")
     with pytest.raises(UiSettingsError, match="between 5 and 600"):
         store.save({"nx_probe_timeout_seconds": 2})
+
+
+def test_ui_settings_migrate_v2_external_thinking_default_to_disabled(tmp_path) -> None:
+    store = UiSettingsStore(tmp_path, secret_store=MemorySecretStore())
+    store.path.parent.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "profile": "siliconflow",
+                "base_url": DEFAULT_BASE_URL,
+                "model": DEFAULT_MODEL,
+                "thinking_mode": "enabled",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+
+    assert settings.schema_version == 3
+    assert settings.thinking_mode == "disabled"
 
 
 def test_ui_settings_reject_invalid_schema_version(tmp_path) -> None:

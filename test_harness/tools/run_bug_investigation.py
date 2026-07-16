@@ -17,6 +17,7 @@ from test_harness.authoring_gateway.client import CompletionOptions  # noqa: E40
 from test_harness.authoring_gateway.config import (  # noqa: E402
     PROFILE_SPECS,
     ConfigError,
+    GatewayConfig,
     load_gateway_config,
 )
 from test_harness.investigation.orchestrator import run_bundle_investigation  # noqa: E402
@@ -27,7 +28,7 @@ def _read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, choices=sorted(PROFILE_SPECS))
     parser.add_argument("--bundle-index", required=True)
@@ -39,13 +40,40 @@ def main() -> int:
     parser.add_argument("--max-tool-calls", type=int, default=32)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument(
+        "--thinking-mode",
+        choices=("omit", "enabled", "disabled"),
+        default=None,
+        help="Override the provider profile's default thinking mode",
+    )
+    parser.add_argument(
         "--max-tokens",
         type=int,
         default=0,
         help="Default 32768 for every Message API endpoint profile",
     )
     parser.add_argument("--seed", type=int)
-    args = parser.parse_args()
+    return parser
+
+
+def build_completion_options(
+    config: GatewayConfig,
+    args: argparse.Namespace,
+) -> CompletionOptions:
+    max_tokens = args.max_tokens or 32_768
+    if max_tokens <= 0:
+        raise ValueError("--max-tokens must be positive")
+    return CompletionOptions(
+        response_mode="auto",
+        temperature=args.temperature,
+        max_tokens=max_tokens,
+        thinking_mode=args.thinking_mode or config.profile.default_thinking_mode,
+        stream=config.profile.default_stream,
+        seed=args.seed,
+    )
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     try:
         config = load_gateway_config(args.profile)
         index_path = Path(args.bundle_index).resolve()
@@ -58,16 +86,7 @@ def main() -> int:
         if missing_roots:
             raise ValueError(f"source roots do not exist: {missing_roots}")
         allow_source = args.profile == "intranet"
-        max_tokens = args.max_tokens or 32_768
-        if max_tokens <= 0:
-            raise ValueError("--max-tokens must be positive")
-        options = CompletionOptions(
-            response_mode="auto",
-            temperature=args.temperature,
-            max_tokens=max_tokens,
-            thinking_mode="enabled",
-            seed=args.seed,
-        )
+        options = build_completion_options(config, args)
         records: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for bundle in index["bundles"]:

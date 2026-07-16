@@ -7,6 +7,7 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -20,6 +21,38 @@ from validate_recipe import validate_file
 CASE_ID_RE = re.compile(r"^case_id=(?P<case_id>.+)$", re.MULTILINE)
 ARTIFACT_DIR_RE = re.compile(r"^artifact_dir=(?P<artifact_dir>.+)$", re.MULTILINE)
 SAFE_CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _windows_extended_path(value: str) -> str:
+    """Return an absolute Windows path in the explicit long-path namespace."""
+
+    if value.startswith("\\\\?\\") or value.startswith("\\\\.\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    if re.match(r"^[A-Za-z]:[\\/]", value):
+        return "\\\\?\\" + value.replace("/", "\\")
+    return value
+
+
+def native_path_argument(path: Path) -> str:
+    """Render a subprocess path without relying on Windows LongPathsEnabled."""
+
+    resolved = path.resolve()
+    value = str(resolved)
+    if os.name != "nt" or not resolved.is_absolute():
+        return value
+    return _windows_extended_path(value)
+
+
+def display_path(value: str) -> str:
+    """Remove the Windows device prefix from paths recorded for people/tools."""
+
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -516,11 +549,11 @@ def run_one(
     started = time.perf_counter()
     state_path, run_state = initialize_run_state(runner, recipe_path, out_root)
     cmd = [
-        str(runner),
+        native_path_argument(runner),
         "--recipe",
-        str(recipe_path),
+        native_path_argument(recipe_path),
         "--out",
-        str(out_root),
+        native_path_argument(out_root),
         "--sdk-threads",
         str(sdk_threads),
     ]
@@ -538,7 +571,9 @@ def run_one(
         )
         stdout = completed.stdout or ""
         case_id = parse_stdout_field(stdout, CASE_ID_RE, "case_id") or recipe_case_id(recipe_path)
-        artifact_dir = parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir") or infer_artifact_dir(out_root, case_id)
+        artifact_dir = display_path(
+            parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir")
+        ) or infer_artifact_dir(out_root, case_id)
         result = {
             "recipe": str(recipe_path),
             "case_id": case_id,
@@ -570,7 +605,9 @@ def run_one(
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         case_id = parse_stdout_field(stdout, CASE_ID_RE, "case_id") or recipe_case_id(recipe_path)
-        artifact_dir = parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir") or infer_artifact_dir(out_root, case_id)
+        artifact_dir = display_path(
+            parse_stdout_field(stdout, ARTIFACT_DIR_RE, "artifact_dir")
+        ) or infer_artifact_dir(out_root, case_id)
         result = {
             "recipe": str(recipe_path),
             "case_id": case_id,

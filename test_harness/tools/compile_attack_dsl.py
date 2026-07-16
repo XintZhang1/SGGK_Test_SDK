@@ -1315,6 +1315,40 @@ def diagnostic_from_compile_error(path: str, message: str) -> dict[str, Any]:
                 "total_volume, point_relations, face_point_relations, clash_checks, distance_checks, "
                 "or plane_extreme_checks. Do not emit an expectations.properties array."
             ),
+            "expected_shape": {
+                "point_relations": [
+                    {
+                        "role": "result|target|tool",
+                        "point": ["x", "y", "z"],
+                        "expected": "Inside|Outside|OnBoundary|OnModel",
+                    }
+                ],
+                "face_point_relations": [
+                    {
+                        "role": "result|target|tool",
+                        "face_index": "int >= 0",
+                        "uv_fraction": [0.5, 0.5],
+                        "expected": "Inside|Outside|OnBoundary|OnFace",
+                    }
+                ],
+                "clash_checks": [
+                    {
+                        "role_a": "target|tool|result",
+                        "role_b": "target|tool|result",
+                        "expected": "NoClash|AnyClash",
+                    }
+                ],
+                "plane_extreme_checks": [
+                    {
+                        "role": "result|target|tool",
+                        "axis": "x|y|z",
+                        "side": "min|max",
+                        "expected": "number",
+                        "tolerance": "number > 0",
+                    }
+                ],
+                "topocheck": "not an expectation field; use check_valid=true",
+            },
         }
     if "unsupported op" in lower:
         return {

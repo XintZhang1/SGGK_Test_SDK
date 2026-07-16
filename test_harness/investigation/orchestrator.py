@@ -203,7 +203,8 @@ def run_bundle_investigation(
             response_mode="auto",
             temperature=0.2,
             max_tokens=16_384,
-            thinking_mode="enabled",
+            thinking_mode=config.profile.default_thinking_mode,
+            stream=config.profile.default_stream,
         )
         if options.seed is not None:
             options = replace(options, seed=options.seed + index)

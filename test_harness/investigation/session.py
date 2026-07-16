@@ -166,7 +166,8 @@ class InvestigationSession:
             schema_name="sggk_investigation_action",
             temperature=0.2,
             max_tokens=16_384,
-            thinking_mode="enabled",
+            thinking_mode=client.config.profile.default_thinking_mode,
+            stream=client.config.profile.default_stream,
         )
         self.secret_values = tuple(
             sorted({value for value in secret_values if value}, key=len, reverse=True)

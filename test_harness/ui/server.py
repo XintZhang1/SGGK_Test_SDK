@@ -8,6 +8,7 @@ import secrets
 import threading
 import webbrowser
 from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,10 +20,19 @@ from .application import HarnessUiApplication
 MAX_REQUEST_BYTES = 64 * 1024
 
 
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._state: dict[str, Any] = {"status": "idle", "operation": "", "error": ""}
+        self._state: dict[str, Any] = {
+            "status": "idle",
+            "operation": "",
+            "error": "",
+            "started_at": None,
+        }
         self._thread: threading.Thread | None = None
 
     def snapshot(self) -> dict[str, Any]:
@@ -33,15 +43,30 @@ class JobManager:
         with self._lock:
             if self._state["status"] == "running":
                 raise RuntimeError("another Harness operation is already running")
-            self._state = {"status": "running", "operation": operation, "error": ""}
+            self._state = {
+                "status": "running",
+                "operation": operation,
+                "error": "",
+                "started_at": _utc_now(),
+            }
 
         def run() -> None:
             try:
                 callback()
             except Exception as exc:  # surfaced to the local UI
-                result = {"status": "failed", "operation": operation, "error": str(exc)}
+                result = {
+                    "status": "failed",
+                    "operation": operation,
+                    "error": str(exc),
+                    "started_at": None,
+                }
             else:
-                result = {"status": "completed", "operation": operation, "error": ""}
+                result = {
+                    "status": "completed",
+                    "operation": operation,
+                    "error": "",
+                    "started_at": None,
+                }
             with self._lock:
                 self._state = result
 
@@ -147,7 +172,14 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
             return
-        names = {"/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}
+        names = {
+            "/": "index.html",
+            "/app.js": "app.js",
+            "/job-status.js": "job-status.js",
+            "/markdown-preview.js": "markdown-preview.js",
+            "/styles.css": "styles.css",
+            "/job-status.css": "job-status.css",
+        }
         name = names.get(parsed.path)
         if name is None:
             self._error(HTTPStatus.NOT_FOUND, "not found")

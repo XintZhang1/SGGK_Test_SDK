@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SGGK External Harness</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/job-status.css">
 </head>
 <body>
   <header class="topbar">
@@ -19,6 +20,27 @@
   </header>
 
   <main>
+    <section
+      id="jobProgress"
+      class="job-progress"
+      role="status"
+      aria-live="polite"
+      aria-busy="false"
+      aria-labelledby="jobProgressTitle"
+      aria-describedby="jobProgressDetail"
+      hidden
+    >
+      <span class="job-spinner" aria-hidden="true"></span>
+      <div class="job-progress-copy">
+        <span id="jobProgressKicker" class="job-progress-kicker">GLM-5.2</span>
+        <h2 id="jobProgressTitle">模型处理中</h2>
+        <p id="jobProgressDetail">正在等待模型回复，请保持页面开启。</p>
+      </div>
+      <div class="job-timer" aria-hidden="true">
+        <span>已用时</span>
+        <strong id="jobElapsed">00:00</strong>
+      </div>
+    </section>
     <section class="hero panel">
       <div>
         <p class="section-label">当前任务</p>
@@ -97,14 +119,34 @@
 
         <section class="panel artifact-panel">
           <div class="section-head">
-            <div><p class="section-label">ARTIFACTS</p><h2>GLM-5.2 输出与 Harness 产物</h2></div>
+            <div><p class="section-label">ARTIFACTS</p><h2>测试方案、报告与运行结果</h2></div>
             <span id="artifactCount" class="muted-text"></span>
+          </div>
+          <div id="artifactSummary" class="artifact-summary tone-neutral" aria-live="polite">
+            <div class="artifact-summary-copy">
+              <span class="artifact-summary-mark" aria-hidden="true"></span>
+              <div>
+                <h3 id="artifactSummaryTitle">还没有测试产物</h3>
+                <p id="artifactSummaryDetail">开始生成后，这里会告诉你应该先看什么。</p>
+                <p id="artifactSummaryError" class="artifact-summary-error hidden"></p>
+              </div>
+            </div>
+            <div id="artifactActions" class="artifact-actions" aria-label="主要产物入口"></div>
           </div>
           <div class="artifact-layout">
             <nav id="artifactList" class="artifact-list" aria-label="产物列表"></nav>
             <div class="preview-wrap">
-              <div id="previewPath" class="preview-path">选择一个文档或代码文件</div>
-              <pre id="artifactPreview" tabindex="0">这里会安全显示 Markdown、JSON、C++、Python 和日志文本。</pre>
+              <div class="preview-head">
+                <div class="preview-heading">
+                  <strong id="previewTitle">选择一个文件查看</strong>
+                  <div id="previewPath" class="preview-path">完整路径会显示在这里</div>
+                </div>
+                <button id="copyArtifactPath" class="ghost copy-path hidden" type="button">复制路径</button>
+              </div>
+              <div id="previewDescription" class="preview-description">重点报告会自动打开；技术细节默认收起。SGT、PNG 等二进制产物仍保留在 session 目录，不在浏览器中预览。</div>
+              <div id="artifactPreview" class="artifact-preview" tabindex="0">
+                <pre class="artifact-raw-preview">这里会安全显示 Markdown、JSON、C++、Python 和日志文本；二进制产物请从 session 目录查看。</pre>
+              </div>
             </div>
           </div>
         </section>
@@ -118,7 +160,8 @@
             <div class="actions">
               <button type="submit" data-job-action>提交意见</button>
               <button id="approveButton" class="primary" type="button" data-job-action>批准并执行 SDK 测试</button>
-              <button id="retryButton" class="danger" type="button" data-job-action>重试执行</button>
+              <button id="repairButton" class="primary" type="button" data-job-action hidden>根据失败诊断生成修复版</button>
+              <button id="retryButton" class="danger" type="button" data-job-action>仅重跑原方案</button>
             </div>
           </form>
         </section>
@@ -170,6 +213,8 @@
     </section>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/markdown-preview.js" defer></script>
+  <script src="/job-status.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

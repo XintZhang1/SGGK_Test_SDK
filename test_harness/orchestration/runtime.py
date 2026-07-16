@@ -78,6 +78,7 @@ class MessageApiRuntime:
             temperature=0.2,
             max_tokens=self.max_tokens,
             thinking_mode=self.thinking_mode,
+            stream=self.config.profile.default_stream,
         )
 
     def generate(
@@ -100,7 +101,20 @@ class MessageApiRuntime:
             continue_on_error=False,
             execute=False,
         )
-        return result.as_dict()
+        payload = result.as_dict()
+        if not payload.get("ok"):
+            task_errors = [
+                str(item.get("error") or "").strip()
+                for item in payload.get("results", [])
+                if isinstance(item, Mapping) and str(item.get("error") or "").strip()
+            ]
+            batch_errors = [
+                str(item).strip()
+                for item in payload.get("errors", [])
+                if str(item).strip()
+            ]
+            payload["error"] = (task_errors + batch_errors + ["generation failed"])[0]
+        return payload
 
     def interpret_comment(
         self,
@@ -170,6 +184,7 @@ class MessageApiRuntime:
                     temperature=0.0,
                     max_tokens=4096,
                     thinking_mode=self.thinking_mode,
+                    stream=self.config.profile.default_stream,
                 ),
             )
             metadata = {
@@ -181,6 +196,7 @@ class MessageApiRuntime:
                 "finish_reason": completion.finish_reason,
                 "usage": completion.usage,
                 "error": completion.error,
+                "error_kind": completion.error_kind,
                 "events": completion.events,
                 "provider_responses": completion.response_records,
             }
@@ -202,6 +218,29 @@ class MessageApiRuntime:
                 )
             else:
                 last_error = completion.error or "Message API returned no JSON decision"
+                last_status = (
+                    completion.response_records[-1].get("status")
+                    if completion.response_records
+                    else None
+                )
+                repairable_completion = (
+                    isinstance(last_status, int)
+                    and 200 <= last_status < 300
+                    and "refusal" not in completion.error
+                    and completion.finish_reason != "content_filter"
+                    and completion.error_kind
+                    not in {
+                        "provider_error",
+                        "stream_candidate_too_large",
+                        "stream_event_too_large",
+                        "stream_refusal_too_large",
+                        "stream_wire_too_large",
+                    }
+                )
+                if not repairable_completion:
+                    raise WorkflowError(
+                        f"model review comment interpretation failed: {last_error}"
+                    )
             prompt = (
                 task.user_prompt
                 + "\n\nThe prior response failed deterministic validation. Return one complete "

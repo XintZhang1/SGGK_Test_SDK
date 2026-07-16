@@ -33,6 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--nx-root", action="append", default=[])
     probe.add_argument("--timeout", type=float, default=120.0)
 
+    measure_step = subparsers.add_parser(
+        "measure-step",
+        help="Run the fixed ABC STEP measurement journal",
+    )
+    measure_step.add_argument("--nx-root", action="append", default=[])
+    measure_step.add_argument("--step", required=True, help="Existing .step/.stp input")
+    measure_step.add_argument("--measurement-out", required=True, help="NX measurement JSON output")
+    measure_step.add_argument("--timeout", type=float, default=300.0)
+
     run = subparsers.add_parser("run", help="Run an allow-listed Python journal")
     run.add_argument("--nx-root", action="append", default=[])
     run.add_argument("--journal", required=True)
@@ -47,6 +56,21 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         return detect_nx_environment(explicit_roots=args.nx_root)
     if args.operation == "probe":
         return probe_nx_python(explicit_roots=args.nx_root, timeout_seconds=args.timeout)
+    if args.operation == "measure-step":
+        step_path = Path(args.step).expanduser().resolve()
+        measurement_out = Path(args.measurement_out).expanduser().resolve()
+        if not step_path.is_file() or step_path.suffix.casefold() not in {".step", ".stp"}:
+            raise ValueError("--step must name an existing .step or .stp file")
+        if measurement_out.suffix.casefold() != ".json":
+            raise ValueError("--measurement-out must use the .json extension")
+        journal = REPO_ROOT / "test_harness" / "nx_journals" / "abc_step_measure.py"
+        return execute_nx_journal(
+            journal,
+            allowed_roots=[journal.parent],
+            arguments=[str(step_path), str(measurement_out)],
+            explicit_roots=args.nx_root,
+            timeout_seconds=args.timeout,
+        )
     return execute_nx_journal(
         args.journal,
         allowed_roots=args.allow_root,

@@ -730,6 +730,10 @@ class Verifier:
         self.ok("summary", "campaign summary loaded", summary_path)
         report = self.campaign_root / "campaign_report.md"
         self.require_file(report, "campaign report")
+        self.require_file(
+            self.campaign_root / "campaign_report.zh-CN.md",
+            "Chinese campaign report",
+        )
         args = as_dict(summary.get("args"))
         no_preview = bool(args.get("no_preview", False))
         no_geometry_audit = bool(args.get("no_geometry_audit", False))
@@ -755,17 +759,28 @@ class Verifier:
             if isinstance(lane, dict):
                 self.verify_lane(lane, no_preview, no_geometry_audit)
 
-        self.verify_optional_path_block(as_dict(summary.get("bug_registry")), "bug registry", [
-            "registry_path",
-            "registry_report",
-            "replay_recipes",
-        ])
+        bug_registry = as_dict(summary.get("bug_registry"))
+        if bug_registry:
+            if bug_registry.get("skipped"):
+                self.ok("skipped", f"bug registry skipped: {bug_registry.get('reason', '')}")
+            else:
+                self.read_required_json(bug_registry.get("summary_path"), "bug registry summary")
+                self.require_file(bug_registry.get("report_path"), "bug registry report")
+                self.require_file(bug_registry.get("replay_recipes"), "bug registry replay recipes")
         self.verify_debug_handoff_block(as_dict(summary.get("debug_handoff")), "debug handoff")
         self.verify_reductions(as_dict(summary.get("reductions")))
-        self.verify_optional_path_block(as_dict(summary.get("bug_record_drafts")), "bug record drafts", [
-            "drafts_path",
-            "drafts",
-        ])
+        bug_record_drafts = as_dict(summary.get("bug_record_drafts"))
+        if bug_record_drafts:
+            if bug_record_drafts.get("skipped"):
+                self.ok(
+                    "skipped",
+                    f"bug record drafts skipped: {bug_record_drafts.get('reason', '')}",
+                )
+            else:
+                self.read_required_json(
+                    bug_record_drafts.get("draft_path"),
+                    "bug record drafts",
+                )
         self.verify_optional_path_block(as_dict(summary.get("bug_records_promoted")), "promoted bug records", [
             "record_path",
             "report_path",

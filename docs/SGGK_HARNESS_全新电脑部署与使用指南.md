@@ -6,11 +6,14 @@
 ## 前置条件
 
 - Windows x64；
-- Visual Studio 2022，“使用 C++ 的桌面开发”工作负载；
+- Visual Studio 2022 或 CMake 已支持的更新版本（当前已验证 Visual Studio 2026），
+  “使用 C++ 的桌面开发”工作负载；
 - 通过公司批准介质提供的 SGGK SDK 与许可；
 - 可访问的 SiliconFlow OpenAI-compatible Message API 和有效 API key。
 
 SGGK SDK 与许可不进入仓库，也不包含在通用离线包中。
+Harness UI 会自动选择本机已安装且与 CMake 匹配的最新 Visual Studio 生成器；不要求
+为了构建专门降级或另装 VS 2022。
 
 ## 安装和启动
 
@@ -36,8 +39,10 @@ API key 只写入当前 Windows 用户的 Credential Manager。非秘密配置�
 在 UI 顶部输入一个公开接口名并点击“生成测试”。页面会持续显示七个阶段：环境配置、
 接口解析、GLM-5.2 生成、审查与修改、执行批准、SDK 实测和结果报告。
 
-“模型输出与 Harness 产物”区域列出当前 session 内可预览的 Markdown、JSON、C++、
-Python 和日志。内容按纯文本渲染，不执行模型返回的 HTML 或脚本。
+“模型输出与 Harness 产物”区域按用途列出当前 session 内可预览的 Markdown、JSON、
+C++、Python 和日志。Markdown 使用内置安全离线渲染器显示标题、段落、列表和代码；
+JSON、代码与日志保持原始预览。所有模型内容都只写入文本节点，不执行返回的 HTML、
+脚本或事件属性。SGT、PNG 等二进制产物仍保留在 session 目录，但不在浏览器中预览。
 
 对方案有修改时，在“自然语言审查意见”中描述需求。满意后点击“批准并执行 SDK 测试”；
 宿主会把批准绑定到当前不可变候选、Prompt、审查包、轮次和 runner。执行失败可点击

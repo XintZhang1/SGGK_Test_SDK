@@ -48,6 +48,11 @@ cmake --build --preset windows-release --parallel
 Pop-Location
 ```
 
+`windows-local` / `windows-release` target Visual Studio 2022. On a Visual
+Studio 2026 machine, use `windows-vs2026` / `windows-vs2026-release` instead.
+The Harness UI detects the installed C++ workload and matching CMake generator
+automatically, so it does not require one fixed Visual Studio version.
+
 The build copies runtime DLLs and `sggk.lic` next to `sggk_case_runner.exe`.
 It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index.
 

@@ -3,10 +3,13 @@
 let state = null;
 let csrf = "";
 let selectedArtifact = "";
+let selectedArtifactSession = null;
 let settingsInitialized = false;
 let lastJobError = "";
 let abcInspection = null;
 let toastTimer = null;
+let artifactRequestSerial = 0;
+const artifactGroupState = new Map();
 const $ = (id) => document.getElementById(id);
 
 function toast(message, error = false) {
@@ -90,22 +93,207 @@ function renderEvents(items) {
   if (!items.length) root.append(text("li", "尚无事件"));
 }
 
-function renderArtifacts(items) {
-  const root = $("artifactList");
-  root.replaceChildren();
-  $("artifactCount").textContent = `${items.length} 个可预览文件`;
-  items.forEach((item) => {
-    const button = text("button", item.path, "artifact-item" + (item.path === selectedArtifact ? " active" : ""));
-    button.type = "button";
-    button.title = `${item.bytes} bytes`;
-    button.addEventListener("click", () => loadArtifact(item.path));
-    root.append(button);
+const artifactGroupDefaults = {
+  reports: { label: "重点报告", description: "建议先看这里，了解当前方案或最终结论。", order: 10 },
+  proposal: { label: "测试方案与代码", description: "模型生成并通过固定门禁的测试内容。", order: 20 },
+  execution: { label: "SDK 运行结果", description: "真实 SDK 执行的结果、诊断与日志。", order: 30 },
+  review: { label: "审查与批准记录", description: "用户意见、模型理解与执行批准记录。", order: 40 },
+  details: { label: "技术细节", description: "Harness 内部清单、提示词、事件和完整性记录。", order: 50 },
+};
+
+function resetArtifactPreview() {
+  artifactRequestSerial += 1;
+  $("previewTitle").textContent = "选择一个文件查看";
+  $("previewPath").textContent = "完整路径会显示在这里";
+  $("previewDescription").textContent = (
+    "重点报告会自动打开；技术细节默认收起。"
+    + "SGT、PNG 等二进制产物仍保留在 session 目录，不在浏览器中预览。"
+  );
+  renderRawArtifact("这里会安全显示 Markdown、JSON、C++、Python 和日志文本；二进制产物请从 session 目录查看。");
+  $("copyArtifactPath").classList.add("hidden");
+}
+
+function renderRawArtifact(content) {
+  const preview = $("artifactPreview");
+  const raw = document.createElement("pre");
+  raw.className = "artifact-raw-preview";
+  raw.textContent = String(content || "");
+  preview.classList.remove("is-markdown");
+  preview.replaceChildren(raw);
+}
+
+function renderArtifactContent(item, content) {
+  const preview = $("artifactPreview");
+  const markdown = String(item?.suffix || "").toLowerCase() === ".md";
+  if (markdown && window.HarnessMarkdownPreview?.renderInto) {
+    preview.classList.add("is-markdown");
+    window.HarnessMarkdownPreview.renderInto(preview, content);
+    return;
+  }
+  renderRawArtifact(content);
+}
+
+function artifactByPath(path) {
+  return (state?.artifacts || []).find((item) => item.path === path) || null;
+}
+
+function updateArtifactSelection() {
+  document.querySelectorAll("[data-artifact-path]").forEach((button) => {
+    const active = button.dataset.artifactPath === selectedArtifact;
+    button.classList.toggle("active", active);
+    if (button.classList.contains("artifact-item")) {
+      button.setAttribute("aria-current", active ? "true" : "false");
+    }
   });
-  if (!items.length) root.append(text("div", "会话开始后，输出文件将在这里出现。", "muted-text"));
+}
+
+function renderArtifactSummary(summary, items) {
+  const value = summary || {};
+  const tones = new Set(["neutral", "info", "ready", "success", "error"]);
+  const tone = tones.has(value.tone) ? value.tone : "neutral";
+  $("artifactSummary").className = `artifact-summary tone-${tone}`;
+  $("artifactSummaryTitle").textContent = value.title || (items.length ? "测试产物已生成" : "还没有测试产物");
+  $("artifactSummaryDetail").textContent = value.detail || (items.length
+    ? "从下方分组中选择报告、方案或运行结果。"
+    : "开始生成后，这里会告诉你应该先看什么。");
+
+  const error = $("artifactSummaryError");
+  error.textContent = value.error || "";
+  error.classList.toggle("hidden", !value.error);
+
+  const actions = $("artifactActions");
+  actions.replaceChildren();
+  (value.actions || []).forEach((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `artifact-action role-${action.role || "report"}`;
+    button.dataset.artifactPath = action.path;
+    button.disabled = action.previewable === false;
+    button.title = action.path;
+    button.append(
+      text("strong", action.label || "查看产物"),
+      text("span", action.hint || "打开预览", "artifact-action-hint"),
+      text("span", action.path, "artifact-action-path"),
+    );
+    button.addEventListener("click", () => loadArtifact(action.path));
+    actions.append(button);
+  });
+}
+
+function renderArtifacts(items, summary = {}) {
+  const root = $("artifactList");
+  const scrollTop = root.scrollTop;
+  root.replaceChildren();
+  renderArtifactSummary(summary, items);
+
+  const previewable = items.filter((item) => item.previewable !== false).length;
+  $("artifactCount").textContent = previewable === items.length
+    ? `${items.length} 个可查看文件`
+    : `${previewable} / ${items.length} 个可直接预览文件`;
+
+  if (selectedArtifact && !items.some((item) => item.path === selectedArtifact)) {
+    selectedArtifact = "";
+    resetArtifactPreview();
+  }
+
+  const summaryGroups = new Map((summary.groups || []).map((group) => [group.id, group]));
+  const groups = new Map();
+  items.forEach((item) => {
+    const id = item.group || "details";
+    if (!groups.has(id)) {
+      const fallback = artifactGroupDefaults[id] || artifactGroupDefaults.details;
+      const metadata = summaryGroups.get(id) || {};
+      groups.set(id, {
+        id,
+        label: metadata.label || item.group_label || fallback.label,
+        description: metadata.description || fallback.description,
+        order: Number(metadata.order || item.group_order || fallback.order),
+        items: [],
+      });
+    }
+    groups.get(id).items.push(item);
+  });
+
+  [...groups.values()]
+    .sort((left, right) => left.order - right.order)
+    .forEach((group) => {
+      group.items.sort((left, right) => {
+        if (Boolean(left.featured) !== Boolean(right.featured)) return left.featured ? -1 : 1;
+        return String(left.label || left.name).localeCompare(String(right.label || right.name), "zh-CN");
+      });
+
+      const section = document.createElement("details");
+      section.className = `artifact-group group-${group.id}`;
+      section.dataset.group = group.id;
+      // Keep the first view compact: the user-facing report is open, while
+      // proposal, execution, review and host details remain one click away.
+      section.open = artifactGroupState.has(group.id) ? artifactGroupState.get(group.id) : group.id === "reports";
+      section.addEventListener("toggle", () => artifactGroupState.set(group.id, section.open));
+
+      const heading = document.createElement("summary");
+      const headingCopy = document.createElement("span");
+      headingCopy.className = "artifact-group-copy";
+      headingCopy.append(
+        text("strong", group.label),
+        text("small", group.description),
+      );
+      heading.append(headingCopy, text("span", String(group.items.length), "artifact-group-count"));
+      section.append(heading);
+
+      const files = document.createElement("div");
+      files.className = "artifact-group-files";
+      group.items.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "artifact-item" + (item.path === selectedArtifact ? " active" : "");
+        button.dataset.artifactPath = item.path;
+        button.disabled = item.previewable === false;
+        button.title = `${item.description || item.path}\n${item.path}`;
+        button.setAttribute("aria-current", item.path === selectedArtifact ? "true" : "false");
+
+        const top = document.createElement("span");
+        top.className = "artifact-item-top";
+        top.append(
+          text("span", item.kind || item.suffix?.slice(1).toUpperCase() || "文件", "artifact-kind"),
+          text("strong", item.label || item.name || item.path, "artifact-item-label"),
+          text("span", formatBytes(item.bytes), "artifact-size"),
+        );
+        const slash = item.path.lastIndexOf("/");
+        const folder = slash >= 0 ? item.path.slice(0, slash) : "会话根目录";
+        button.append(top, text("span", folder, "artifact-item-path"));
+        button.addEventListener("click", () => loadArtifact(item.path));
+        files.append(button);
+      });
+      section.append(files);
+      root.append(section);
+    });
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "artifact-empty";
+    empty.append(
+      text("strong", "等待测试产物"),
+      text(
+        "span",
+        "会话开始后，可查看的文本报告、方案与运行结果会按用途出现在这里；二进制产物仍保留在 session 目录。",
+      ),
+    );
+    root.append(empty);
+  }
+
+  root.scrollTop = scrollTop;
+  updateArtifactSelection();
   if (!selectedArtifact && items.length) {
-    const preferred = [...items].reverse().find((item) => item.suffix === ".md") || items[items.length - 1];
-    selectedArtifact = preferred.path;
-    queueMicrotask(() => loadArtifact(preferred.path));
+    const actionPath = (summary.actions || []).find((action) => action.previewable !== false)?.path;
+    const preferred = items.find((item) => item.path === actionPath)
+      || items.find((item) => item.featured && item.previewable !== false)
+      || items.find((item) => item.group === "reports" && item.previewable !== false)
+      || items.find((item) => item.previewable !== false);
+    if (preferred) {
+      selectedArtifact = preferred.path;
+      updateArtifactSelection();
+      queueMicrotask(() => loadArtifact(preferred.path));
+    }
   }
 }
 
@@ -122,6 +310,21 @@ function fillSettings(settings) {
 function badge(element, label, kind = "muted") {
   element.textContent = label;
   element.className = "badge" + (kind ? ` ${kind}` : "");
+}
+
+function setJobControlsBusy(busy) {
+  document.querySelectorAll("[data-job-action]").forEach((button) => { button.disabled = busy; });
+  $("startButton").disabled = busy || !Boolean(state?.ready_to_start);
+  $("buildButton").disabled = busy || !Boolean(state?.ready_to_build);
+  $("buildButton").title = state?.ready_to_build
+    ? "使用自动检测到的 MSVC/CMake 工具链构建 Runner"
+    : "需要有效的 SDK、CMake，以及 VS 2022 或 VS 2026 C++ 工具链";
+  $("nxProbeButton").disabled = busy;
+  const canApprove = state?.session?.state === "awaiting_comment";
+  $("approveButton").disabled = busy || !canApprove;
+  $("approveButton").title = canApprove
+    ? "批准当前不可变候选并开始 SDK 实测"
+    : "只有处于待审查状态的新候选才能批准；执行失败后请先修订或按规则重试。";
 }
 
 function renderABC(snapshot) {
@@ -218,19 +421,25 @@ function render(next) {
   state = next;
   csrf = next.csrf_token;
   const session = next.session;
+  if (selectedArtifactSession !== session.session_id) {
+    selectedArtifactSession = session.session_id;
+    selectedArtifact = "";
+    artifactGroupState.clear();
+    resetArtifactPreview();
+  }
   $("taskTitle").textContent = session.public_function || "等待输入公开接口";
   $("taskMeta").textContent = session.session_id
     ? `会话 ${session.session_id} · 第 ${session.current_round} 轮`
     : "配置 SiliconFlow、SGGK SDK 与 Runner 后即可开始。";
   $("sessionBadge").textContent = `会话 · ${session.state || "idle"}`;
   const busy = next.job.status === "running";
-  $("jobBadge").textContent = busy ? `任务 · ${next.job.operation} 运行中` : `任务 · ${next.job.status}`;
-  $("jobBadge").className = "badge" + (busy ? "" : " muted");
+  $("repairButton").hidden = session.state !== "execution_failed";
+  window.HarnessJobStatus.sync(next.job, next.settings);
 
   renderStages(next.stages);
   renderReadiness(next.readiness);
   renderEvents(next.events);
-  renderArtifacts(next.artifacts);
+  renderArtifacts(next.artifacts, next.artifact_summary);
   renderABC(next.abc);
   renderNX(next.nx);
   if (!settingsInitialized) {
@@ -238,9 +447,7 @@ function render(next) {
     settingsInitialized = true;
   }
 
-  document.querySelectorAll("[data-job-action]").forEach((button) => { button.disabled = busy; });
-  $("startButton").disabled = busy || !next.ready_to_start;
-  $("nxProbeButton").disabled = busy;
+  setJobControlsBusy(busy);
   if (next.job.status === "failed" && next.job.error && next.job.error !== lastJobError) {
     lastJobError = next.job.error;
     toast(next.job.error, true);
@@ -254,22 +461,76 @@ async function refresh() {
 }
 
 async function loadArtifact(path) {
+  const item = artifactByPath(path);
+  if (item?.previewable === false) {
+    toast("该文件过大，无法在页面中安全预览。", true);
+    return;
+  }
+  const requestSession = state?.session?.session_id || "";
+  const requestSerial = ++artifactRequestSerial;
   try {
     const value = await request(`/api/artifact?path=${encodeURIComponent(path)}`);
+    if (
+      requestSerial !== artifactRequestSerial
+      || requestSession !== (state?.session?.session_id || "")
+    ) return;
     selectedArtifact = path;
+    $("previewTitle").textContent = item?.label || item?.name || path;
     $("previewPath").textContent = path;
-    $("artifactPreview").textContent = value.content;
-    renderArtifacts(state.artifacts);
-  } catch (error) { toast(error.message, true); }
+    $("previewDescription").textContent = [
+      item?.description || "当前会话中的文本产物。",
+      `${item?.kind || "文本"} · ${formatBytes(value.bytes)}`,
+    ].join(" · ");
+    renderArtifactContent(item, value.content);
+    $("copyArtifactPath").classList.remove("hidden");
+    updateArtifactSelection();
+  } catch (error) {
+    if (
+      requestSerial === artifactRequestSerial
+      && requestSession === (state?.session?.session_id || "")
+    ) toast(error.message, true);
+  }
 }
 
-async function action(path, payload, message) {
+async function copySelectedArtifactPath() {
+  if (!selectedArtifact) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(selectedArtifact);
+    } else {
+      const area = document.createElement("textarea");
+      area.value = selectedArtifact;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.append(area);
+      area.select();
+      const copied = document.execCommand("copy");
+      area.remove();
+      if (!copied) throw new Error("copy unavailable");
+    }
+    toast("产物路径已复制");
+  } catch (_error) {
+    toast("无法自动复制，请从预览标题栏手动复制路径。", true);
+  }
+}
+
+async function action(path, payload, message, operation = "") {
+  if (operation) {
+    window.HarnessJobStatus.begin(operation, state?.settings);
+    setJobControlsBusy(true);
+  }
   try {
     const result = await post(path, payload);
+    if (operation && result.job) window.HarnessJobStatus.sync(result.job, state?.settings);
     toast(message);
     await refresh();
     return result;
   } catch (error) {
+    if (operation) {
+      window.HarnessJobStatus.stop({ status: "failed" });
+      setJobControlsBusy(false);
+      await refresh();
+    }
     toast(error.message, true);
     return null;
   }
@@ -288,16 +549,33 @@ async function startABC(mode) {
 
 $("startForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  action("/api/start", { public_function: $("publicFunction").value.trim() }, "已开始生成，页面会自动更新");
+  action(
+    "/api/start",
+    { public_function: $("publicFunction").value.trim() },
+    "已开始生成，页面会自动更新",
+    "start",
+  );
 });
 $("commentForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  action("/api/comment", { comment: $("comment").value.trim() }, "审查意见已提交");
+  action("/api/comment", { comment: $("comment").value.trim() }, "审查意见已提交", "comment");
 });
-$("approveButton").addEventListener("click", () => action("/api/approve", {}, "已批准，开始 SDK 实测"));
-$("retryButton").addEventListener("click", () => action("/api/retry", {}, "已提交重试"));
-$("buildButton").addEventListener("click", () => action("/api/build", {}, "已开始构建 Runner"));
+$("approveButton").addEventListener("click", () => action("/api/approve", {}, "已批准，开始 SDK 实测", "approve"));
+$("repairButton").addEventListener("click", () => action(
+  "/api/comment",
+  {
+    comment: (
+      "请根据失败诊断修改测试方案，结合上一轮已绑定的执行证据修复候选代码或测试 oracle 的问题，"
+      + "保留真实语义检查且不要掩盖 SDK 缺陷，生成完整的新候选供我重新审查。"
+    ),
+  },
+  "已提交失败诊断，正在生成可重新审查的修复版",
+  "comment",
+));
+$("retryButton").addEventListener("click", () => action("/api/retry", {}, "已提交重试", "retry"));
+$("buildButton").addEventListener("click", () => action("/api/build", {}, "已开始构建 Runner", "build"));
 $("refreshButton").addEventListener("click", refresh);
+$("copyArtifactPath").addEventListener("click", copySelectedArtifactPath);
 $("settingsToggle").addEventListener("click", () => $("settingsPanel").classList.toggle("hidden"));
 
 $("abcPlanButton").addEventListener("click", () => startABC("plan"));
@@ -330,7 +608,9 @@ $("nxRefreshButton").addEventListener("click", async () => {
     toast("NX 静态检测已刷新");
   } catch (error) { toast(error.message, true); }
 });
-$("nxProbeButton").addEventListener("click", () => action("/api/nx/probe", {}, "NX Python 探针已启动"));
+$("nxProbeButton").addEventListener("click", () => (
+  action("/api/nx/probe", {}, "NX Python 探针已启动", "nx_probe")
+));
 
 $("settingsForm").addEventListener("submit", async (event) => {
   event.preventDefault();

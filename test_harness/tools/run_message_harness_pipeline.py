@@ -61,6 +61,7 @@ from test_harness.tools.generated_artifact_review import (  # noqa: E402
     verify_review_attestation,
     write_review_packet,
 )
+from test_harness.tools.model_fixed_gate_contracts import fixed_gate_contract_for_api  # noqa: E402
 
 
 class PipelineError(ValueError):
@@ -185,6 +186,16 @@ def _safe_id(value: str) -> str:
         return safe
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"{safe[:80]}_{digest}"
+
+
+def _storage_id(value: str, namespace: str) -> str:
+    """Map long logical IDs to stable, bounded artifact path components."""
+
+    safe = _safe_id(value)
+    if len(safe) <= 32:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}_{digest}"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -1043,7 +1054,11 @@ class MessageHarnessPipeline:
         ]
         candidate_text = json.dumps(candidate, indent=2, ensure_ascii=False, sort_keys=True)
         diagnostics_text = json.dumps(diagnostics, indent=2, ensure_ascii=False, sort_keys=True)
-        suffix = f"""
+        target_api = str(task.metadata.get("target_api") or "")
+        contract_reminder = (
+            fixed_gate_contract_for_api(target_api) if gate.kind == "attack_dsl" else ""
+        )
+        fixed_context = f"""
 
 ## Automatic fixed-gate repair {iteration}
 
@@ -1059,16 +1074,77 @@ Structured diagnostics:
 {diagnostics_text}
 ```
 
-Previous candidate:
-```json
-{candidate_text}
-```
+{contract_reminder}
 """
-        if len(task.prompt) + len(suffix) <= self.max_repair_prompt_chars:
-            return task.prompt + suffix
-        fixed = suffix[-min(len(suffix), 120_000) :]
-        budget = max(0, self.max_repair_prompt_chars - len(fixed) - 64)
-        return task.prompt[:budget] + "\n<original-prompt-truncated>\n" + fixed
+        if len(fixed_context) > self.max_repair_prompt_chars:
+            raise PipelineError(
+                "max_repair_prompt_chars is too small for the fixed-gate repair "
+                "instructions, diagnostics, and contract"
+            )
+
+        original_header = "## Original task context\n\n"
+        candidate_header = "\n\n## Previous candidate\n\n```json\n"
+        candidate_footer = "\n```\n"
+        candidate_marker = "<previous-candidate-truncated-for-repair>"
+        original_marker = "\n<original-prompt-truncated-for-repair>\n"
+
+        def truncate_middle(text: str, limit: int, marker: str) -> str:
+            if limit <= 0:
+                return ""
+            if len(text) <= limit:
+                return text
+            if limit <= len(marker):
+                return marker[:limit]
+            retained = limit - len(marker)
+            prefix_length = (retained + 1) // 2
+            suffix_length = retained - prefix_length
+            suffix = text[-suffix_length:] if suffix_length else ""
+            return text[:prefix_length] + marker + suffix
+
+        original_section = original_header + task.prompt
+        candidate_frame_length = len(candidate_header) + len(candidate_footer)
+        full_length = (
+            len(original_section)
+            + candidate_frame_length
+            + len(candidate_text)
+            + len(fixed_context)
+        )
+        if full_length <= self.max_repair_prompt_chars:
+            return (
+                original_section
+                + candidate_header
+                + candidate_text
+                + candidate_footer
+                + fixed_context
+            )
+
+        variable_budget = self.max_repair_prompt_chars - len(fixed_context)
+        minimum_candidate = candidate_header + candidate_marker + candidate_footer
+        if len(original_section) + len(minimum_candidate) <= variable_budget:
+            candidate_budget = variable_budget - len(original_section) - candidate_frame_length
+            bounded_candidate = truncate_middle(
+                candidate_text,
+                candidate_budget,
+                candidate_marker,
+            )
+            return (
+                original_section
+                + candidate_header
+                + bounded_candidate
+                + candidate_footer
+                + fixed_context
+            )
+
+        if len(minimum_candidate) <= variable_budget:
+            original_budget = variable_budget - len(minimum_candidate)
+            bounded_original = truncate_middle(
+                original_section,
+                original_budget,
+                original_marker,
+            )
+            return bounded_original + minimum_candidate + fixed_context
+
+        return fixed_context
 
     def _accepted_pair_ok(self, task: TaskSpec, output_path: Path, provenance_path: Path) -> bool:
         pair_ok, _ = self.gateway._verify_existing_pair(task, output_path, provenance_path)  # noqa: SLF001
@@ -2017,8 +2093,20 @@ Previous candidate:
             resolved_selection_goal = "must_pass_execution" if execute else "fixed_gate_only"
         target_signature = dict(target_failure_signature or {})
         run_id = _safe_id(run_id or self.new_run_id())
-        task_root = self.staging_root / run_id / _safe_id(task.task_id)
+        run_storage_id = _storage_id(run_id, "run")
+        task_storage_id = _storage_id(task.task_id, "task")
+        task_root = self.staging_root / run_storage_id / task_storage_id
         _, output_path, provenance_path = self.gateway._task_paths(task, run_id)  # noqa: SLF001
+        _write_json(
+            task_root / "path_identity.json",
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "run_storage_id": run_storage_id,
+                "task_id": task.task_id,
+                "task_storage_id": task_storage_id,
+            },
+        )
         result = PipelineTaskResult(
             False,
             task.task_id,
@@ -2170,7 +2258,11 @@ Previous candidate:
                 result.error = "existing formal output is not a verified fixed-gate accepted pair; use --overwrite"
                 return result
 
-        options = completion_options or CompletionOptions(response_mode="auto")
+        options = completion_options or CompletionOptions(
+            response_mode="auto",
+            thinking_mode=self.config.profile.default_thinking_mode,
+            stream=self.config.profile.default_stream,
+        )
         branches: list[CandidateBranchResult] = []
 
         def generate(index: int, role_id: str) -> CandidateBranchResult:
@@ -2842,7 +2934,16 @@ Previous candidate:
     ) -> PipelineBatchResult:
         resolved_manifest = _inside(self.repo_root, manifest_path, label="manifest_path")
         run_id = _safe_id(run_id or self.new_run_id())
-        run_root = self.staging_root / run_id
+        run_storage_id = _storage_id(run_id, "run")
+        run_root = self.staging_root / run_storage_id
+        _write_json(
+            run_root / "path_identity.json",
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "run_storage_id": run_storage_id,
+            },
+        )
         selected = {item for item in task_ids if item}
         errors: list[str] = []
         try:
@@ -2889,7 +2990,10 @@ Previous candidate:
                     False,
                     task.task_id,
                     run_id,
-                    staging_path=_relative(self.repo_root, run_root / _safe_id(task.task_id)),
+                    staging_path=_relative(
+                        self.repo_root,
+                        run_root / _storage_id(task.task_id, "task"),
+                    ),
                     error=str(exc),
                 )
             results.append(task_result)
@@ -3031,6 +3135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             temperature=args.temperature,
             max_tokens=authoring_max_tokens,
             thinking_mode=args.thinking_mode or config.profile.default_thinking_mode,
+            stream=config.profile.default_stream,
             seed=args.seed,
         )
         candidate_count = args.candidate_count or 3

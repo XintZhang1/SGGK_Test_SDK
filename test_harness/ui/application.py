@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 import threading
 from copy import deepcopy
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from test_harness.authoring_gateway.config import PROFILE_SPECS, load_gateway_config
+from test_harness.msvc import detect_msvc_toolchain, find_cmake
 from test_harness.nx import detect_nx_environment, probe_nx_python
 from test_harness.orchestration.runtime import MessageApiRuntime
 from test_harness.orchestration.workflow import HarnessWorkflow
@@ -31,6 +31,9 @@ class HarnessUiApplication:
         self._nx_detection: dict[str, Any] = {}
         self._nx_probe: dict[str, Any] = {"schema_version": 1, "operation": "probe", "status": "not_run"}
         self._nx_probe_identity = ""
+        self._msvc_lock = threading.Lock()
+        self._msvc_detection_key = ""
+        self._msvc_detection: dict[str, Any] = {}
 
     def readiness(
         self,
@@ -38,13 +41,8 @@ class HarnessUiApplication:
         nx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         value = settings or self.settings.load()
-        vswhere = (
-            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
-            / "Microsoft Visual Studio"
-            / "Installer"
-            / "vswhere.exe"
-        )
         cmake = self._cmake()
+        msvc = self._msvc_toolchain(cmake)
         profile = PROFILE_SPECS[value.profile]
         api_key_ready = bool(self.settings.api_key(value.profile)) or not profile.api_key_required
         nx_state = nx or self.nx_state(value)
@@ -84,7 +82,12 @@ class HarnessUiApplication:
                 bool(value.runner_path and Path(value.runner_path).is_file()),
                 value.runner_path or "构建后自动出现",
             ),
-            self._check("vs2022", "Visual Studio 2022 C++", vswhere.is_file(), str(vswhere)),
+            self._check(
+                "msvc",
+                "MSVC C++（VS 2022 / 2026+）",
+                bool(msvc.get("ok")),
+                str(msvc.get("detail") or "未找到兼容的 Visual Studio C++ 工具链"),
+            ),
             self._check("cmake", "CMake", bool(cmake), str(cmake) if cmake else "未找到"),
             self._check(
                 "abc_dataset",
@@ -124,7 +127,12 @@ class HarnessUiApplication:
         snapshot["ready_to_start"] = all(
             check["ok"]
             for check in snapshot["readiness"]
-            if check["id"] in {"python", "message_api", "sdk", "runner", "vs2022", "cmake"}
+            if check["id"] in {"python", "message_api", "sdk", "runner"}
+        )
+        snapshot["ready_to_build"] = all(
+            check["ok"]
+            for check in snapshot["readiness"]
+            if check["id"] in {"sdk", "msvc", "cmake"}
         )
         return snapshot
 
@@ -316,11 +324,21 @@ class HarnessUiApplication:
         return self.workflow().retry()
 
     def _cmake(self) -> Path | None:
-        bundled = self.repo_root / ".offline_runtime" / "cmake" / "bin" / "cmake.exe"
-        if bundled.is_file():
-            return bundled
-        found = shutil.which("cmake")
-        return Path(found).resolve() if found else None
+        return find_cmake(self.repo_root)
+
+    def _msvc_toolchain(self, cmake: Path | None) -> dict[str, Any]:
+        key = str(cmake or "")
+        with self._msvc_lock:
+            if key == self._msvc_detection_key and self._msvc_detection:
+                return deepcopy(self._msvc_detection)
+            detection = (
+                detect_msvc_toolchain(cmake)
+                if cmake is not None
+                else {"ok": False, "generator": "", "detail": "CMake 不可用"}
+            )
+            self._msvc_detection_key = key
+            self._msvc_detection = dict(detection)
+            return deepcopy(self._msvc_detection)
 
     def build_runner(self) -> dict[str, Any]:
         settings = self.settings.load()
@@ -329,22 +347,40 @@ class HarnessUiApplication:
         cmake = self._cmake()
         if cmake is None:
             raise ValueError("CMake 不可用，请先运行离线安装")
-        build = self.repo_root / "build" / "test_harness"
+        msvc = self._msvc_toolchain(cmake)
+        if not msvc.get("ok") or not msvc.get("generator"):
+            raise ValueError(
+                "未找到 CMake 可用的 MSVC C++ 工具链："
+                + str(msvc.get("detail") or "请安装 VS 2022 或 VS 2026 C++ workload")
+            )
+        generator = str(msvc["generator"])
+        supports_fresh = bool(msvc.get("cmake_supports_fresh"))
+        generator_tag = "-".join(
+            part for part in generator.casefold().replace("/", " ").split() if part
+        )
+        build = self.repo_root / "build" / (
+            "test_harness" if supports_fresh else f"test_harness-{generator_tag}"
+        )
         python = Path(os.sys.executable).resolve()
-        commands = [
+        configure_command = [str(cmake)]
+        if supports_fresh:
+            configure_command.append("--fresh")
+        configure_command.extend(
             [
-                str(cmake),
                 "-S",
                 str(self.repo_root / "test_harness"),
                 "-B",
                 str(build),
                 "-G",
-                "Visual Studio 17 2022",
+                generator,
                 "-A",
                 "x64",
                 f"-DSGGK_SDK_DIR={settings.sdk_dir}",
                 f"-DPython3_EXECUTABLE={python}",
-            ],
+            ]
+        )
+        commands = [
+            configure_command,
             [str(cmake), "--build", str(build), "--config", "Release", "--parallel"],
         ]
         log_path = self.repo_root / "artifacts" / "harness_ui" / "build_runner.log"
@@ -352,6 +388,7 @@ class HarnessUiApplication:
         with log_path.open("w", encoding="utf-8", newline="\n") as log:
             for command in commands:
                 log.write("COMMAND: " + " ".join(command) + "\n\n")
+                log.flush()
                 result = subprocess.run(
                     command,
                     cwd=self.repo_root,
@@ -367,7 +404,12 @@ class HarnessUiApplication:
         if not runner.is_file():
             raise RuntimeError(f"构建完成但未找到 runner：{runner}")
         self.settings.save({"runner_path": str(runner)})
-        return {"runner_path": str(runner), "log_path": str(log_path)}
+        return {
+            "runner_path": str(runner),
+            "log_path": str(log_path),
+            "cmake_generator": generator,
+            "build_root": str(build),
+        }
 
     def artifact(self, relative: str) -> dict[str, Any]:
         return read_artifact(active_session_root(self.repo_root), relative)

@@ -17,6 +17,10 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from test_harness.msvc import detect_msvc_toolchain, find_cmake  # noqa: E402
 
 
 def _write(path: Path, value: Any) -> None:
@@ -178,6 +182,16 @@ def build_candidate(
     sdk_identity = _sdk_identity(sdk_dir, manifest)
     runner_sha256 = ""
     runtime_registry_sha256 = ""
+    cmake = find_cmake(REPO_ROOT)
+    if cmake is None:
+        raise ValueError("no complete CMake installation found")
+    toolchain = detect_msvc_toolchain(cmake)
+    if not toolchain.get("ok") or not toolchain.get("generator"):
+        raise ValueError(
+            "no CMake-compatible MSVC C++ toolchain found: "
+            + str(toolchain.get("detail") or "install VS 2022 or VS 2026 C++ workload")
+        )
+    cmake_generator = str(toolchain["generator"])
     with tempfile.TemporaryDirectory(prefix="sggk_plugin_build_") as temporary:
         workspace = Path(temporary) / "workspace"
         shutil.copytree(
@@ -210,13 +224,13 @@ def build_candidate(
         configure = _run(
             "cmake_configure",
             [
-                "cmake",
+                str(cmake),
                 "-S",
                 str(workspace / "test_harness"),
                 "-B",
                 str(build_root),
                 "-G",
-                "Visual Studio 18 2026",
+                cmake_generator,
                 "-A",
                 "x64",
                 f"-DSGGK_SDK_DIR={sdk_dir}",
@@ -230,7 +244,7 @@ def build_candidate(
                 _run(
                     "cmake_build",
                     [
-                        "cmake",
+                        str(cmake),
                         "--build",
                         str(build_root),
                         "--config",
@@ -340,6 +354,7 @@ def build_candidate(
         "sdk_identity": sdk_identity,
         "runner_sha256": runner_sha256,
         "runtime_registry_sha256": runtime_registry_sha256,
+        "cmake_generator": cmake_generator,
         "smoke_replays": smoke_replays,
         "stable_semantic_evidence": stable,
         "semantic_hashes": semantic_hashes,

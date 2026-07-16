@@ -9,7 +9,10 @@ OpenAI-compatible Chat Completions API 调用 `zai-org/GLM-5.2`：
 | base URL | `https://api.siliconflow.cn/v1` |
 | model | `zai-org/GLM-5.2` |
 | API key | Windows Credential Manager（UI）或 `SILICONFLOW_API_KEY`（维护 CLI） |
-| 默认思考模式 | `enabled`（可显式改为 `disabled` / `omit`） |
+| 默认思考模式 | `disabled`（实测完整提示约 40–70 秒返回；可手动改为 `enabled` / `omit`） |
+| 外网结构化生成 | SSE 流式接收，宿主聚合后按同一 JSON 契约校验 |
+| 单次空闲超时 | 300 秒；完整读超时不自动重试 |
+| 流大小边界 | 候选内容 16 MiB；原始 SSE 线缆流 256 MiB |
 | 可选 CA | `SILICONFLOW_CA_BUNDLE` |
 
 base URL 与 model 是非敏感默认值；API key 没有仓库默认值，缺失时配置会失败关闭。
@@ -30,21 +33,27 @@ $env:SGGK_HARNESS_PROFILE = "siliconflow"
 
 ## 请求与响应契约
 
-Harness 向以下地址发起非流式请求：
+Harness 向以下地址发起 OpenAI-compatible SSE 流式请求：
 
 ```text
 POST https://api.siliconflow.cn/v1/chat/completions
 ```
 
-最小请求参数为 `model`、`messages`、`temperature` 和 `max_tokens`。外网 profile
-默认显式发送 `enable_thinking: true`，避免依赖 provider 端会变化的隐式默认值；运行
-配置也可明确发送 `false` 或省略该字段。结构化输出模式若被 endpoint
+最小请求参数为 `model`、`messages`、`temperature`、`max_tokens` 和 `stream: true`。
+外网 profile 默认显式发送 `enable_thinking: false`，避免长思考让完整代码生成长期不结束；
+设置中仍可手动启用，或省略该字段。结构化输出模式若被 endpoint
 拒绝，客户端会在同一受限尝试中降级到普通 `message.content` JSON；不会切换模型、
 provider 或 endpoint。
 
-服务必须在 `choices[0].message.content` 返回恰好一个 Harness 约定的 JSON 对象。
-`reasoning_content` 只记录长度与 SHA-256，不作为候选，也不持久化原文。模型响应
-始终是不可信候选；只有宿主固定代码能够规范化、验证、编译、执行和提升候选。
+客户端以 64 KiB 有界块增量读取 SSE。服务的 `delta.content` 会在内存中聚合为
+`choices[0].message.content`；聚合结果必须是恰好一个 Harness 约定的 JSON 对象，且其
+UTF-8 编码不得超过 16 MiB。`reasoning_content` 不计入候选上限，只增量记录字符数、
+字节数与 SHA-256，不作为候选，也不保留或持久化原文。原始 SSE 线缆流另有独立的
+256 MiB 硬上限。
+
+只有同时收到显式成功 `finish_reason=stop` 与 `[DONE]` 的完整流才可产生候选；缺少任一
+结束信号、结束后仍出现数据、UTF-8/事件格式错误或超过任一大小上限都会失败关闭。
+模型响应始终是不可信候选；只有宿主固定代码能够规范化、验证、编译、执行和提升候选。
 模型不能提供命令、runner、环境变量、凭据、输出路径或执行权限。
 
 ## 数据边界与失败语义
@@ -57,8 +66,10 @@ provider 或 endpoint。
 - `402` / quota / balance：endpoint 可达，但账户额度不足；
 - `404` / `model_not_found`：账户不可用或 model id 错误；
 - `429` / `5xx`：按固定次数和上限退避重试；
+- 完整读超时：返回带模型、thinking 与 token budget 的明确错误，不自动重复长请求；
 - 响应截断、非 UTF-8、非精确 JSON 或 schema/固定门禁失败：不提升候选，可在受限
   repair budget 内请求完整修复。
 
 所有失败都保留去密后的状态、请求哈希和安全响应元数据，不保存 authorization header、
-原始思考文本或可能回显凭据的 provider body。
+原始思考文本或可能回显凭据的 provider body。对于 SSE，记录只保留原始流的 SHA-256、
+字节数、是否完整读完以及安全聚合元数据，供诊断与审计使用。

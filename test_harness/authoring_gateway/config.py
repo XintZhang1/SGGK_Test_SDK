@@ -18,6 +18,7 @@ class ConfigError(ValueError):
 DEFAULT_PROFILE = "siliconflow"
 SILICONFLOW_DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 SILICONFLOW_DEFAULT_MODEL = "zai-org/GLM-5.2"
+DEFAULT_STREAM_BYTES_LIMIT = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ProfileSpec:
     base_url_locked: bool = False
     model_locked: bool = False
     default_thinking_mode: str = "omit"
+    default_stream: bool = False
 
 
 PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
@@ -66,7 +68,12 @@ PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
             require_https=True,
             base_url_locked=True,
             model_locked=True,
-            default_thinking_mode="enabled",
+            # The complete External authoring prompt was verified against the
+            # real endpoint: streaming without thinking returned a strict
+            # candidate in ~40s, while thinking mode did not finish in 20m.
+            # Keep thinking available as an explicit opt-in, not the default.
+            default_thinking_mode="disabled",
+            default_stream=True,
         ),
     }
 )
@@ -122,6 +129,7 @@ class GatewayConfig:
     backoff_base_seconds: float = 1.0
     max_retry_delay_seconds: float = 30.0
     response_bytes_limit: int = 16 * 1024 * 1024
+    stream_bytes_limit: int = DEFAULT_STREAM_BYTES_LIMIT
 
     @property
     def endpoint_url(self) -> str:
@@ -147,6 +155,7 @@ class GatewayConfig:
             "base_url_locked": self.profile.base_url_locked,
             "model_locked": self.profile.model_locked,
             "default_thinking_mode": self.profile.default_thinking_mode,
+            "default_stream": self.profile.default_stream,
             "ca_bundle_env": self.profile.ca_bundle_env,
             "ca_bundle_configured": bool(self.ca_bundle),
             "request_timeout_seconds": self.request_timeout_seconds,
@@ -154,6 +163,7 @@ class GatewayConfig:
             "backoff_base_seconds": self.backoff_base_seconds,
             "max_retry_delay_seconds": self.max_retry_delay_seconds,
             "response_bytes_limit": self.response_bytes_limit,
+            "stream_bytes_limit": self.stream_bytes_limit,
         }
 
 
@@ -166,6 +176,7 @@ def load_gateway_config(
     backoff_base_seconds: float | None = None,
     max_retry_delay_seconds: float | None = None,
     response_bytes_limit: int | None = None,
+    stream_bytes_limit: int | None = None,
 ) -> GatewayConfig:
     """Resolve a named profile from safe defaults plus environment overrides.
 
@@ -209,6 +220,13 @@ def load_gateway_config(
     byte_limit = _optional_nonnegative_int(response_bytes_limit, 16 * 1024 * 1024, "response byte limit")
     if byte_limit == 0:
         raise ConfigError("response byte limit must be positive")
+    stream_limit = _optional_nonnegative_int(
+        stream_bytes_limit,
+        DEFAULT_STREAM_BYTES_LIMIT,
+        "stream byte limit",
+    )
+    if stream_limit == 0:
+        raise ConfigError("stream byte limit must be positive")
     return GatewayConfig(
         profile=profile,
         base_url=base_url,
@@ -226,4 +244,5 @@ def load_gateway_config(
             max_retry_delay_seconds, 30.0, "maximum retry delay"
         ),
         response_bytes_limit=byte_limit,
+        stream_bytes_limit=stream_limit,
     )

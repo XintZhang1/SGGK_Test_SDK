@@ -6,7 +6,11 @@ from typing import Any
 
 import pytest
 
-from test_harness.authoring_gateway.client import HttpResponse, OpenAICompatibleMessageClient
+from test_harness.authoring_gateway.client import (
+    CompletionOptions,
+    HttpResponse,
+    OpenAICompatibleMessageClient,
+)
 from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig
 from test_harness.investigation.contracts import (
     normalize_hypothesis_report,
@@ -16,6 +20,10 @@ from test_harness.investigation.contracts import (
 )
 from test_harness.investigation.session import InvestigationSession
 from test_harness.investigation.tool_registry import InvestigationToolRegistry
+from test_harness.tools.run_bug_investigation import (
+    build_completion_options,
+    build_parser as build_investigation_parser,
+)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -262,6 +270,72 @@ def gateway_config() -> GatewayConfig:
         request_timeout_seconds=1.0,
         max_retries=0,
     )
+
+
+def siliconflow_gateway_config() -> GatewayConfig:
+    return GatewayConfig(
+        profile=PROFILE_SPECS["siliconflow"],
+        base_url="https://api.siliconflow.cn/v1",
+        model="zai-org/GLM-5.2",
+        api_key="mock-siliconflow-key",
+        request_timeout_seconds=1.0,
+        max_retries=0,
+    )
+
+
+def test_investigation_options_follow_profile_default_and_explicit_override(
+    tmp_path: Path,
+) -> None:
+    config = siliconflow_gateway_config()
+    common = [
+        "--profile",
+        "siliconflow",
+        "--bundle-index",
+        str(tmp_path / "bundle_index.json"),
+        "--out",
+        str(tmp_path / "out"),
+    ]
+
+    defaults = build_completion_options(
+        config,
+        build_investigation_parser().parse_args(common),
+    )
+    explicit = build_completion_options(
+        config,
+        build_investigation_parser().parse_args([*common, "--thinking-mode", "enabled"]),
+    )
+
+    assert defaults.thinking_mode == "disabled"
+    assert defaults.stream is True
+    assert explicit.thinking_mode == "enabled"
+    assert explicit.stream is True
+
+
+def test_investigation_session_default_options_follow_client_profile(tmp_path: Path) -> None:
+    config = siliconflow_gateway_config()
+    registry = InvestigationToolRegistry(
+        bundle_record=make_bundle(tmp_path),
+        source_roots=[],
+        allow_source_content=False,
+    )
+    session = InvestigationSession(
+        client=OpenAICompatibleMessageClient(config, transport=QueueTransport([], "")),
+        registry=registry,
+        role_id="reproduction_analyst",
+        output_root=tmp_path / "investigation",
+    )
+    explicit = InvestigationSession(
+        client=OpenAICompatibleMessageClient(config, transport=QueueTransport([], "")),
+        registry=registry,
+        role_id="skeptical_oracle_analyst",
+        output_root=tmp_path / "explicit_investigation",
+        completion_options=CompletionOptions(thinking_mode="enabled", stream=False),
+    )
+
+    assert session.options.thinking_mode == "disabled"
+    assert session.options.stream is True
+    assert explicit.options.thinking_mode == "enabled"
+    assert explicit.options.stream is False
 
 
 def candidate_report(

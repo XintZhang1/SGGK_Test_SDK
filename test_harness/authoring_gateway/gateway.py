@@ -249,11 +249,24 @@ class AuthoringGateway:
         return task_root, output_path, provenance_path
 
     @staticmethod
-    def _completion_diagnostics(error: str) -> list[ContractDiagnostic]:
+    def _completion_diagnostics(error: str, error_kind: str = "") -> list[ContractDiagnostic]:
+        error_codes = {
+            "transport_timeout": "MESSAGE_API_TIMEOUT",
+            "transport_error": "MESSAGE_API_TRANSPORT_ERROR",
+            "http_error": "MESSAGE_API_HTTP_ERROR",
+            "provider_error": "MESSAGE_API_PROVIDER_ERROR",
+            "stream_candidate_too_large": "MESSAGE_API_OUTPUT_TOO_LARGE",
+            "stream_event_too_large": "MESSAGE_API_STREAM_EVENT_TOO_LARGE",
+            "stream_incomplete": "MESSAGE_API_STREAM_INCOMPLETE",
+            "stream_invalid_event": "MESSAGE_API_STREAM_INVALID",
+            "stream_invalid_utf8": "MESSAGE_API_STREAM_INVALID",
+            "stream_refusal_too_large": "MESSAGE_API_STREAM_REFUSAL_TOO_LARGE",
+            "stream_wire_too_large": "MESSAGE_API_STREAM_TOO_LARGE",
+        }
         return [
             ContractDiagnostic(
                 "error",
-                "MESSAGE_API_OUTPUT_INVALID",
+                error_codes.get(error_kind, "MESSAGE_API_OUTPUT_INVALID"),
                 "$.choices[0].message.content",
                 error or "Message API completion did not yield an exact JSON object.",
                 "Return exactly one JSON object in choices[0].message.content.",
@@ -338,6 +351,7 @@ Fixed diagnostics:
                 "temperature": options.temperature,
                 "max_tokens": options.max_tokens,
                 "thinking_mode": options.thinking_mode,
+                "stream": options.stream,
                 "seed": options.seed,
             },
             "boundary": {
@@ -384,6 +398,7 @@ Fixed diagnostics:
             "reasoning_content_chars": completion.reasoning_content_chars,
             "candidate_sha256": candidate_hash,
             "finish_reason": completion.finish_reason,
+            "error_kind": completion.error_kind,
             "response_mode": completion.final_mode,
             "usage": completion.usage,
             "contract": report.as_dict(),
@@ -510,6 +525,7 @@ Fixed diagnostics:
         raw_response = {
             "ok": completion.ok,
             "error": completion.error,
+            "error_kind": completion.error_kind,
             "candidate_source": completion.candidate_source,
             "message_content": completion.content,
             "message_content_sha256": _sha256_text(completion.content) if completion.content else "",
@@ -690,6 +706,7 @@ Fixed diagnostics:
         options = completion_options or CompletionOptions(
             response_mode="auto",
             thinking_mode=self.config.profile.default_thinking_mode,
+            stream=self.config.profile.default_stream,
         )
         if options.response_mode in {"auto", "json_schema"} and options.response_schema is None:
             options = replace(options, response_schema=response_schema_for_contract(task.output_contract))
@@ -715,7 +732,13 @@ Fixed diagnostics:
             )
             elapsed = time.perf_counter() - started_perf
             if completion.candidate is None:
-                report = ContractReport(False, diagnostics=self._completion_diagnostics(completion.error))
+                report = ContractReport(
+                    False,
+                    diagnostics=self._completion_diagnostics(
+                        completion.error,
+                        completion.error_kind,
+                    ),
+                )
                 diagnostics = report.as_dict()["diagnostics"]
             else:
                 report = validate_candidate(
@@ -789,6 +812,14 @@ Fixed diagnostics:
                 and 200 <= last_status < 300
                 and "refusal" not in completion.error
                 and completion.finish_reason != "content_filter"
+                and completion.error_kind
+                not in {
+                    "provider_error",
+                    "stream_candidate_too_large",
+                    "stream_event_too_large",
+                    "stream_refusal_too_large",
+                    "stream_wire_too_large",
+                }
             )
             repairable = completion.candidate is not None or repairable_completion
             if attempt > max_repairs or not repairable:

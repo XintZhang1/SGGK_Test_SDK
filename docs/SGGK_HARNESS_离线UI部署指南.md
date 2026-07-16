@@ -7,7 +7,9 @@
 wheels。每个二进制文件都记录在 `offline_bundle/manifest.json`，安装时会校验大小、
 SHA-256 和关键 Python import。
 
-目标电脑只假设已经安装 Visual Studio 2022（含“使用 C++ 的桌面开发”工作负载）。
+目标电脑只假设已经安装 Visual Studio 2022 或 CMake 已支持的更新版本（当前已验证
+Visual Studio 2026），并包含“使用 C++ 的桌面开发”工作负载。Harness UI 会自动选择
+已安装且与 CMake 匹配的最新生成器，不会固定要求 VS 2022。
 SGGK SDK 二进制、头文件、许可和可选源码属于公司资产，不在仓库离线包内，需通过
 公司批准的介质另行导入。
 
@@ -28,7 +30,9 @@ SGGK SDK 二进制、头文件、许可和可选源码属于公司资产，不�
 API key 优先读取当前 Windows 用户的 Credential Manager，也可读取
 `SILICONFLOW_API_KEY` 环境变量；配置 JSON 只保存在忽略的
 `artifacts/harness_ui/config.json`。Web 服务只绑定 loopback，POST 请求使用随机
-CSRF token，模型产物按纯文本显示，不执行其中的 HTML 或脚本。
+CSRF token。Markdown 报告由内置的安全离线渲染器显示，其他文本产物保持原始预览；
+所有模型内容都只通过文本节点写入，不执行其中的 HTML、脚本或事件属性。
 
 `vc_redist.x64.exe` 作为修复性安装包保留在 `offline_bundle/archives/`。目标机已有
-完整 VS2022 时通常不必运行；若原生 DLL 报运行库缺失，再由管理员按公司策略安装。
+已有完整 Visual Studio C++ 工具链时通常不必运行；若原生 DLL 报运行库缺失，再由管理员
+按公司策略安装。

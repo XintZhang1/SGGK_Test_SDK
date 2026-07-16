@@ -25,6 +25,7 @@ from harness_capabilities import (
     supported_oracles,
 )
 from campaign_profiles import CAMPAIGN_PROFILES, allowed_campaign_profiles
+from model_fixed_gate_contracts import fixed_gate_contract_for_api
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAPABILITIES = load_capabilities()
@@ -508,6 +509,7 @@ Selected interface example pack: {example_pack.get("id")}
 """
     asset_json = json.dumps(asset_availability, indent=2, ensure_ascii=False)
     campaign_profiles_json = json.dumps(campaign_profiles, indent=2, ensure_ascii=False)
+    fixed_gate_contract = fixed_gate_contract_for_api(str(form.get("target_api") or ""))
     return f"""You are generating SGGK test-harness input, not direct SDK code.
 
 Return exactly one JSON object. Use this shape for runnable DSL tests:
@@ -579,6 +581,8 @@ Hard rules:
 
 Supported body builders: {body_builders}
 Supported oracle families: {oracles}
+
+{fixed_gate_contract}
 
 API guidance:
 {guidance_json}

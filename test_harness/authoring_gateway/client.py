@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
-from .config import GatewayConfig
+from .config import DEFAULT_STREAM_BYTES_LIMIT, GatewayConfig
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 STRUCTURED_OUTPUT_REJECTION_CODES = {400, 404, 415, 422}
@@ -40,10 +40,22 @@ SAFE_RESPONSE_HEADERS = {
     "x-ratelimit-remaining",
     "x-ratelimit-reset",
 }
+MAX_SSE_EVENT_BYTES = 64 * 1024 * 1024
 
 
 class TransportError(RuntimeError):
     """A transport failed without receiving an HTTP response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        timed_out: bool = False,
+        stream_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
+        self.stream_metadata = dict(stream_metadata or {})
 
 
 @dataclass(frozen=True)
@@ -51,6 +63,7 @@ class HttpResponse:
     status: int
     headers: Mapping[str, str]
     body: bytes
+    stream_metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 class MessageTransport(Protocol):
@@ -63,6 +76,7 @@ class MessageTransport(Protocol):
         timeout_seconds: float,
         ca_bundle: str,
         response_bytes_limit: int,
+        stream_bytes_limit: int = DEFAULT_STREAM_BYTES_LIMIT,
     ) -> HttpResponse: ...
 
 
@@ -91,6 +105,7 @@ class UrllibMessageTransport:
         timeout_seconds: float,
         ca_bundle: str,
         response_bytes_limit: int,
+        stream_bytes_limit: int = DEFAULT_STREAM_BYTES_LIMIT,
     ) -> HttpResponse:
         context = ssl.create_default_context(cafile=ca_bundle or None)
         opener = urllib.request.build_opener(
@@ -100,13 +115,25 @@ class UrllibMessageTransport:
         request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
         try:
             with opener.open(request, timeout=timeout_seconds) as response:
-                response_body = response.read(response_bytes_limit + 1)
-                if len(response_body) > response_bytes_limit:
-                    raise TransportError(f"response exceeds {response_bytes_limit} bytes")
+                response_headers = {
+                    str(key).lower(): str(value) for key, value in response.headers.items()
+                }
+                if "text/event-stream" in response_headers.get("content-type", "").lower():
+                    response_body, stream_metadata = _aggregate_sse_chunks(
+                        _response_chunks(response),
+                        candidate_bytes_limit=response_bytes_limit,
+                        wire_bytes_limit=stream_bytes_limit,
+                    )
+                else:
+                    response_body = response.read(response_bytes_limit + 1)
+                    stream_metadata = {}
+                    if len(response_body) > response_bytes_limit:
+                        raise TransportError(f"response exceeds {response_bytes_limit} bytes")
                 return HttpResponse(
                     status=int(response.status),
-                    headers={str(key).lower(): str(value) for key, value in response.headers.items()},
+                    headers=response_headers,
                     body=response_body,
+                    stream_metadata=stream_metadata,
                 )
         except urllib.error.HTTPError as exc:
             response_body = exc.read(response_bytes_limit + 1)
@@ -118,7 +145,20 @@ class UrllibMessageTransport:
                 body=response_body,
             )
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise TransportError(str(exc)) from exc
+            reason = getattr(exc, "reason", None)
+            error_text = str(exc)
+            timed_out = (
+                isinstance(exc, TimeoutError)
+                or isinstance(reason, TimeoutError)
+                or "timed out" in error_text.lower()
+                or "timeout" in error_text.lower()
+            )
+            if timed_out:
+                raise TransportError(
+                    f"provider response timed out after {timeout_seconds:g} seconds",
+                    timed_out=True,
+                ) from exc
+            raise TransportError(error_text) from exc
 
 
 @dataclass(frozen=True)
@@ -129,6 +169,7 @@ class CompletionOptions:
     temperature: float = 0.2
     max_tokens: int = 8192
     thinking_mode: str = "omit"
+    stream: bool = False
     seed: int | None = None
 
     def __post_init__(self) -> None:
@@ -138,6 +179,8 @@ class CompletionOptions:
             raise ValueError("thinking_mode must be omit, enabled, or disabled")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if not isinstance(self.stream, bool):
+            raise ValueError("stream must be a boolean")
 
 
 @dataclass
@@ -152,6 +195,7 @@ class CompletionResult:
     finish_reason: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    error_kind: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
     response_records: list[dict[str, Any]] = field(default_factory=list)
 
@@ -185,6 +229,374 @@ def _parse_body(body: bytes) -> tuple[Any, str]:
         return json.loads(text), text
     except json.JSONDecodeError:
         return {"_raw_text": text}, text
+
+
+class _IncrementalSseAggregator:
+    """Consume SSE without retaining reasoning or the raw response envelope."""
+
+    def __init__(self, *, candidate_bytes_limit: int, wire_bytes_limit: int) -> None:
+        self.candidate_bytes_limit = candidate_bytes_limit
+        self.wire_bytes_limit = wire_bytes_limit
+        self._raw_hasher = hashlib.sha256()
+        self._reasoning_hasher = hashlib.sha256()
+        self._raw_bytes = 0
+        self._reasoning_bytes = 0
+        self._reasoning_chars = 0
+        self._candidate_bytes = 0
+        self._refusal_bytes = 0
+        self._event_count = 0
+        self._line_buffer = bytearray()
+        self._data_lines: list[bytes] = []
+        self._event_bytes = 0
+        self._content_parts: list[str] = []
+        self._refusal_parts: list[str] = []
+        self._usage: dict[str, Any] = {}
+        self._response_id = ""
+        self._response_model = ""
+        self._finish_reason = ""
+        self._saw_choice = False
+        self._saw_done = False
+        self._error = ""
+        self._error_kind = ""
+        self._discard_parser_input = False
+        self._wire_limit_exceeded = False
+        self._raw_stream_complete = False
+
+    @property
+    def wire_limit_exceeded(self) -> bool:
+        return self._wire_limit_exceeded
+
+    def mark_raw_stream_complete(self) -> None:
+        self._raw_stream_complete = True
+
+    def _fail(self, message: str, kind: str) -> None:
+        if not self._error:
+            self._error = message
+            self._error_kind = kind
+        self._content_parts.clear()
+        self._refusal_parts.clear()
+        self._line_buffer.clear()
+        self._data_lines.clear()
+        self._event_bytes = 0
+        self._discard_parser_input = True
+
+    def feed(self, chunk: bytes) -> None:
+        if not isinstance(chunk, bytes):
+            chunk = bytes(chunk)
+        self._raw_hasher.update(chunk)
+        self._raw_bytes += len(chunk)
+        if self._raw_bytes > self.wire_bytes_limit:
+            self._wire_limit_exceeded = True
+            self._fail(
+                f"provider SSE wire stream exceeds {self.wire_bytes_limit} bytes",
+                "stream_wire_too_large",
+            )
+            return
+        if self._discard_parser_input:
+            return
+        self._line_buffer.extend(chunk)
+        while True:
+            newline = self._line_buffer.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(self._line_buffer[:newline])
+            del self._line_buffer[: newline + 1]
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            self._process_line(line)
+            if self._discard_parser_input:
+                return
+        if len(self._line_buffer) + self._event_bytes > MAX_SSE_EVENT_BYTES:
+            self._fail(
+                f"provider SSE event exceeds {MAX_SSE_EVENT_BYTES} bytes",
+                "stream_event_too_large",
+            )
+
+    def _process_line(self, line: bytes) -> None:
+        if not line:
+            self._flush_event()
+            return
+        if line.startswith(b":"):
+            return
+        field, separator, value = line.partition(b":")
+        if field != b"data":
+            return
+        if separator and value.startswith(b" "):
+            value = value[1:]
+        self._data_lines.append(value)
+        self._event_bytes += len(value)
+        if self._event_bytes > MAX_SSE_EVENT_BYTES:
+            self._fail(
+                f"provider SSE event exceeds {MAX_SSE_EVENT_BYTES} bytes",
+                "stream_event_too_large",
+            )
+
+    def _flush_event(self) -> None:
+        if not self._data_lines or self._discard_parser_input:
+            return
+        payload = b"\n".join(self._data_lines)
+        self._data_lines.clear()
+        self._event_bytes = 0
+        self._event_count += 1
+        if self._saw_done:
+            self._fail("provider SSE stream contains data after [DONE]", "stream_invalid_event")
+            return
+        if payload.strip() == b"[DONE]":
+            self._saw_done = True
+            return
+        try:
+            event_text = payload.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            self._fail(
+                "provider SSE event is not valid UTF-8: "
+                f"invalid byte sequence at offset {exc.start}",
+                "stream_invalid_utf8",
+            )
+            return
+        try:
+            event = json.loads(event_text)
+        except json.JSONDecodeError:
+            self._fail(
+                f"provider SSE event {self._event_count} is not valid JSON",
+                "stream_invalid_event",
+            )
+            return
+        if not isinstance(event, dict):
+            self._fail(
+                f"provider SSE event {self._event_count} is not a JSON object",
+                "stream_invalid_event",
+            )
+            return
+        if "error" in event:
+            provider_error = event.get("error")
+            message = ""
+            code = ""
+            if isinstance(provider_error, dict):
+                message = str(provider_error.get("message") or "").strip()
+                code = str(provider_error.get("code") or "").strip()
+            elif isinstance(provider_error, str):
+                message = provider_error.strip()
+            detail = ": ".join(item for item in (code, message[:500]) if item)
+            self._fail(
+                "provider SSE error" + (f": {detail}" if detail else ""),
+                "provider_error",
+            )
+            return
+        event_id = event.get("id")
+        if isinstance(event_id, str):
+            bounded_id = event_id[:4096]
+            if self._response_id and bounded_id != self._response_id:
+                self._fail("provider SSE response id changed mid-stream", "stream_invalid_event")
+                return
+            self._response_id = bounded_id
+        event_model = event.get("model")
+        if isinstance(event_model, str):
+            bounded_model = event_model[:4096]
+            if self._response_model and bounded_model != self._response_model:
+                self._fail("provider SSE model changed mid-stream", "stream_invalid_event")
+                return
+            self._response_model = bounded_model
+        if isinstance(event.get("usage"), dict):
+            self._usage = dict(event["usage"])
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            return
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            choice_index = choice.get("index", 0)
+            if choice_index is not None and choice_index != 0:
+                continue
+            self._saw_choice = True
+            had_terminal_finish = bool(self._finish_reason)
+            if choice.get("finish_reason") is not None:
+                new_finish_reason = str(choice["finish_reason"])[:128]
+                if (
+                    self._finish_reason
+                    and new_finish_reason
+                    and new_finish_reason != self._finish_reason
+                ):
+                    self._fail(
+                        "provider SSE finish_reason changed mid-stream",
+                        "stream_invalid_event",
+                    )
+                    return
+                if new_finish_reason:
+                    self._finish_reason = new_finish_reason
+            fragment = choice.get("delta")
+            if not isinstance(fragment, dict):
+                fragment = choice.get("message")
+            if not isinstance(fragment, dict):
+                continue
+            content = _content_text(fragment.get("content"))
+            reasoning = _content_text(
+                fragment.get("reasoning_content") or fragment.get("reasoning")
+            )
+            refusal = _content_text(fragment.get("refusal"))
+            if had_terminal_finish and (content or reasoning or refusal):
+                self._fail(
+                    "provider SSE contains assistant delta after finish_reason",
+                    "stream_invalid_event",
+                )
+                return
+            if reasoning:
+                reasoning_bytes = reasoning.encode("utf-8")
+                self._reasoning_hasher.update(reasoning_bytes)
+                self._reasoning_bytes += len(reasoning_bytes)
+                self._reasoning_chars += len(reasoning)
+            if content:
+                content_bytes = len(content.encode("utf-8"))
+                attempted_bytes = self._candidate_bytes + content_bytes
+                self._candidate_bytes = attempted_bytes
+                if attempted_bytes > self.candidate_bytes_limit:
+                    self._fail(
+                        "assistant streamed candidate content exceeds "
+                        f"{self.candidate_bytes_limit} bytes",
+                        "stream_candidate_too_large",
+                    )
+                    return
+                self._content_parts.append(content)
+            if refusal:
+                refusal_bytes = len(refusal.encode("utf-8"))
+                attempted_bytes = self._refusal_bytes + refusal_bytes
+                self._refusal_bytes = attempted_bytes
+                if attempted_bytes > self.candidate_bytes_limit:
+                    self._fail(
+                        f"assistant streamed refusal exceeds {self.candidate_bytes_limit} bytes",
+                        "stream_refusal_too_large",
+                    )
+                    return
+                self._refusal_parts.append(refusal)
+
+    def finish(self) -> tuple[bytes, dict[str, Any]]:
+        if not self._discard_parser_input:
+            if self._line_buffer:
+                line = bytes(self._line_buffer)
+                self._line_buffer.clear()
+                if line.endswith(b"\r"):
+                    line = line[:-1]
+                self._process_line(line)
+            self._flush_event()
+        if not self._error and not self._saw_choice:
+            self._fail("provider SSE response has no choices[0] deltas", "stream_invalid_event")
+        if not self._error and (not self._saw_done or not self._finish_reason):
+            missing: list[str] = []
+            if not self._saw_done:
+                missing.append("[DONE]")
+            if not self._finish_reason:
+                missing.append("finish_reason")
+            self._fail(
+                "provider SSE stream ended without " + " and ".join(missing),
+                "stream_incomplete",
+            )
+
+        reasoning_sha256 = (
+            self._reasoning_hasher.hexdigest() if self._reasoning_chars else ""
+        )
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "" if self._error else "".join(self._content_parts),
+        }
+        if self._reasoning_chars:
+            message["reasoning_content_metadata"] = {
+                "present": True,
+                "chars": self._reasoning_chars,
+                "bytes": self._reasoning_bytes,
+                "sha256": reasoning_sha256,
+            }
+        if self._refusal_parts and not self._error:
+            message["refusal"] = "".join(self._refusal_parts)
+        response: dict[str, Any] = {
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": self._finish_reason or "length",
+                    "message": message,
+                }
+            ],
+            "usage": self._usage,
+        }
+        if self._response_id:
+            response["id"] = self._response_id
+        if self._response_model:
+            response["model"] = self._response_model
+        if self._error:
+            response["_stream_error"] = self._error
+            response["_stream_error_kind"] = self._error_kind
+            if self._error_kind == "provider_error":
+                response["error"] = {"message": self._error}
+        metadata = {
+            "raw_stream_sha256": self._raw_hasher.hexdigest(),
+            "raw_stream_bytes": self._raw_bytes,
+            "raw_stream_complete": self._raw_stream_complete,
+            "event_count": self._event_count,
+            "done": self._saw_done,
+            "finish_reason": self._finish_reason,
+            "candidate_content_bytes": self._candidate_bytes,
+            "refusal_bytes": self._refusal_bytes,
+            "reasoning_content_sha256": reasoning_sha256,
+            "reasoning_content_chars": self._reasoning_chars,
+            "reasoning_content_bytes": self._reasoning_bytes,
+            "error": self._error,
+            "error_kind": self._error_kind,
+        }
+        return canonical_json_bytes(response), metadata
+
+
+def _aggregate_sse_chunks(
+    chunks: Any,
+    *,
+    candidate_bytes_limit: int,
+    wire_bytes_limit: int,
+) -> tuple[bytes, dict[str, Any]]:
+    aggregator = _IncrementalSseAggregator(
+        candidate_bytes_limit=candidate_bytes_limit,
+        wire_bytes_limit=wire_bytes_limit,
+    )
+    for chunk in chunks:
+        aggregator.feed(chunk)
+        if aggregator.wire_limit_exceeded:
+            break
+    if not aggregator.wire_limit_exceeded:
+        aggregator.mark_raw_stream_complete()
+    return aggregator.finish()
+
+
+def _response_chunks(response: Any, chunk_size: int = 64 * 1024) -> Any:
+    """Prefer bounded reads so one malformed no-newline event cannot allocate a whole line."""
+
+    read1 = getattr(response, "read1", None)
+    if callable(read1):
+        while True:
+            chunk = read1(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+    else:
+        yield from response
+
+
+def _parse_response(
+    response: HttpResponse,
+    *,
+    candidate_bytes_limit: int,
+    wire_bytes_limit: int,
+) -> tuple[Any, str, dict[str, Any]]:
+    content_type = str(response.headers.get("content-type", "")).lower()
+    stream_metadata = dict(response.stream_metadata)
+    if stream_metadata:
+        parsed, _response_text = _parse_body(response.body)
+        return parsed, "SSE stream", stream_metadata
+    if "text/event-stream" in content_type or response.body.lstrip().startswith(b"data:"):
+        synthetic_body, stream_metadata = _aggregate_sse_chunks(
+            (response.body,),
+            candidate_bytes_limit=candidate_bytes_limit,
+            wire_bytes_limit=wire_bytes_limit,
+        )
+        parsed, _response_text = _parse_body(synthetic_body)
+        return parsed, "SSE stream", stream_metadata
+    parsed, response_text = _parse_body(response.body)
+    return parsed, response_text, {}
 
 
 def _retry_after_seconds(value: str, now: Callable[[], datetime]) -> float | None:
@@ -262,7 +674,11 @@ def _strict_json_object(text: str) -> dict[str, Any]:
     return loaded
 
 
-def _candidate_from_response(response: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+def _candidate_from_response(
+    response: Any,
+    *,
+    stream_metadata: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     metadata: dict[str, Any] = {
         "content": "",
         "reasoning_content_sha256": "",
@@ -271,9 +687,28 @@ def _candidate_from_response(response: Any) -> tuple[dict[str, Any] | None, dict
         "finish_reason": "",
         "usage": {},
         "error": "",
+        "error_kind": "",
     }
     if not isinstance(response, dict):
         metadata["error"] = "provider response is not a JSON object"
+        return None, metadata
+    metadata["usage"] = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+    if stream_metadata:
+        metadata["reasoning_content_sha256"] = str(
+            stream_metadata.get("reasoning_content_sha256") or ""
+        )
+        metadata["reasoning_content_chars"] = int(
+            stream_metadata.get("reasoning_content_chars") or 0
+        )
+    stream_error = response.get("_stream_error")
+    if isinstance(stream_error, str) and stream_error:
+        metadata["error"] = stream_error
+        metadata["error_kind"] = str(
+            response.get("_stream_error_kind") or "stream_invalid_event"
+        )
+        metadata["finish_reason"] = str(
+            (stream_metadata or {}).get("finish_reason") or ""
+        )
         return None, metadata
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -287,20 +722,27 @@ def _candidate_from_response(response: Any) -> tuple[dict[str, Any] | None, dict
         return None, metadata
     raw_content = message.get("content")
     content = raw_content if isinstance(raw_content, str) else ""
-    reasoning = _content_text(message.get("reasoning_content") or message.get("reasoning"))
     metadata["content"] = content
-    if reasoning:
-        metadata["reasoning_content_sha256"] = sha256_bytes(reasoning.encode("utf-8"))
-        metadata["reasoning_content_chars"] = len(reasoning)
-    metadata["usage"] = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+    if not stream_metadata:
+        reasoning = _content_text(
+            message.get("reasoning_content") or message.get("reasoning")
+        )
+        if reasoning:
+            metadata["reasoning_content_sha256"] = sha256_bytes(reasoning.encode("utf-8"))
+            metadata["reasoning_content_chars"] = len(reasoning)
 
     refusal = message.get("refusal")
     if isinstance(refusal, str) and refusal.strip():
         metadata["error"] = "assistant message contains a refusal"
+        metadata["error_kind"] = "refusal"
         return None, metadata
 
-    if metadata["finish_reason"] in {"length", "content_filter"}:
-        metadata["error"] = f"completion ended with finish_reason={metadata['finish_reason']}"
+    if metadata["finish_reason"] != "stop":
+        metadata["error"] = (
+            "completion did not end with finish_reason=stop: "
+            f"finish_reason={metadata['finish_reason'] or '<missing>'}"
+        )
+        metadata["error_kind"] = "output_invalid"
         return None, metadata
     if not isinstance(raw_content, str):
         metadata["error"] = "assistant choices[0].message.content must be a string containing exact JSON"
@@ -370,6 +812,8 @@ class OpenAICompatibleMessageClient:
             payload["seed"] = options.seed
         if options.thinking_mode != "omit":
             payload["enable_thinking"] = options.thinking_mode == "enabled"
+        if options.stream:
+            payload["stream"] = True
         if mode == "json_schema":
             if not isinstance(options.response_schema, dict):
                 raise ValueError("json_schema response mode requires response_schema")
@@ -385,9 +829,9 @@ class OpenAICompatibleMessageClient:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, stream: bool = False) -> dict[str, str]:
         headers = {
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
             "Content-Type": "application/json",
             "User-Agent": "sggk-authoring-gateway/1",
         }
@@ -430,14 +874,18 @@ class OpenAICompatibleMessageClient:
                 try:
                     response = self.transport.post(
                         url=self.config.endpoint_url,
-                        headers=self._headers(),
+                        headers=self._headers(stream=options.stream),
                         body=payload_bytes,
                         timeout_seconds=self.config.request_timeout_seconds,
                         ca_bundle=self.config.ca_bundle,
                         response_bytes_limit=self.config.response_bytes_limit,
+                        stream_bytes_limit=self.config.stream_bytes_limit,
                     )
                 except TransportError as exc:
-                    retry = transport_try <= self.config.max_retries
+                    # A full read timeout is materially different from a quick
+                    # connection failure: blindly repeating a long generation
+                    # can turn one bounded wait into ten or fifteen minutes.
+                    retry = not exc.timed_out and transport_try <= self.config.max_retries
                     delay = self._retry_delay(None, transport_try) if retry else 0.0
                     result.events.append(
                         {
@@ -446,6 +894,7 @@ class OpenAICompatibleMessageClient:
                             "request_sha256": request_hash,
                             "status": None,
                             "transport_error": str(exc),
+                            "transport_error_kind": "timeout" if exc.timed_out else "network",
                             "retry": retry,
                             "retry_delay_seconds": delay,
                         }
@@ -453,18 +902,46 @@ class OpenAICompatibleMessageClient:
                     if retry:
                         self.sleeper(delay)
                         continue
-                    result.error = f"transport failed after {transport_try} try/tries: {exc}"
+                    if exc.timed_out:
+                        result.error_kind = "transport_timeout"
+                        result.error = (
+                            f"Message API timed out after {self.config.request_timeout_seconds:g} seconds "
+                            f"while waiting for {self.config.model} "
+                            f"(thinking={options.thinking_mode}, max_tokens={options.max_tokens}); "
+                            "the timeout was not retried to avoid another long wait"
+                        )
+                    else:
+                        result.error_kind = "transport_error"
+                        result.error = f"transport failed after {transport_try} try/tries: {exc}"
+                    result.final_mode = mode
                     return result
 
-                parsed_body, response_text = _parse_body(response.body)
+                parsed_body, response_text, stream_metadata = _parse_response(
+                    response,
+                    candidate_bytes_limit=self.config.response_bytes_limit,
+                    wire_bytes_limit=self.config.stream_bytes_limit,
+                )
+                raw_body_sha256 = str(
+                    stream_metadata.get("raw_stream_sha256")
+                    or sha256_bytes(response.body)
+                )
                 response_record = {
                     "mode": mode,
+                    "stream": options.stream,
                     "transport_try": transport_try,
                     "status": response.status,
                     "headers": _safe_headers(response.headers),
                     "body": _without_reasoning_content(parsed_body),
-                    "body_sha256": sha256_bytes(response.body),
+                    "body_sha256": raw_body_sha256,
                 }
+                if stream_metadata:
+                    response_record["body_bytes"] = int(
+                        stream_metadata.get("raw_stream_bytes") or 0
+                    )
+                    response_record["synthetic_body_sha256"] = sha256_bytes(
+                        response.body
+                    )
+                    response_record["stream_metadata"] = dict(stream_metadata)
                 result.response_records.append(response_record)
                 retry = response.status in RETRYABLE_STATUS_CODES and transport_try <= self.config.max_retries
                 delay = self._retry_delay(response, transport_try) if retry else 0.0
@@ -482,7 +959,10 @@ class OpenAICompatibleMessageClient:
                     self.sleeper(delay)
                     continue
                 if 200 <= response.status < 300:
-                    candidate, metadata = _candidate_from_response(parsed_body)
+                    candidate, metadata = _candidate_from_response(
+                        parsed_body,
+                        stream_metadata=stream_metadata,
+                    )
                     result.final_mode = mode
                     result.candidate = candidate
                     result.candidate_source = str(metadata["candidate_source"])
@@ -493,12 +973,18 @@ class OpenAICompatibleMessageClient:
                     result.usage = dict(metadata["usage"])
                     result.error = str(metadata["error"])
                     result.ok = candidate is not None and not result.error
+                    result.error_kind = (
+                        ""
+                        if result.ok
+                        else str(metadata.get("error_kind") or "output_invalid")
+                    )
                     return result
                 if mode_index + 1 < len(modes) and self._structured_output_rejected(response.status, response_text):
                     result.events[-1]["downgrade_to"] = modes[mode_index + 1]
                     downgrade = True
                     break
                 result.final_mode = mode
+                result.error_kind = "http_error"
                 result.error = f"HTTP {response.status}: {response_text[:500]}"
                 return result
             if downgrade:

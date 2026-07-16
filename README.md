@@ -6,7 +6,9 @@
 
 ## 新电脑离线启动
 
-目标电脑只需预先安装 Visual Studio 2022，并包含“使用 C++ 的桌面开发”工作负载：
+目标电脑需预先安装 Visual Studio 2022 或 CMake 已支持的更新版本（当前已验证
+Visual Studio 2026），并包含“使用 C++ 的桌面开发”工作负载。Harness UI 会自动选择
+本机已安装且与 CMake 匹配的最新生成器：
 
 1. 拷贝完整仓库和公司内部提供的 SGGK SDK/许可；
 2. 双击 `install_offline.cmd`；

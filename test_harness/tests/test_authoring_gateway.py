@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import urllib.error
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from test_harness.authoring_gateway.client import (
     HttpResponse,
     OpenAICompatibleMessageClient,
     TransportError,
+    UrllibMessageTransport,
 )
 from test_harness.authoring_gateway.config import (
     DEFAULT_PROFILE,
@@ -78,6 +81,73 @@ def error_response(status: int, message: str, *, headers: dict[str, str] | None 
         headers or {"content-type": "application/json"},
         json.dumps({"error": {"message": message}}).encode(),
     )
+
+
+def stream_response(*events: dict[str, Any], done: bool = True) -> HttpResponse:
+    lines = [f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events]
+    if done:
+        lines.append("data: [DONE]\n\n")
+    return HttpResponse(
+        200,
+        {"content-type": "text/event-stream; charset=utf-8"},
+        "".join(lines).encode("utf-8"),
+    )
+
+
+def sse_event(event: dict[str, Any], *, newline: bytes = b"\n") -> bytes:
+    return (
+        b"data: "
+        + json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        + newline
+        + newline
+    )
+
+
+class IncrementalStreamingResponse:
+    status = 200
+    headers = {"content-type": "text/event-stream; charset=utf-8"}
+
+    def __init__(self, chunks: Any) -> None:
+        self._chunks = iter(chunks)
+        self._pending = b""
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "IncrementalStreamingResponse":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def read1(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        while not self._pending:
+            try:
+                self._pending = bytes(next(self._chunks))
+            except StopIteration:
+                return b""
+        result = self._pending[:size]
+        self._pending = self._pending[size:]
+        return result
+
+    def read(self, *_args: Any) -> bytes:
+        raise AssertionError("SSE transport must use bounded incremental reads")
+
+
+def install_incremental_response(
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: Any,
+) -> IncrementalStreamingResponse:
+    response = IncrementalStreamingResponse(chunks)
+
+    class StreamingOpener:
+        def open(self, *_args: Any, **_kwargs: Any) -> IncrementalStreamingResponse:
+            return response
+
+    monkeypatch.setattr(
+        "test_harness.authoring_gateway.client.urllib.request.build_opener",
+        lambda *_handlers: StreamingOpener(),
+    )
+    return response
 
 
 def make_config(*, retries: int = 0, profile: str = "intranet") -> GatewayConfig:
@@ -273,16 +343,117 @@ def test_retryable_status_retries_then_succeeds(tmp_path: Path, status: int) -> 
     assert delays == [0.0]
 
 
-def test_timeout_retries_are_bounded_and_fail_nonzero_result(tmp_path: Path) -> None:
-    transport = QueueTransport(TransportError("timeout"), TransportError("timeout"))
+def test_read_timeout_is_not_retried_and_fails_nonzero_result(tmp_path: Path) -> None:
+    transport = QueueTransport(TransportError("read timed out", timed_out=True))
     gateway = make_gateway(tmp_path, transport, retries=1)
 
     result = gateway.run_task(flat_task(tmp_path), run_id="timeout")
 
     assert not result.ok
     assert result.attempts == 1
+    assert len(transport.requests) == 1
+    assert "not retried" in result.error
+    assert "thinking=omit" in result.error
+    assert result.diagnostics[0]["error_code"] == "MESSAGE_API_TIMEOUT"
+
+
+def test_quick_transport_failure_still_uses_bounded_retry(tmp_path: Path) -> None:
+    candidate = flat_candidate("connection_retried")
+    transport = QueueTransport(
+        TransportError("connection reset"),
+        provider_response(json.dumps(candidate)),
+    )
+    gateway = make_gateway(tmp_path, transport, retries=1)
+
+    result = gateway.run_task(flat_task(tmp_path), run_id="connection_retry")
+
+    assert result.ok
     assert len(transport.requests) == 2
-    assert "transport failed" in result.error
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("socket read timed out"),
+        urllib.error.URLError(TimeoutError("socket read timed out")),
+    ],
+)
+def test_urllib_transport_classifies_real_timeout_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    class RaisingOpener:
+        def open(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise failure
+
+    monkeypatch.setattr(
+        "test_harness.authoring_gateway.client.urllib.request.build_opener",
+        lambda *_handlers: RaisingOpener(),
+    )
+
+    with pytest.raises(TransportError) as captured:
+        UrllibMessageTransport().post(
+            url="https://message-api.invalid/v1/chat/completions",
+            headers={"content-type": "application/json"},
+            body=b"{}",
+            timeout_seconds=300,
+            ca_bundle="",
+            response_bytes_limit=1024,
+        )
+
+    assert captured.value.timed_out is True
+    assert "300 seconds" in str(captured.value)
+
+
+def test_urllib_transport_streams_lines_instead_of_waiting_for_whole_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chunks = [
+        b'data: {"choices":[{"index":0,"delta":{"content":"{\\"ok\\":true}"},'
+        b'"finish_reason":"stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    class StreamingResponse:
+        status = 200
+        headers = {"content-type": "text/event-stream"}
+
+        def __enter__(self) -> "StreamingResponse":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def __iter__(self) -> Any:
+            return iter(chunks)
+
+        def read(self, *_args: Any) -> bytes:
+            raise AssertionError("SSE transport must consume incremental lines")
+
+    class StreamingOpener:
+        def open(self, *_args: Any, **_kwargs: Any) -> StreamingResponse:
+            return StreamingResponse()
+
+    monkeypatch.setattr(
+        "test_harness.authoring_gateway.client.urllib.request.build_opener",
+        lambda *_handlers: StreamingOpener(),
+    )
+
+    response = UrllibMessageTransport().post(
+        url="https://message-api.invalid/v1/chat/completions",
+        headers={"accept": "text/event-stream"},
+        body=b"{}",
+        timeout_seconds=300,
+        ca_bundle="",
+        response_bytes_limit=1024,
+    )
+
+    parsed = json.loads(response.body)
+    assert parsed["choices"][0]["message"]["content"] == '{"ok":true}'
+    assert response.stream_metadata["raw_stream_bytes"] == len(b"".join(chunks))
+    assert response.stream_metadata["raw_stream_sha256"] == hashlib.sha256(
+        b"".join(chunks)
+    ).hexdigest()
 
 
 def test_invalid_message_json_gets_one_diagnostic_repair_attempt(tmp_path: Path) -> None:
@@ -584,7 +755,8 @@ def test_siliconflow_profile_defaults_to_glm52_and_requires_only_key() -> None:
     assert config.base_url == SILICONFLOW_DEFAULT_BASE_URL
     assert config.endpoint_url == f"{SILICONFLOW_DEFAULT_BASE_URL}/chat/completions"
     assert config.model == SILICONFLOW_DEFAULT_MODEL
-    assert config.profile.default_thinking_mode == "enabled"
+    assert config.profile.default_thinking_mode == "disabled"
+    assert config.profile.default_stream is True
     assert config.api_key == API_KEY
     assert config.profile.provenance_source_type == "siliconflow_message_api"
     assert API_KEY not in repr(config)
@@ -709,8 +881,8 @@ def test_siliconflow_rejects_tasks_without_exact_public_boundary(
     assert transport.requests == []
 
 
-def test_siliconflow_gateway_default_completion_enables_thinking(tmp_path: Path) -> None:
-    transport = QueueTransport(provider_response(json.dumps(flat_candidate("default_thinking"))))
+def test_siliconflow_gateway_defaults_to_streaming_without_thinking(tmp_path: Path) -> None:
+    transport = QueueTransport(provider_response(json.dumps(flat_candidate("default_stream"))))
     gateway = make_gateway(tmp_path, transport, profile="siliconflow")
     task = replace(
         flat_task(tmp_path),
@@ -722,10 +894,457 @@ def test_siliconflow_gateway_default_completion_enables_thinking(tmp_path: Path)
         },
     )
 
-    result = gateway.run_task(task, run_id="default_thinking")
+    result = gateway.run_task(task, run_id="default_stream")
 
     assert result.ok
-    assert json.loads(transport.requests[0]["body"])["enable_thinking"] is True
+    payload = json.loads(transport.requests[0]["body"])
+    assert payload["enable_thinking"] is False
+    assert payload["stream"] is True
+    assert transport.requests[0]["headers"]["Accept"] == "text/event-stream"
+
+
+def test_streaming_completion_aggregates_json_and_redacts_reasoning() -> None:
+    candidate = json.dumps({"ok": True}, separators=(",", ":"))
+    transport = QueueTransport(
+        stream_response(
+            {
+                "id": "stream-id",
+                "model": SILICONFLOW_DEFAULT_MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "private thought",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": candidate[:5]},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": candidate[5:]},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            },
+        )
+    )
+    config = load_gateway_config(environ={"SILICONFLOW_API_KEY": API_KEY})
+    client = OpenAICompatibleMessageClient(config, transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(
+            response_mode="none",
+            max_tokens=64,
+            thinking_mode="disabled",
+            stream=True,
+        ),
+    )
+
+    assert result.ok and result.candidate == {"ok": True}
+    assert result.content == candidate
+    assert result.reasoning_content_chars == len("private thought")
+    assert result.usage == {"prompt_tokens": 10, "completion_tokens": 4}
+    persisted = json.dumps(result.response_records, ensure_ascii=False)
+    assert "private thought" not in persisted
+    assert "reasoning_content_metadata" in persisted
+
+
+def test_incremental_stream_allows_reasoning_larger_than_candidate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = json.dumps({"ok": True}, separators=(",", ":"))
+    reasoning_piece = "NEVER_PERSIST_REASONING_" + ("r" * (1024 * 1024))
+    reasoning_hasher = hashlib.sha256()
+    raw_hasher = hashlib.sha256()
+    raw_bytes = 0
+
+    def chunks() -> Any:
+        nonlocal raw_bytes
+        for _ in range(17):
+            event = sse_event(
+                {
+                    "id": "stream-large-reasoning",
+                    "model": SILICONFLOW_DEFAULT_MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"reasoning_content": reasoning_piece},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            reasoning_hasher.update(reasoning_piece.encode("utf-8"))
+            raw_hasher.update(event)
+            raw_bytes += len(event)
+            yield event
+        for event in (
+            sse_event(
+                {
+                    "id": "stream-large-reasoning",
+                    "model": SILICONFLOW_DEFAULT_MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": candidate},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ),
+            sse_event(
+                {
+                    "id": "stream-large-reasoning",
+                    "model": SILICONFLOW_DEFAULT_MODEL,
+                    "choices": [],
+                    "usage": {"prompt_tokens": 9, "completion_tokens": 17},
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ):
+            raw_hasher.update(event)
+            raw_bytes += len(event)
+            yield event
+
+    response = install_incremental_response(monkeypatch, chunks())
+    config = replace(
+        make_config(),
+        response_bytes_limit=len(candidate.encode("utf-8")),
+        stream_bytes_limit=32 * 1024 * 1024,
+    )
+    client = OpenAICompatibleMessageClient(config)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert result.ok and result.candidate == {"ok": True}
+    assert result.reasoning_content_chars == len(reasoning_piece) * 17
+    assert result.reasoning_content_sha256 == reasoning_hasher.hexdigest()
+    assert result.usage == {"prompt_tokens": 9, "completion_tokens": 17}
+    assert response.read_sizes and max(response.read_sizes) == 64 * 1024
+    record = result.response_records[0]
+    assert record["body_sha256"] == raw_hasher.hexdigest()
+    assert record["body_bytes"] == raw_bytes
+    assert record["stream_metadata"]["raw_stream_complete"] is True
+    assert record["stream_metadata"]["reasoning_content_bytes"] > 16 * 1024 * 1024
+    persisted = json.dumps(result.response_records, ensure_ascii=False)
+    assert "NEVER_PERSIST_REASONING_" not in persisted
+    assert "r" * 100 not in persisted
+
+
+def test_stream_candidate_limit_counts_utf8_content_but_not_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = json.dumps({"text": "中文🙂"}, ensure_ascii=False, separators=(",", ":"))
+    candidate_bytes = len(candidate.encode("utf-8"))
+
+    def raw_stream() -> bytes:
+        return b"".join(
+            (
+                sse_event(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"reasoning_content": "推理🙂" * 128},
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ),
+                sse_event(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": candidate},
+                                "finish_reason": "stop",
+                            }
+                        ]
+                    }
+                ),
+                b"data: [DONE]\n\n",
+            )
+        )
+
+    install_incremental_response(monkeypatch, (raw_stream(),))
+    exact_client = OpenAICompatibleMessageClient(
+        replace(make_config(), response_bytes_limit=candidate_bytes)
+    )
+    exact = exact_client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return unicode.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert exact.ok and exact.candidate == {"text": "中文🙂"}
+    assert exact.response_records[0]["stream_metadata"]["candidate_content_bytes"] == candidate_bytes
+
+    install_incremental_response(monkeypatch, (raw_stream(),))
+    too_small_client = OpenAICompatibleMessageClient(
+        replace(make_config(), response_bytes_limit=candidate_bytes - 1)
+    )
+    too_small = too_small_client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return unicode.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not too_small.ok
+    assert too_small.candidate is None
+    assert too_small.error_kind == "stream_candidate_too_large"
+
+
+def test_incremental_stream_handles_utf8_and_crlf_split_at_every_byte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = json.dumps({"text": "边界🙂"}, ensure_ascii=False, separators=(",", ":"))
+    raw = b"".join(
+        (
+            sse_event(
+                {
+                    "id": "utf8-boundary",
+                    "model": SILICONFLOW_DEFAULT_MODEL,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": candidate},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+                newline=b"\r\n",
+            ),
+            b"data: [DONE]\r\n\r\n",
+        )
+    )
+    response = install_incremental_response(monkeypatch, (raw[index : index + 1] for index in range(len(raw))))
+    client = OpenAICompatibleMessageClient(make_config())
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return unicode.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert result.ok and result.candidate == {"text": "边界🙂"}
+    assert response.read_sizes and max(response.read_sizes) == 64 * 1024
+    metadata = result.response_records[0]["stream_metadata"]
+    assert metadata["raw_stream_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert metadata["raw_stream_bytes"] == len(raw)
+
+
+def test_incremental_stream_rejects_invalid_utf8_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = b'data: {"choices":[{"index":0,"delta":{"content":"\xff"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    install_incremental_response(monkeypatch, (raw[index : index + 1] for index in range(len(raw))))
+    client = OpenAICompatibleMessageClient(make_config())
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.candidate is None
+    assert result.error_kind == "stream_invalid_utf8"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "done", "expected_ok", "expected_error_kind"),
+    [
+        ("stop", True, True, ""),
+        ("stop", False, False, "stream_incomplete"),
+        (None, True, False, "stream_incomplete"),
+        (None, False, False, "stream_incomplete"),
+        ("length", True, False, "output_invalid"),
+    ],
+)
+def test_stream_requires_done_and_successful_finish_reason(
+    finish_reason: str | None,
+    done: bool,
+    expected_ok: bool,
+    expected_error_kind: str,
+) -> None:
+    transport = QueueTransport(
+        stream_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": '{"ok":true}'},
+                        "finish_reason": finish_reason,
+                    }
+                ]
+            },
+            done=done,
+        )
+    )
+    client = OpenAICompatibleMessageClient(make_config(), transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert result.ok is expected_ok
+    assert result.error_kind == expected_error_kind
+    assert result.candidate == ({"ok": True} if expected_ok else None)
+
+
+def test_stream_rejects_data_after_done() -> None:
+    first = stream_response(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": '{"ok":true}'},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    trailing = sse_event({"choices": [], "usage": {"completion_tokens": 1}})
+    transport = QueueTransport(
+        HttpResponse(first.status, first.headers, first.body + trailing)
+    )
+    client = OpenAICompatibleMessageClient(make_config(), transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.candidate is None
+    assert result.error_kind == "stream_invalid_event"
+
+
+def test_incremental_stream_enforces_independent_wire_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def chunks() -> Any:
+        yield b":" + (b"x" * 200) + b"\n\n"
+        raise AssertionError("transport must stop reading after the wire limit")
+
+    response = install_incremental_response(monkeypatch, chunks())
+    client = OpenAICompatibleMessageClient(
+        replace(make_config(), stream_bytes_limit=100)
+    )
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.candidate is None
+    assert result.error_kind == "stream_wire_too_large"
+    assert len(response.read_sizes) == 1
+    metadata = result.response_records[0]["stream_metadata"]
+    assert metadata["raw_stream_bytes"] > 100
+    assert metadata["raw_stream_complete"] is False
+
+
+def test_stream_preserves_refusal_semantics_without_candidate_promotion() -> None:
+    transport = QueueTransport(
+        stream_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"refusal": "cannot comply"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+    )
+    client = OpenAICompatibleMessageClient(make_config(), transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.candidate is None
+    assert result.error_kind == "refusal"
+    assert result.response_records[0]["body"]["choices"][0]["message"]["refusal"] == "cannot comply"
+
+
+def test_stream_provider_error_event_is_typed_and_not_retried() -> None:
+    transport = QueueTransport(
+        stream_response(
+            {"error": {"code": "invalid_request", "message": "provider rejected request"}}
+        )
+    )
+    client = OpenAICompatibleMessageClient(make_config(retries=2), transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.candidate is None
+    assert result.error_kind == "provider_error"
+    assert len(transport.requests) == 1
+
+
+def test_incomplete_stream_never_promotes_partial_json() -> None:
+    transport = QueueTransport(
+        stream_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": '{"ok":true}'},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            done=False,
+        )
+    )
+    client = OpenAICompatibleMessageClient(make_config(), transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return ok.",
+        options=CompletionOptions(response_mode="none", stream=True),
+    )
+
+    assert not result.ok
+    assert result.finish_reason == ""
+    assert result.error_kind == "stream_incomplete"
+    assert result.candidate is None
 
 
 def test_gateway_source_has_no_process_sdk_patch_or_git_imports() -> None:

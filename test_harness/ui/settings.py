@@ -19,7 +19,7 @@ from test_harness.authoring_gateway.config import (
     SILICONFLOW_DEFAULT_MODEL,
 )
 
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 CREDENTIAL_TARGET_PREFIX = "SGGK.TestHarness.MessageApi"
 DEFAULT_BASE_URL = SILICONFLOW_DEFAULT_BASE_URL
 DEFAULT_MODEL = SILICONFLOW_DEFAULT_MODEL
@@ -178,7 +178,7 @@ class UiSettings:
     candidate_parallelism: int = 3
     jobs: int = 1
     execution_timeout_seconds: float = 180.0
-    thinking_mode: str = "enabled"
+    thinking_mode: str = "disabled"
 
     def public_dict(self, *, api_key_configured: bool) -> dict[str, Any]:
         return {**asdict(self), "api_key_configured": api_key_configured}
@@ -326,19 +326,31 @@ class UiSettingsStore:
             raise UiSettingsError("UI settings schema_version must be an integer") from exc
         if version == CONFIG_SCHEMA_VERSION:
             return value
-        if version != 1:
+        if version not in {1, 2}:
             return value
         migrated = dict(value)
-        if migrated.get("profile") in {None, "", "intranet", "siliconflow-test"}:
+        if version == 1 and migrated.get("profile") in {
+            None,
+            "",
+            "intranet",
+            "siliconflow-test",
+        }:
             migrated.update(
                 {
                     "profile": DEFAULT_PROFILE,
                     "base_url": DEFAULT_BASE_URL,
                     "model": DEFAULT_MODEL,
                     "source_root": "",
-                    "thinking_mode": "enabled",
+                    "thinking_mode": "disabled",
                 }
             )
+        # Version 2 shipped External with thinking enabled by default. Real
+        # full-prompt verification showed that setting could run for 20 minutes
+        # without a candidate, while streaming + disabled completed in ~40s.
+        if migrated.get("profile") == DEFAULT_PROFILE and migrated.get(
+            "thinking_mode"
+        ) in {None, "enabled"}:
+            migrated["thinking_mode"] = "disabled"
         migrated.setdefault("nx_root_dir", "")
         migrated.setdefault("nx_probe_timeout_seconds", 120.0)
         migrated["schema_version"] = CONFIG_SCHEMA_VERSION
