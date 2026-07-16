@@ -18,6 +18,7 @@ from .contracts import SCHEMA_VERSION, NxDiagnostic, NxInstallation
 
 PROBE_KIND = "sggk_nx_python_probe"
 PROBE_PREFIX = "SGGK_NX_PROBE_JSON="
+HARNESS_PROBE_REVISION = 2
 MAX_ARGUMENTS = 32
 MAX_ARGUMENT_CHARS = 4096
 DEFAULT_OUTPUT_LIMIT = 64 * 1024
@@ -242,6 +243,7 @@ class NxJournalRunner:
             )
         return {
             "schema_version": SCHEMA_VERSION,
+            "harness_probe_revision": HARNESS_PROBE_REVISION,
             "operation": "probe",
             "ok": status == "verified",
             "status": status,
@@ -343,8 +345,17 @@ class NxJournalRunner:
         environment = dict(self.environment)
         bin_dir = self.installation.bin_dir
         environment["UGII_BASE_DIR"] = str(self.installation.root)
+        # Do not invent UGII_ROOT_DIR from the executable directory.  Its
+        # meaning differs across NX generations and NXBIN is not a portable
+        # substitute.  Preserve an installer-provided value only when it
+        # belongs to the selected installation; otherwise remove a stale value
+        # inherited from another installed NX version.
+        configured_ugii_root = environment.get("UGII_ROOT_DIR", "").strip().strip('"')
+        if configured_ugii_root:
+            configured_path = Path(configured_ugii_root).expanduser().resolve(strict=False)
+            if not configured_path.is_relative_to(self.installation.root):
+                environment.pop("UGII_ROOT_DIR", None)
         if bin_dir is not None:
-            environment["UGII_ROOT_DIR"] = str(bin_dir) + os.sep
             prior_path = environment.get("PATH", "")
             environment["PATH"] = str(bin_dir) + (os.pathsep + prior_path if prior_path else "")
         return environment
@@ -412,6 +423,7 @@ class NxJournalRunner:
         if journal is not None:
             result["journal"] = str(journal)
         if operation == "probe":
+            result["harness_probe_revision"] = HARNESS_PROBE_REVISION
             result["probe"] = {}
         return result
 

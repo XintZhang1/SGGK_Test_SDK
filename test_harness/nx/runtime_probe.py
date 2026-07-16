@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
+PROBE_REVISION = 2
 PROBE_KIND = "sggk_nx_python_probe"
 PROBE_PREFIX = "SGGK_NX_PROBE_JSON="
 
@@ -19,6 +20,7 @@ def collect_probe(nonce: str) -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "probe_revision": PROBE_REVISION,
         "kind": PROBE_KIND,
         "nonce": nonce,
         "ok": False,
@@ -99,6 +101,10 @@ def _probe_inputs(arguments: list[str] | None = None) -> tuple[str, str]:
 def main() -> int:
     nonce, output_path = _probe_inputs()
     payload = collect_probe(nonce)
+    payload["transport"] = {
+        "nonce_source": "argument" if len(sys.argv) > 1 else "environment",
+        "output_source": "argument" if len(sys.argv) > 2 else "environment",
+    }
     try:
         write_result(payload, output_path)
     except OSError as exc:

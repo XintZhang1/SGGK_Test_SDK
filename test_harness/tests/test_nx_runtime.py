@@ -215,6 +215,7 @@ def test_probe_uses_fixed_bundled_script_and_authenticates_result(tmp_path: Path
 
     assert report["ok"] is True
     assert report["status"] == "verified"
+    assert report["harness_probe_revision"] == 2
     assert report["probe"]["nxopen"]["session_type"] == "Session"
     call = executor.calls[0]
     command = call["command"]
@@ -229,7 +230,54 @@ def test_probe_uses_fixed_bundled_script_and_authenticates_result(tmp_path: Path
     process_environment = call["environment"]
     assert isinstance(process_environment, dict)
     assert process_environment["UGII_BASE_DIR"] == str(root.resolve())
+    assert "UGII_ROOT_DIR" not in process_environment
     assert process_environment["PATH"].startswith(str((root / "NXBIN").resolve()) + os.pathsep)
+
+
+def test_probe_preserves_only_selected_installation_ugii_root(tmp_path: Path) -> None:
+    root = make_nx_installation(tmp_path / "NX2506")
+    ugii = root / "UGII"
+    ugii.mkdir()
+    executor = RecordingExecutor(
+        probe_payload={
+            "ok": True,
+            "python": {"version": "3.12.9"},
+            "nxopen": {"session_type": "Session"},
+            "error": "",
+        }
+    )
+
+    report = probe_nx_python(
+        explicit_roots=[root],
+        detector=make_detector(),
+        executor=executor,
+        process_environment={"UGII_ROOT_DIR": str(ugii)},
+    )
+
+    assert report["ok"] is True
+    assert executor.calls[0]["environment"]["UGII_ROOT_DIR"] == str(ugii)
+
+
+def test_probe_removes_ugii_root_inherited_from_another_nx(tmp_path: Path) -> None:
+    root = make_nx_installation(tmp_path / "NX2506")
+    executor = RecordingExecutor(
+        probe_payload={
+            "ok": True,
+            "python": {"version": "3.12.9"},
+            "nxopen": {"session_type": "Session"},
+            "error": "",
+        }
+    )
+
+    report = probe_nx_python(
+        explicit_roots=[root],
+        detector=make_detector(),
+        executor=executor,
+        process_environment={"UGII_ROOT_DIR": str(tmp_path / "NX2512" / "UGII")},
+    )
+
+    assert report["ok"] is True
+    assert "UGII_ROOT_DIR" not in executor.calls[0]["environment"]
 
 
 def test_probe_rejects_spoofed_or_missing_result(tmp_path: Path) -> None:
