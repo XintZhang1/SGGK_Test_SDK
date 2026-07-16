@@ -18,8 +18,8 @@ from test_harness.authoring_gateway.client import (  # noqa: E402
 )
 from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig  # noqa: E402
 from test_harness.authoring_gateway.review_comment import ReviewCommentContext  # noqa: E402
-from test_harness.orchestration.runtime import MessageApiRuntime  # noqa: E402
 from test_harness.orchestration.__main__ import _OfflineRuntime  # noqa: E402
+from test_harness.orchestration.runtime import MessageApiRuntime  # noqa: E402
 from test_harness.orchestration.workflow import (  # noqa: E402
     HarnessWorkflow,
     WorkflowError,
@@ -30,6 +30,7 @@ from test_harness.orchestration.workflow import (  # noqa: E402
 class FakeRuntime:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
+        self.campaign_dataset = ""
         self.generate_calls = 0
         self.interpret_calls = 0
         self.execute_calls = 0
@@ -65,7 +66,7 @@ class FakeRuntime:
                     },
                 ],
             },
-            "notes": ["Qwen-generated review candidate"],
+            "notes": ["GLM-5.2-generated review candidate"],
         }
         output.write_text(json.dumps(candidate, ensure_ascii=False), encoding="utf-8")
         provenance = output.with_name(f"{output.stem}.provenance.json")
@@ -169,13 +170,19 @@ class FakeRuntime:
         }
 
 
-def make_workflow(tmp_path: Path) -> tuple[HarnessWorkflow, FakeRuntime]:
+def make_workflow(
+    tmp_path: Path,
+    *,
+    campaign_dataset: str | Path = "",
+    profile: str = "intranet",
+) -> tuple[HarnessWorkflow, FakeRuntime]:
     capabilities = tmp_path / "test_harness" / "interface_capabilities.json"
     capabilities.parent.mkdir(parents=True)
     capabilities.write_bytes((REPO_ROOT / "test_harness/interface_capabilities.json").read_bytes())
     (tmp_path / "artifacts").mkdir()
     runtime = FakeRuntime(tmp_path)
-    workflow = HarnessWorkflow(runtime, repo_root=tmp_path, profile="intranet")
+    runtime.campaign_dataset = str(campaign_dataset)
+    workflow = HarnessWorkflow(runtime, repo_root=tmp_path, profile=profile)
     return workflow, runtime
 
 
@@ -186,6 +193,23 @@ def test_read_only_runtime_exposes_provider_identity_without_api_config() -> Non
     assert runtime.provider_profile_category == "intranet"
     with pytest.raises(WorkflowError, match="unavailable in read-only mode"):
         runtime.generate()
+
+
+def test_external_public_round_is_bound_to_fail_closed_gateway_metadata(tmp_path: Path) -> None:
+    workflow, runtime = make_workflow(tmp_path, profile="siliconflow")
+
+    workflow.start("api_boolean")
+
+    assert runtime.generate_calls == 1
+    session_root = next((tmp_path / "artifacts/harness_sessions").glob("*_api_boolean_*"))
+    task_manifest = json.loads(
+        (session_root / "rounds/0001/prompt/model_task_manifest.json").read_text(encoding="utf-8")
+    )
+    task = task_manifest["tasks"][0]
+    assert task["provider_profile"] == "siliconflow"
+    assert task["provider_profile_category"] == "external"
+    assert task["data_classification"] == "public_interface"
+    assert task["allowed_profile_categories"] == ["external"]
 
 
 def test_start_and_revision_need_only_function_and_comment(tmp_path: Path) -> None:
@@ -209,6 +233,108 @@ def test_start_and_revision_need_only_function_and_comment(tmp_path: Path) -> No
     session_root = next((tmp_path / "artifacts/harness_sessions").glob("*_api_boolean_*"))
     assert (session_root / "rounds/0001/round_manifest.json").is_file()
     assert (session_root / "rounds/0002/round_manifest.json").is_file()
+
+
+def test_configured_abc_index_enables_fixed_step_import_campaign_without_leaking_path(
+    tmp_path: Path,
+) -> None:
+    external_index = tmp_path.parent / f"{tmp_path.name}-external-abc" / "dataset_index.json"
+    external_index.parent.mkdir()
+    external_index.write_text('{"files": []}', encoding="utf-8")
+    workflow, _runtime = make_workflow(tmp_path, campaign_dataset=external_index)
+
+    workflow.start("step_import")
+
+    session_root = next((tmp_path / "artifacts/harness_sessions").glob("*_step_import_*"))
+    task_manifest = json.loads(
+        (session_root / "rounds/0001/prompt/model_task_manifest.json").read_text(encoding="utf-8")
+    )
+    task = task_manifest["tasks"][0]
+    assert "abc_step_import" in task["allowed_campaign_profiles"]
+    assert task["output_contract"]["allowed_kinds"] == [
+        "campaign_request",
+        "needs_harness_extension",
+    ]
+    prompt_tree = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in (session_root / "rounds/0001/prompt").rglob("*")
+        if path.is_file()
+    )
+    assert str(external_index) not in prompt_tree
+
+    completed = workflow.comment(
+        "I approve the current candidate. Please execute the SDK test now."
+    )
+    assert completed["state"] == "completed"
+    session = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    approval = json.loads((tmp_path / session["approval_path"]).read_text(encoding="utf-8"))
+    assert approval["campaign_dataset_identity"] == session["campaign_dataset_identity"]
+    assert approval["campaign_dataset_identity"]
+
+
+def test_active_session_rejects_changed_abc_dataset_binding(tmp_path: Path) -> None:
+    first_index = tmp_path.parent / f"{tmp_path.name}-external-abc-a" / "dataset_index.json"
+    second_index = tmp_path.parent / f"{tmp_path.name}-external-abc-b" / "dataset_index.json"
+    for index_path in (first_index, second_index):
+        index_path.parent.mkdir()
+        index_path.write_text('{"files": []}', encoding="utf-8")
+    workflow, _runtime = make_workflow(tmp_path, campaign_dataset=first_index)
+    workflow.start("step_import")
+
+    replacement_runtime = FakeRuntime(tmp_path)
+    replacement_runtime.campaign_dataset = str(second_index)
+    changed_workflow = HarnessWorkflow(
+        replacement_runtime,
+        repo_root=tmp_path,
+        profile="intranet",
+    )
+
+    with pytest.raises(WorkflowError, match="campaign dataset changed"):
+        changed_workflow.comment("I approve the current candidate. Please execute the SDK test now.")
+
+
+def test_active_session_rejects_changed_abc_index_content(tmp_path: Path) -> None:
+    index_path = tmp_path.parent / f"{tmp_path.name}-external-abc" / "dataset_index.json"
+    index_path.parent.mkdir()
+    index_path.write_text('{"files": []}', encoding="utf-8")
+    workflow, _runtime = make_workflow(tmp_path, campaign_dataset=index_path)
+    workflow.start("step_import")
+    index_path.write_text('{"files": [{"path": "new.step"}]}', encoding="utf-8")
+
+    replacement_runtime = FakeRuntime(tmp_path)
+    replacement_runtime.campaign_dataset = str(index_path)
+    changed_workflow = HarnessWorkflow(
+        replacement_runtime,
+        repo_root=tmp_path,
+        profile="intranet",
+    )
+
+    with pytest.raises(WorkflowError, match="campaign dataset changed"):
+        changed_workflow.comment("I approve the current candidate. Please execute the SDK test now.")
+
+
+def test_same_workflow_rechecks_abc_index_before_comment(tmp_path: Path) -> None:
+    index_path = tmp_path.parent / f"{tmp_path.name}-external-abc-live" / "dataset_index.json"
+    index_path.parent.mkdir()
+    index_path.write_text('{"files": []}', encoding="utf-8")
+    workflow, _runtime = make_workflow(tmp_path, campaign_dataset=index_path)
+    workflow.start("step_import")
+    index_path.write_text('{"files": [{"path": "changed.step"}]}', encoding="utf-8")
+
+    with pytest.raises(WorkflowError, match="campaign dataset changed"):
+        workflow.comment("I approve the current candidate. Please execute the SDK test now.")
+
+
+def test_workflow_rejects_campaign_dataset_directory(tmp_path: Path) -> None:
+    capabilities = tmp_path / "test_harness" / "interface_capabilities.json"
+    capabilities.parent.mkdir(parents=True)
+    capabilities.write_bytes((REPO_ROOT / "test_harness/interface_capabilities.json").read_bytes())
+    (tmp_path / "artifacts").mkdir()
+    runtime = FakeRuntime(tmp_path)
+    runtime.campaign_dataset = str(tmp_path)
+
+    with pytest.raises(WorkflowError, match="index or list file"):
+        HarnessWorkflow(runtime, repo_root=tmp_path, profile="intranet")
 
 
 def test_ambiguous_approval_never_executes_but_explicit_comment_does(tmp_path: Path) -> None:
@@ -741,7 +867,7 @@ def test_real_message_runtime_generates_review_and_interprets_question(tmp_path:
     config = GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="test-key",
         max_retries=0,
     )
@@ -764,4 +890,3 @@ def test_real_message_runtime_generates_review_and_interprets_question(tmp_path:
     assert answered["answer_path"]
     assert "尚未执行真实 SDK" in (tmp_path / answered["answer_path"]).read_text(encoding="utf-8")
     assert transport.calls == 2
-

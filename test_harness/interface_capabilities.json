@@ -8,12 +8,19 @@
     "oracle": "Map unknown oracle intent to a listed oracle only when the mapping is exact; otherwise return needs_harness_extension."
   },
   "provenance_source_types": {
+    "siliconflow_message_api": {
+      "title": "SiliconFlow GLM-5.2 Message API",
+      "category": "message_api",
+      "allowed_contexts": ["model_output", "regression_asset"],
+      "production_boundary": "The locked external SiliconFlow profile accepts public-interface tasks only and stages GLM-5.2 message.content JSON with provenance before fixed gates run.",
+      "description": "Output produced by zai-org/GLM-5.2 through the configured SiliconFlow endpoint."
+    },
     "intranet_message_api": {
       "title": "Intranet Message API",
       "category": "message_api",
       "allowed_contexts": ["model_output", "regression_asset"],
       "production_boundary": "The configured intranet endpoint returns one JSON object in message.content; the gateway stages it with provenance before fixed gates run.",
-      "description": "Output produced by the configured intranet Qwen Message API profile."
+      "description": "Output produced by the configured Message API model profile."
     },
     "unknown_saved_output": {
       "title": "Unknown saved output",

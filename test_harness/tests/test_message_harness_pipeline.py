@@ -13,7 +13,11 @@ TOOLS_ROOT = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-from run_message_harness_pipeline import MessageHarnessPipeline, _triage_has_failures  # noqa: E402
+from run_message_harness_pipeline import (  # noqa: E402
+    MessageHarnessPipeline,
+    _triage_has_failures,
+    build_parser,
+)
 
 from test_harness.authoring_gateway.client import (  # noqa: E402
     HttpResponse,
@@ -56,6 +60,13 @@ def test_failure_assets_are_not_scheduled_for_clean_triage() -> None:
     assert _triage_has_failures({"command_failures": 1})
 
 
+def test_pipeline_cli_defaults_to_siliconflow_profile() -> None:
+    args = build_parser().parse_args(["model_task_manifest.json"])
+
+    assert args.profile == "siliconflow"
+    assert args.thinking_mode is None
+
+
 class RepairQueueTransport:
     def __init__(self, responses: list[HttpResponse], accepted_path: Path) -> None:
         self.responses = list(responses)
@@ -75,7 +86,7 @@ def config() -> GatewayConfig:
     return GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="mock-pipeline-key",
         request_timeout_seconds=1.0,
         max_retries=0,
@@ -432,18 +443,22 @@ def test_execution_approval_binds_round_candidate_review_prompt_and_runner(tmp_p
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     runner = tmp_path / "artifacts/fake_runner.exe"
     runner.write_bytes(b"immutable-runner-bytes")
-    canonical = lambda value: json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    def canonical(value: object) -> bytes:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     candidate_sha256 = hashlib.sha256(canonical(valid)).hexdigest()
     round_sha256 = "a" * 64
     comment_path = tmp_path / "artifacts/sessions/comment.txt"
     comment_path.write_text("这一版可以开始执行真实测试。", encoding="utf-8")
     interpretation = {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_type": "review_comment_decision",
         "status": "model_interpreted",
-        "qwen_called": True,
+        "model_called": True,
         "decision": {
             "decision": "approve",
             "summary_zh_cn": "用户明确同意执行。",
@@ -470,7 +485,7 @@ def test_execution_approval_binds_round_candidate_review_prompt_and_runner(tmp_p
         "interpretation_sha256": hashlib.sha256(canonical(interpretation)).hexdigest(),
         "runner_sha256": hashlib.sha256(runner.read_bytes()).hexdigest(),
         "approved_at": "2026-07-12T00:00:00Z",
-        "authority": "fixed_harness_host_after_qwen_comment_interpretation",
+        "authority": "fixed_harness_host_after_model_comment_interpretation",
     }
     approval = {
         **approval_unsigned,
@@ -492,6 +507,30 @@ def test_execution_approval_binds_round_candidate_review_prompt_and_runner(tmp_p
         },
     )
 
+    assert (
+        pipeline._execution_approval_error(  # noqa: SLF001
+            approved_task,
+            accepted_path,
+            provenance_path,
+            runner.relative_to(tmp_path),
+        )
+        == ""
+    )
+    legacy_interpretation = dict(interpretation)
+    legacy_interpretation["schema_version"] = 1
+    legacy_interpretation["qwen_called"] = legacy_interpretation.pop("model_called")
+    interpretation_path.write_text(json.dumps(legacy_interpretation), encoding="utf-8")
+    legacy_approval_unsigned = {
+        key: value for key, value in approval.items() if key != "approval_sha256"
+    }
+    legacy_approval_unsigned["interpretation_sha256"] = hashlib.sha256(
+        canonical(legacy_interpretation)
+    ).hexdigest()
+    legacy_approval = {
+        **legacy_approval_unsigned,
+        "approval_sha256": hashlib.sha256(canonical(legacy_approval_unsigned)).hexdigest(),
+    }
+    approval_path.write_text(json.dumps(legacy_approval), encoding="utf-8")
     assert (
         pipeline._execution_approval_error(  # noqa: SLF001
             approved_task,

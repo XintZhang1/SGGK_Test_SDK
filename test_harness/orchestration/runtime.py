@@ -33,7 +33,7 @@ class MessageApiRuntime:
         candidate_count: int = 3,
         candidate_parallelism: int = 3,
         max_tokens: int = 32_768,
-        thinking_mode: str = "omit",
+        thinking_mode: str | None = None,
         jobs: int = 1,
         execution_timeout_seconds: float = 180.0,
         campaign_dataset: str | Path = "",
@@ -57,7 +57,9 @@ class MessageApiRuntime:
         self.candidate_count = candidate_count
         self.candidate_parallelism = min(candidate_parallelism, candidate_count)
         self.max_tokens = max_tokens
-        self.thinking_mode = thinking_mode
+        self.thinking_mode = thinking_mode or self.config.profile.default_thinking_mode
+        if self.thinking_mode not in {"omit", "enabled", "disabled"}:
+            raise WorkflowError("thinking_mode must be omit, enabled, or disabled")
         self.jobs = jobs
         self.execution_timeout_seconds = execution_timeout_seconds
         self.campaign_dataset = campaign_dataset
@@ -206,7 +208,7 @@ class MessageApiRuntime:
                 "schema-valid JSON object only. Diagnostics:\n"
                 + last_error[:4000]
             )
-        raise WorkflowError(f"Qwen review comment interpretation failed: {last_error}")
+        raise WorkflowError(f"model review comment interpretation failed: {last_error}")
 
     def execute(
         self,

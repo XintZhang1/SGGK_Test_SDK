@@ -36,7 +36,7 @@ def config() -> GatewayConfig:
     return GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="parallel-test-key",
         request_timeout_seconds=1.0,
         max_retries=0,

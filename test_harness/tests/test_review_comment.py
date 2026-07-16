@@ -112,7 +112,7 @@ def test_round_is_host_owned_and_changes_round_identity_only() -> None:
     assert second.context.round_number == 2
 
 
-def test_subject_outline_gives_qwen_bounded_case_context() -> None:
+def test_subject_outline_gives_model_bounded_case_context() -> None:
     task = build_review_comment_task("请把第二个用例做得复杂一点，并保留现有判断。", context())
     outline = task.as_dict()["context"]["subject_outline"]
 
@@ -232,7 +232,9 @@ def test_valid_response_is_schema_checked_and_finalized_with_host_evidence() -> 
     assert record["round_id"] == task.round_id
     assert record["response_sha256"] == report.response_sha256
     assert record["decision"] == candidate
-    assert record["qwen_called"] is True
+    assert record["schema_version"] == 2
+    assert record["source"] == "model_message_api"
+    assert record["model_called"] is True
 
 
 @pytest.mark.parametrize(
@@ -317,11 +319,12 @@ def test_non_revision_decisions_are_valid_only_without_changes(decision: str) ->
     assert validate_review_comment_response(candidate, task).ok is True
 
 
-def test_empty_comment_fallback_is_pending_without_qwen_explanation() -> None:
+def test_empty_comment_fallback_is_pending_without_model_explanation() -> None:
     fallback = deterministic_empty_comment_fallback(" \n\t", context())
 
     assert fallback["status"] == "pending"
-    assert fallback["qwen_called"] is False
+    assert fallback["schema_version"] == 2
+    assert fallback["model_called"] is False
     assert fallback["decision"] is None
     assert fallback["summary_zh_cn"] == ""
     assert fallback["requested_changes"] == []
@@ -330,7 +333,7 @@ def test_empty_comment_fallback_is_pending_without_qwen_explanation() -> None:
 
 
 def test_fallback_cannot_interpret_nonempty_comment() -> None:
-    with pytest.raises(ReviewCommentError, match="requires a validated Qwen"):
+    with pytest.raises(ReviewCommentError, match="requires a validated model"):
         deterministic_empty_comment_fallback("请批准。", context())
 
 

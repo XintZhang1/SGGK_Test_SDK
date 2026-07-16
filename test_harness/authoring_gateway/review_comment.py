@@ -661,11 +661,11 @@ def finalize_review_comment_response(
         first = validation.diagnostics[0]
         raise ReviewCommentError(first.code, f"{first.path}: {first.message}")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_type": "review_comment_decision",
         "status": "model_interpreted",
-        "source": "qwen_message_api",
-        "qwen_called": True,
+        "source": "model_message_api",
+        "model_called": True,
         "review_id": task.review_id,
         "round_id": task.round_id,
         "comment_id": task.comment_id,
@@ -689,16 +689,16 @@ def deterministic_empty_comment_fallback(comment: str, context: ReviewCommentCon
     if comment.strip():
         raise ReviewCommentError(
             "FALLBACK_FOR_NONEMPTY_COMMENT_FORBIDDEN",
-            "a non-empty comment requires a validated Qwen Message API response",
+            "a non-empty comment requires a validated model Message API response",
         )
     identity = _host_identity("", context)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_type": "review_comment_pending",
         "status": "pending",
         "reason_code": "empty_comment",
         "source": "deterministic_empty_comment_fallback",
-        "qwen_called": False,
+        "model_called": False,
         "review_id": identity["review_id"],
         "round_id": identity["round_id"],
         "comment_id": identity["comment_id"],

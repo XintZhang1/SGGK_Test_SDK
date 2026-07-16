@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from typing import Any, Sequence
 
-from test_harness.authoring_gateway.config import PROFILE_SPECS, ConfigError
+from test_harness.authoring_gateway.config import DEFAULT_PROFILE, PROFILE_SPECS, ConfigError
 
 from .runtime import MessageApiRuntime
 from .workflow import HarnessWorkflow, WorkflowError
@@ -49,7 +49,9 @@ class _OfflineRuntime:
 
 
 def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
-    profile = os.environ.get("SGGK_HARNESS_PROFILE", "intranet").strip() or "intranet"
+    profile = os.environ.get("SGGK_HARNESS_PROFILE", DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
+    profile_spec = PROFILE_SPECS.get(profile)
+    default_thinking_mode = profile_spec.default_thinking_mode if profile_spec else "omit"
     runtime: Any
     if require_runtime:
         runtime = MessageApiRuntime(
@@ -58,7 +60,7 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
             candidate_count=int(os.environ.get("SGGK_HARNESS_CANDIDATES", "3")),
             candidate_parallelism=int(os.environ.get("SGGK_HARNESS_PARALLELISM", "3")),
             max_tokens=int(os.environ.get("SGGK_HARNESS_MAX_TOKENS", "32768")),
-            thinking_mode=os.environ.get("SGGK_HARNESS_THINKING", "omit"),
+            thinking_mode=os.environ.get("SGGK_HARNESS_THINKING", default_thinking_mode),
             jobs=int(os.environ.get("SGGK_HARNESS_JOBS", "1")),
             execution_timeout_seconds=float(os.environ.get("SGGK_HARNESS_TIMEOUT", "180")),
             campaign_dataset=os.environ.get("SGGK_CAMPAIGN_DATASET", ""),
@@ -106,7 +108,7 @@ def _print_payload(payload: dict[str, Any]) -> None:
     if payload.get("final_report_path"):
         print(f"最终报告：{payload['final_report_path']}")
     if payload.get("answer_path"):
-        print(f"Qwen 回答：{payload['answer_path']}")
+        print(f"模型回答：{payload['answer_path']}")
     if payload.get("notice_path"):
         print(f"提示：{payload['notice_path']}")
     if payload.get("last_error"):

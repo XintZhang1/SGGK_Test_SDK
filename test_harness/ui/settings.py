@@ -12,10 +12,17 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from test_harness.authoring_gateway.config import PROFILE_SPECS
+from test_harness.authoring_gateway.config import (
+    DEFAULT_PROFILE,
+    PROFILE_SPECS,
+    SILICONFLOW_DEFAULT_BASE_URL,
+    SILICONFLOW_DEFAULT_MODEL,
+)
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 CREDENTIAL_TARGET_PREFIX = "SGGK.TestHarness.MessageApi"
+DEFAULT_BASE_URL = SILICONFLOW_DEFAULT_BASE_URL
+DEFAULT_MODEL = SILICONFLOW_DEFAULT_MODEL
 
 
 class UiSettingsError(ValueError):
@@ -157,19 +164,21 @@ def default_secret_store() -> SecretStore:
 @dataclass(frozen=True)
 class UiSettings:
     schema_version: int = CONFIG_SCHEMA_VERSION
-    profile: str = "intranet"
-    base_url: str = ""
-    model: str = ""
+    profile: str = DEFAULT_PROFILE
+    base_url: str = DEFAULT_BASE_URL
+    model: str = DEFAULT_MODEL
     ca_bundle: str = ""
     sdk_dir: str = ""
     source_root: str = ""
     runner_path: str = ""
     campaign_dataset: str = ""
+    nx_root_dir: str = ""
+    nx_probe_timeout_seconds: float = 120.0
     candidate_count: int = 3
     candidate_parallelism: int = 3
     jobs: int = 1
     execution_timeout_seconds: float = 180.0
-    thinking_mode: str = "omit"
+    thinking_mode: str = "enabled"
 
     def public_dict(self, *, api_key_configured: bool) -> dict[str, Any]:
         return {**asdict(self), "api_key_configured": api_key_configured}
@@ -197,6 +206,7 @@ class UiSettingsStore:
             raise UiSettingsError(f"UI settings cannot be read: {exc}") from exc
         if not isinstance(value, dict):
             raise UiSettingsError("UI settings root must be an object")
+        value = self._migrate(value)
         allowed = {item.name for item in fields(UiSettings)}
         unknown = sorted(set(value) - allowed)
         if unknown:
@@ -228,7 +238,11 @@ class UiSettingsStore:
         return settings
 
     def api_key(self, profile: str) -> str:
-        return self.secret_store.read(profile)
+        stored = self.secret_store.read(profile)
+        if stored:
+            return stored
+        spec = PROFILE_SPECS.get(profile)
+        return str(os.environ.get(spec.api_key_env, "") if spec else "").strip()
 
     def public(self) -> dict[str, Any]:
         settings = self.load()
@@ -251,6 +265,14 @@ class UiSettingsStore:
                 raise UiSettingsError("Message API base URL must be absolute http(s)")
             if parsed.username or parsed.password or parsed.query or parsed.fragment:
                 raise UiSettingsError("Message API base URL cannot contain credentials, query, or fragment")
+            if settings.profile == DEFAULT_PROFILE:
+                if parsed.scheme != "https":
+                    raise UiSettingsError("SiliconFlow base URL must use https")
+                if base_url != DEFAULT_BASE_URL:
+                    raise UiSettingsError(f"SiliconFlow base URL must be {DEFAULT_BASE_URL}")
+        model = settings.model.strip()
+        if settings.profile == DEFAULT_PROFILE and model != DEFAULT_MODEL:
+            raise UiSettingsError(f"SiliconFlow model must be {DEFAULT_MODEL}")
         if not 1 <= int(settings.candidate_count) <= 8:
             raise UiSettingsError("candidate count must be between 1 and 8")
         if not 1 <= int(settings.candidate_parallelism) <= int(settings.candidate_count):
@@ -259,6 +281,8 @@ class UiSettingsStore:
             raise UiSettingsError("runner jobs must be between 1 and 64")
         if float(settings.execution_timeout_seconds) <= 0:
             raise UiSettingsError("execution timeout must be positive")
+        if not 5 <= float(settings.nx_probe_timeout_seconds) <= 600:
+            raise UiSettingsError("NX probe timeout must be between 5 and 600 seconds")
         if settings.thinking_mode not in {"omit", "disabled", "enabled"}:
             raise UiSettingsError("thinking mode is invalid")
         normalized_paths: dict[str, str] = {}
@@ -271,22 +295,54 @@ class UiSettingsStore:
             if require_existing_paths and not path.exists():
                 raise UiSettingsError(f"configured path does not exist: {name}")
             normalized_paths[name] = str(path)
+        nx_root_dir = str(settings.nx_root_dir or "").strip()
+        if nx_root_dir:
+            nx_root_dir = str(Path(nx_root_dir).expanduser().resolve())
+        source_root = normalized_paths["source_root"] if settings.profile == "intranet" else ""
         return UiSettings(
             schema_version=CONFIG_SCHEMA_VERSION,
             profile=settings.profile,
             base_url=base_url,
-            model=settings.model.strip(),
+            model=model,
             ca_bundle=normalized_paths["ca_bundle"],
             sdk_dir=normalized_paths["sdk_dir"],
-            source_root=normalized_paths["source_root"],
+            source_root=source_root,
             runner_path=normalized_paths["runner_path"],
             campaign_dataset=normalized_paths["campaign_dataset"],
+            nx_root_dir=nx_root_dir,
+            nx_probe_timeout_seconds=float(settings.nx_probe_timeout_seconds),
             candidate_count=int(settings.candidate_count),
             candidate_parallelism=int(settings.candidate_parallelism),
             jobs=int(settings.jobs),
             execution_timeout_seconds=float(settings.execution_timeout_seconds),
             thinking_mode=settings.thinking_mode,
         )
+
+    @staticmethod
+    def _migrate(value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            version = int(value.get("schema_version", 1) or 1)
+        except (TypeError, ValueError) as exc:
+            raise UiSettingsError("UI settings schema_version must be an integer") from exc
+        if version == CONFIG_SCHEMA_VERSION:
+            return value
+        if version != 1:
+            return value
+        migrated = dict(value)
+        if migrated.get("profile") in {None, "", "intranet", "siliconflow-test"}:
+            migrated.update(
+                {
+                    "profile": DEFAULT_PROFILE,
+                    "base_url": DEFAULT_BASE_URL,
+                    "model": DEFAULT_MODEL,
+                    "source_root": "",
+                    "thinking_mode": "enabled",
+                }
+            )
+        migrated.setdefault("nx_root_dir", "")
+        migrated.setdefault("nx_probe_timeout_seconds", 120.0)
+        migrated["schema_version"] = CONFIG_SCHEMA_VERSION
+        return migrated
 
     def _default_runner(self) -> str:
         runner = self.repo_root / "build" / "test_harness" / "Release" / "sggk_case_runner.exe"

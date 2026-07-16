@@ -1,4 +1,4 @@
-"""Strict read-only evidence tools available to Qwen investigation roles."""
+"""Strict read-only evidence tools available to model investigation roles."""
 
 from __future__ import annotations
 

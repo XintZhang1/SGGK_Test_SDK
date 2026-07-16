@@ -7,6 +7,7 @@ from campaign_profiles import CampaignRequestError, resolve_campaign_argv, valid
 from normalize_model_output import normalize_loaded
 
 ALLOWED_CAMPAIGNS = {"abc_boolean_mass_recut": {}}
+ALLOWED_STEP_IMPORT = {"abc_step_import": {}}
 
 
 def campaign_request() -> dict[str, object]:
@@ -66,6 +67,51 @@ def test_campaign_binding_rejects_shell_metacharacters() -> None:
                 "out": "artifacts/campaign_run",
             },
         )
+
+
+def test_campaign_binding_accepts_host_owned_absolute_dataset(tmp_path: Path) -> None:
+    dataset = (tmp_path / "abc" / "dataset_index.json").resolve()
+
+    argv = resolve_campaign_argv(
+        campaign_request(),
+        allowed_profiles=ALLOWED_CAMPAIGNS,
+        bindings={
+            "runner": "build/test_harness/Release/sggk_case_runner.exe",
+            "dataset": str(dataset),
+            "out": "artifacts/campaign_run",
+        },
+    )
+
+    assert argv[argv.index("--dataset") + 1] == str(dataset)
+
+
+def test_abc_step_import_profile_binds_external_index_without_shell(tmp_path: Path) -> None:
+    dataset = (tmp_path / "abc" / "dataset_index.json").resolve()
+    request = {
+        "kind": "campaign_request",
+        "profile_id": "abc_step_import",
+        "args": {"target_cases": 250, "shard_count": 4, "shard_index": 2},
+        "notes": [],
+        "expected_artifacts": [],
+    }
+
+    argv = resolve_campaign_argv(
+        request,
+        allowed_profiles=ALLOWED_STEP_IMPORT,
+        bindings={
+            "runner": "build/test_harness/Release/sggk_case_runner.exe",
+            "dataset": str(dataset),
+            "out": "artifacts/abc_step_import",
+        },
+    )
+
+    assert argv[1] == "test_harness/tools/run_corpus.py"
+    assert argv[argv.index("--dataset-list") + 1] == str(dataset)
+    assert argv[argv.index("--limit") + 1] == "250"
+    assert "--preserve-input-order" in argv
+    assert "--require-input-sha256" in argv
+    assert argv[argv.index("--require-input-count") + 1] == "250"
+    assert "--fail-on-triage-error" in argv
 
 
 def test_cluster_seed_geometry_tool_is_not_treated_as_executable(tmp_path: Path) -> None:

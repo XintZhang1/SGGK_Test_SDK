@@ -36,6 +36,7 @@ from test_harness.authoring_gateway.client import (  # noqa: E402
     canonical_json_bytes,
 )
 from test_harness.authoring_gateway.config import (  # noqa: E402
+    DEFAULT_PROFILE,
     PROFILE_SPECS,
     ConfigError,
     GatewayConfig,
@@ -1296,9 +1297,15 @@ Previous candidate:
                     or decision.get("decision") != "approve"
                     or evidence.get("record_type") != "review_comment_decision"
                     or evidence.get("status") != "model_interpreted"
-                    or evidence.get("qwen_called") is not True
+                    or not (
+                        evidence.get("model_called") is True
+                        or (
+                            evidence.get("schema_version") == 1
+                            and evidence.get("qwen_called") is True
+                        )
+                    )
                 ):
-                    return "execution comment interpretation is not a validated Qwen approval decision"
+                    return "execution comment interpretation is not a validated model approval decision"
             else:
                 actual_evidence_hash = _sha256_bytes(evidence_path.read_bytes())
             if actual_evidence_hash != expected_evidence_hash:
@@ -2771,9 +2778,18 @@ Previous candidate:
                 "campaign_dataset_missing",
                 error="campaign_request execution requires --campaign-dataset",
             )
-        dataset_path = _inside(self.repo_root, campaign_dataset, label="campaign_dataset")
+        raw_dataset_path = Path(campaign_dataset).expanduser()
+        dataset_path = (
+            raw_dataset_path.resolve()
+            if raw_dataset_path.is_absolute()
+            else (self.repo_root / raw_dataset_path).resolve()
+        )
         if not dataset_path.exists():
             return ExecutionResult(True, False, "campaign_dataset_missing", error=str(dataset_path))
+        try:
+            dataset_binding = _relative(self.repo_root, dataset_path)
+        except ValueError:
+            dataset_binding = str(dataset_path)
         tools_path = str(self.gates.tool_repo_root / "test_harness" / "tools")
         if tools_path not in sys.path:
             sys.path.insert(0, tools_path)
@@ -2786,7 +2802,7 @@ Previous candidate:
                 allowed_profiles=dict(task.allowed_campaign_profiles),
                 bindings={
                     "runner": _relative(self.repo_root, runner_path),
-                    "dataset": _relative(self.repo_root, dataset_path),
+                    "dataset": dataset_binding,
                     "out": _relative(self.repo_root, execution_root / "campaign"),
                 },
             )
@@ -2894,12 +2910,17 @@ Previous candidate:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="model_prompt_pack/model_task_manifest.json")
-    parser.add_argument("--profile", required=True, choices=sorted(PROFILE_SPECS))
+    parser.add_argument("--profile", default=DEFAULT_PROFILE, choices=sorted(PROFILE_SPECS))
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--run-id", default="")
     parser.add_argument("--staging-root", default="artifacts/message_harness_pipeline")
     parser.add_argument("--response-mode", choices=("auto", "json_schema", "json_object", "none"), default="auto")
-    parser.add_argument("--thinking-mode", choices=("omit", "enabled", "disabled"), default="omit")
+    parser.add_argument(
+        "--thinking-mode",
+        choices=("omit", "enabled", "disabled"),
+        default=None,
+        help="Thinking parameter; defaults to the selected provider profile policy",
+    )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument(
         "--max-tokens",
@@ -2956,7 +2977,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--analyze-bugs",
         action="store_true",
-        help="After qualification/replay, run parallel candidate-only Qwen investigators on eligible bundles",
+        help="After qualification/replay, run parallel candidate-only model investigators on eligible bundles",
     )
     parser.add_argument(
         "--bug-source-root",
@@ -3009,7 +3030,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             response_mode=args.response_mode,
             temperature=args.temperature,
             max_tokens=authoring_max_tokens,
-            thinking_mode=args.thinking_mode,
+            thinking_mode=args.thinking_mode or config.profile.default_thinking_mode,
             seed=args.seed,
         )
         candidate_count = args.candidate_count or 3

@@ -3,7 +3,7 @@
 This is the first standalone harness layer for SDK-driven tests. It intentionally avoids the vendor sample layout and writes an artifact capsule for each case.
 
 For the Message API-only trust boundary, parallel candidate selection, new-API
-plugins, failure qualification, paired TopoTrack capture, and Qwen investigation
+plugins, failure qualification, paired TopoTrack capture, and GLM-5.2 investigation
 flow, read `test_harness/HARNESS_ARCHITECTURE.md` first.
 
 ## Primary User Workflow
@@ -22,13 +22,13 @@ Harness 会通过 Message API 自动解析接口、生成候选和固定门禁�
 .\harness.ps1 comment "增加退化输入、近容差相交和空结果检查"
 ```
 
-每条 comment 都被原样保存为不可变事件，Qwen 必须输出中文理解并判断其语义。涉及代码、用例、参数、Oracle 或范围修改时，Harness 才生成新的不可变候选/审查轮次，并列出采纳项、未采纳原因和相对上一轮的变化；问题在当前轮回答，拒绝终止任务。满意后批准当前最新轮次：
+每条 comment 都被原样保存为不可变事件，GLM-5.2 必须输出中文理解并判断其语义。涉及代码、用例、参数、Oracle 或范围修改时，Harness 才生成新的不可变候选/审查轮次，并列出采纳项、未采纳原因和相对上一轮的变化；问题在当前轮回答，拒绝终止任务。满意后批准当前最新轮次：
 
 ```powershell
 .\harness.ps1 comment "这一版可以开始执行真实测试。"
 ```
 
-明确批准的 comment 不生成新候选轮；Qwen 先解释其语义，固定宿主再验证明确执行同意并绑定当前最新轮次及其内部哈希链，然后自动执行真实 SGGK SDK 测试；完成后生成 `final_report.zh-CN.md`。辅助命令：
+明确批准的 comment 不生成新候选轮；GLM-5.2 先解释其语义，固定宿主再验证明确执行同意并绑定当前最新轮次及其内部哈希链，然后自动执行真实 SGGK SDK 测试；完成后生成 `final_report.zh-CN.md`。辅助命令：
 
 ```powershell
 .\harness.ps1 status
@@ -331,7 +331,7 @@ python .\test_harness\tools\build_model_prompt_pack.py `
   --max-prompt-chars 60000
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
+  --profile siliconflow `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
@@ -342,8 +342,9 @@ The review-session layer owns approval and starts real SDK execution only after
 the current round is approved. There is no human-authored, fixture-seeding, or
 standalone gateway CLI production path.
 
-The configured intranet Qwen Message API is the only model provider. There is
-no external simulator, implicit fallback, or separate authoring workflow.
+The configured SiliconFlow `zai-org/GLM-5.2` Message API is the external build's
+default production model provider. There is no implicit fallback or separate
+authoring workflow.
 See `test_harness/MESSAGE_API_ENDPOINTS.md` for endpoint compatibility
 testing and failure semantics.
 
@@ -399,7 +400,7 @@ python .\test_harness\tools\build_model_prompt_pack.py `
   --out .\artifacts\model_prompt_pack
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
+  --profile siliconflow `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
@@ -549,7 +550,8 @@ python .\test_harness\tools\build_source_attack_tasks.py `
 
 python .\test_harness\tools\build_model_prompt_pack.py `
   --source-task-dir .\artifacts\sdk_include_source_attack_tasks `
-  --out .\artifacts\source_model_prompt_pack
+  --out .\artifacts\source_model_prompt_pack `
+  --profile intranet
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
@@ -562,7 +564,7 @@ The task builder writes `source_attack_tasks.json`,
 includes a wider source excerpt, the scanner finding, required output contract,
 harness constants, fixed post-generation checks, and optional seed context.
 
-Seed drafts are prompt context, not runnable tests or bug reports. Qwen must
+Seed drafts are prompt context, not runnable tests or bug reports. The model must
 return a fresh candidate through the Message API; the raw pipeline performs the
 pre-review DSL check and expansion, while `sggk_harness.py` gates execution on
 the approved latest round. A developer may invoke the
@@ -982,7 +984,7 @@ python .\test_harness\tools\export_failure_bundles.py `
 ```
 
 Only verified `stable_same_failure` groups receive a formal bundle,
-`reproduce.ps1`, draft, registry entry, or Qwen root-cause investigation.
+`reproduce.ps1`, draft, registry entry, or model-assisted root-cause investigation.
 Flaky, changed, unverified, unavailable, and TopoTrack-only-success cases are
 recorded under `inconclusive_triage` without a formal reproducer. Each stable
 bundle contains `bug_report.md`, `bundle_manifest.json`,

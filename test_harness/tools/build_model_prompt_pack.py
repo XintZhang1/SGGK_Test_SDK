@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from build_api_test_task import build_task, validate_form
-from test_harness.authoring_gateway.config import PROFILE_SPECS
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from build_api_test_task import build_task, validate_form
+
+from test_harness.authoring_gateway.config import DEFAULT_PROFILE, PROFILE_SPECS  # noqa: E402
+
 DEFAULT_FORMS_DIR = "test_harness/forms/interface_distillation"
 DEFAULT_MODEL_OUTPUT_ROOT = "artifacts/model_outputs"
 DEFAULT_SOURCE_OUTPUT_ROOT = "artifacts/source_model_outputs"
@@ -48,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILE_SPECS),
-        default="intranet",
+        default=DEFAULT_PROFILE,
         help="Bind every generated task manifest to one Message API provider profile",
     )
     return parser.parse_args()
@@ -403,12 +408,20 @@ def build_interface_prompts(args: argparse.Namespace, out_root: Path, tasks: lis
         if not isinstance(form, dict):
             continue
         errors, warnings = validate_form(form)
+        prompt_form = dict(form)
+        source_refs_redacted = False
+        if profile.category != "intranet" and prompt_form.get("sdk_source_refs"):
+            # Standalone checked-in forms may retain host-side SDK reference
+            # notes for intranet diagnostics. External prompt packs receive
+            # only the public interface contract and fixed Harness capability.
+            prompt_form["sdk_source_refs"] = []
+            source_refs_redacted = True
         request_id = str(form.get("request_id") or form_path.stem)
         expected_path = repo_path(args.model_output_root) / f"{safe_id(request_id)}.json"
         prompt_path = out_root / "prompts" / "interface" / f"{order:02d}_{safe_id(request_id)}.md"
-        task = build_task(form_path, form, warnings)
+        task = build_task(form_path, prompt_form, warnings)
         preferred = (task.get("api_guidance") or {}).get("preferred_format")
-        prompt = interface_prompt(task, form, repo_relative(expected_path))
+        prompt = interface_prompt(task, prompt_form, repo_relative(expected_path))
         example_pack = task.get("example_pack") if isinstance(task.get("example_pack"), dict) else {}
         write_text(prompt_path, prompt)
         tasks.append(
@@ -419,6 +432,7 @@ def build_interface_prompts(args: argparse.Namespace, out_root: Path, tasks: lis
                 "provider_profile_category": profile.category,
                 "data_classification": "public_interface",
                 "allowed_profile_categories": [profile.category],
+                "source_refs_redacted": source_refs_redacted,
                 "review_required_before_execute": True,
                 "request_id": request_id,
                 "form_path": repo_relative(form_path),

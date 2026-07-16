@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
 import hashlib
 import json
-from pathlib import Path
 import time
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
-
 
 EXTENSION_TO_API = {
     ".sgt": "check_sgt",
@@ -25,7 +24,11 @@ DEFAULT_EXCLUDE_DIRS = {".git", ".vs", "__pycache__", "build", "artifacts"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("roots", nargs="+", help="Files or directories to scan")
-    parser.add_argument("--out", default="artifacts/corpus_discovery/dataset_index.json", help="Dataset index JSON path")
+    parser.add_argument(
+        "--out",
+        default="artifacts/corpus_discovery/dataset_index.json",
+        help="Dataset index JSON path",
+    )
     parser.add_argument("--paths-out", default="", help="Optional text file with one discovered path per line")
     parser.add_argument("--report", default="", help="Optional Markdown report path")
     parser.add_argument("--hash-inputs", action="store_true", help="Store SHA1 digests and duplicate content groups")
@@ -40,12 +43,14 @@ def now_iso_like() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
 
-def file_sha1(path: Path) -> str:
-    digest = hashlib.sha1()
+def file_hashes(path: Path) -> tuple[str, str]:
+    sha1 = hashlib.sha1()
+    sha256 = hashlib.sha256()
     with path.open("rb") as in_file:
         for chunk in iter(lambda: in_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+            sha1.update(chunk)
+            sha256.update(chunk)
+    return sha1.hexdigest(), sha256.hexdigest()
 
 
 def excluded_names(args: argparse.Namespace) -> set[str]:
@@ -127,9 +132,10 @@ def build_index(args: argparse.Namespace, files: list[Path], excluded: set[str])
             "mtime": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(path.stat().st_mtime)),
         }
         if args.hash_inputs:
-            digest = file_sha1(path)
-            item["sha1"] = digest
-            duplicates[digest].append(str(path))
+            sha1, sha256 = file_hashes(path)
+            item["sha1"] = sha1
+            item["sha256"] = sha256
+            duplicates[sha1].append(str(path))
         entries.append(item)
 
     duplicate_groups = [

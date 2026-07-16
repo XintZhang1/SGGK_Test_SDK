@@ -111,7 +111,7 @@ def _config(profile: str = "intranet") -> GatewayConfig:
     return GatewayConfig(
         profile=PROFILE_SPECS[profile],
         base_url="https://message-api.invalid/v1",
-        model="Qwen/Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="test-only-key",
         request_timeout_seconds=1.0,
         max_retries=0,
@@ -281,6 +281,30 @@ def test_source_pipeline_attests_review_and_rejects_stale_source(
     assert not resumed.ok
     assert "verified fixed-gate accepted pair" in resumed.error
     assert transport.calls == 1
+
+
+def test_siliconflow_profile_rejects_proprietary_source_before_transport(tmp_path: Path) -> None:
+    gateway = AuthoringGateway(_config("siliconflow"), repo_root=tmp_path)
+    task = TaskSpec(
+        task_id="external_source_forbidden",
+        task_type="source_attack",
+        prompt="Do not send this protected source task externally.",
+        expected_output_path=tmp_path / "artifacts/model_outputs/forbidden.json",
+        output_contract={
+            "type": "json_object",
+            "kind_field": "kind",
+            "allowed_kinds": ["attack_dsl"],
+        },
+        metadata={
+            "provider_profile": "siliconflow",
+            "provider_profile_category": "external",
+            "data_classification": "proprietary_source",
+            "allowed_profile_categories": ["intranet"],
+        },
+    )
+
+    with pytest.raises(GatewayError, match="restricted to the intranet profile category"):
+        gateway.run_task(task, run_id="must_not_call")
 
 
 def test_repository_has_no_kernel_specific_reference_residuals() -> None:

@@ -122,7 +122,8 @@
     "campaign_profile": {
       "type": "string",
       "enum": [
-        "abc_boolean_mass_recut"
+        "abc_boolean_mass_recut",
+        "abc_step_import"
       ],
       "description": "Optional typed large-campaign profile. The model may select only this id and bounded args; local code owns tool/path bindings."
     },

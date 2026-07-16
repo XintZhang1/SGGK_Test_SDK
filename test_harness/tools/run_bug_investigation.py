@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run parallel, tool-bounded Qwen investigation over qualified failure bundles."""
+"""Run parallel, tool-bounded model investigation over qualified failure bundles."""
 
 from __future__ import annotations
 

@@ -135,7 +135,7 @@ def derive_stages(session: dict[str, Any] | None, events: list[dict[str, Any]]) 
         },
         {
             "id": "generate",
-            "title": "Qwen 生成",
+            "title": "GLM-5.2 生成",
             **_stage(
                 "done" if "ROUND_READY_FOR_REVIEW" in names else ("active" if state == "generating" else "pending"),
                 "生成测试代码和测试方案",

@@ -2,17 +2,27 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from test_harness.authoring_gateway.client import (
+    CompletionOptions,
     HttpResponse,
     OpenAICompatibleMessageClient,
     TransportError,
 )
-from test_harness.authoring_gateway.config import PROFILE_SPECS, ConfigError, GatewayConfig, load_gateway_config
+from test_harness.authoring_gateway.config import (
+    DEFAULT_PROFILE,
+    PROFILE_SPECS,
+    SILICONFLOW_DEFAULT_BASE_URL,
+    SILICONFLOW_DEFAULT_MODEL,
+    ConfigError,
+    GatewayConfig,
+    load_gateway_config,
+)
 from test_harness.authoring_gateway.gateway import AuthoringGateway, GatewayError, TaskSpec
 
 API_KEY = "test-api-key-never-persist"
@@ -74,7 +84,7 @@ def make_config(*, retries: int = 0, profile: str = "intranet") -> GatewayConfig
     return GatewayConfig(
         profile=PROFILE_SPECS[profile],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model=SILICONFLOW_DEFAULT_MODEL,
         api_key=API_KEY,
         request_timeout_seconds=0.1,
         max_retries=retries,
@@ -563,6 +573,159 @@ def test_secret_with_json_escape_characters_is_never_staged_as_candidate(tmp_pat
     attempt = tmp_path / "artifacts/authoring_gateway/escaped_secret/task_one/attempt_01"
     assert not (attempt / "candidate.json").exists()
     assert secret not in all_artifact_text(tmp_path)
+
+
+def test_siliconflow_profile_defaults_to_glm52_and_requires_only_key() -> None:
+    config = load_gateway_config(environ={"SILICONFLOW_API_KEY": API_KEY})
+
+    assert DEFAULT_PROFILE == "siliconflow"
+    assert config.profile is PROFILE_SPECS["siliconflow"]
+    assert config.profile.category == "external"
+    assert config.base_url == SILICONFLOW_DEFAULT_BASE_URL
+    assert config.endpoint_url == f"{SILICONFLOW_DEFAULT_BASE_URL}/chat/completions"
+    assert config.model == SILICONFLOW_DEFAULT_MODEL
+    assert config.profile.default_thinking_mode == "enabled"
+    assert config.api_key == API_KEY
+    assert config.profile.provenance_source_type == "siliconflow_message_api"
+    assert API_KEY not in repr(config)
+    assert API_KEY not in json.dumps(config.public_metadata())
+
+
+def test_siliconflow_profile_fails_closed_without_key_and_rejects_http() -> None:
+    with pytest.raises(ConfigError, match="SILICONFLOW_API_KEY"):
+        load_gateway_config(environ={})
+
+    with pytest.raises(ConfigError, match="must use https"):
+        load_gateway_config(
+            environ={
+                "SILICONFLOW_API_KEY": API_KEY,
+                "SILICONFLOW_BASE_URL": "http://api.siliconflow.cn/v1",
+            }
+        )
+
+    with pytest.raises(ConfigError, match="api.siliconflow.cn"):
+        load_gateway_config(
+            environ={
+                "SILICONFLOW_API_KEY": API_KEY,
+                "SILICONFLOW_BASE_URL": "https://attacker.invalid/v1",
+            }
+        )
+
+    with pytest.raises(ConfigError, match="zai-org/GLM-5.2"):
+        load_gateway_config(
+            environ={
+                "SILICONFLOW_API_KEY": API_KEY,
+                "SILICONFLOW_MODEL": "another/model",
+            }
+        )
+
+
+def test_intranet_profile_does_not_fall_back_to_siliconflow_defaults() -> None:
+    with pytest.raises(ConfigError, match="SGGK_QWEN_BASE_URL"):
+        load_gateway_config("intranet", environ={"SILICONFLOW_API_KEY": API_KEY})
+
+
+def test_siliconflow_glm52_request_uses_verified_chat_contract() -> None:
+    transport = QueueTransport(provider_response('{"ok":true}'))
+    config = load_gateway_config(environ={"SILICONFLOW_API_KEY": API_KEY})
+    client = OpenAICompatibleMessageClient(config, transport=transport)
+
+    result = client.create_completion(
+        system_prompt="Return JSON only.",
+        user_prompt="Return one small JSON object.",
+        options=CompletionOptions(
+            response_mode="none",
+            temperature=0.0,
+            max_tokens=64,
+            thinking_mode="enabled",
+        ),
+    )
+
+    assert result.ok and result.candidate == {"ok": True}
+    request = transport.requests[0]
+    assert request["url"] == f"{SILICONFLOW_DEFAULT_BASE_URL}/chat/completions"
+    assert request["headers"]["Authorization"] == f"Bearer {API_KEY}"
+    payload = json.loads(request["body"])
+    assert payload == {
+        "model": SILICONFLOW_DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": "Return JSON only."},
+            {"role": "user", "content": "Return one small JSON object."},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 64,
+        "enable_thinking": True,
+    }
+
+
+def test_siliconflow_public_task_is_explicitly_bound_and_staged(tmp_path: Path) -> None:
+    transport = QueueTransport(provider_response(json.dumps(flat_candidate("glm52_external"))))
+    gateway = make_gateway(tmp_path, transport, profile="siliconflow")
+    task = replace(
+        flat_task(tmp_path),
+        metadata={
+            "provider_profile": "siliconflow",
+            "provider_profile_category": "external",
+            "data_classification": "public_interface",
+            "allowed_profile_categories": ["external"],
+        },
+    )
+
+    result = gateway.run_task(task, run_id="glm52_external")
+
+    assert result.ok
+    provenance = json.loads((tmp_path / result.provenance_path).read_text(encoding="utf-8"))
+    assert provenance["source_type"] == "siliconflow_message_api"
+    assert provenance["model"] == SILICONFLOW_DEFAULT_MODEL
+
+
+@pytest.mark.parametrize(
+    ("classification", "allowed_categories"),
+    [
+        ("", ["external"]),
+        ("unknown", ["external"]),
+        ("public_interface", None),
+        ("public_interface", ["external", "intranet"]),
+    ],
+)
+def test_siliconflow_rejects_tasks_without_exact_public_boundary(
+    tmp_path: Path,
+    classification: str,
+    allowed_categories: list[str] | None,
+) -> None:
+    transport = QueueTransport(provider_response(json.dumps(flat_candidate("must_not_send"))))
+    gateway = make_gateway(tmp_path, transport, profile="siliconflow")
+    metadata: dict[str, Any] = {
+        "provider_profile": "siliconflow",
+        "provider_profile_category": "external",
+        "data_classification": classification,
+    }
+    if allowed_categories is not None:
+        metadata["allowed_profile_categories"] = allowed_categories
+    task = replace(flat_task(tmp_path), metadata=metadata)
+
+    with pytest.raises(GatewayError, match="public_interface"):
+        gateway.run_task(task, run_id="must_not_send")
+    assert transport.requests == []
+
+
+def test_siliconflow_gateway_default_completion_enables_thinking(tmp_path: Path) -> None:
+    transport = QueueTransport(provider_response(json.dumps(flat_candidate("default_thinking"))))
+    gateway = make_gateway(tmp_path, transport, profile="siliconflow")
+    task = replace(
+        flat_task(tmp_path),
+        metadata={
+            "provider_profile": "siliconflow",
+            "provider_profile_category": "external",
+            "data_classification": "public_interface",
+            "allowed_profile_categories": ["external"],
+        },
+    )
+
+    result = gateway.run_task(task, run_id="default_thinking")
+
+    assert result.ok
+    assert json.loads(transport.requests[0]["body"])["enable_thinking"] is True
 
 
 def test_gateway_source_has_no_process_sdk_patch_or_git_imports() -> None:

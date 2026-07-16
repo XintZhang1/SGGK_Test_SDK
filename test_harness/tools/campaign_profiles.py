@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -44,7 +44,36 @@ ABC_MASS_RECUT_ARGS_SCHEMA: dict[str, Any] = {
     "required": [],
 }
 
+ABC_STEP_IMPORT_ARGS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "target_cases": {"type": "integer", "minimum": 1, "maximum": 2_000_000},
+        "shard_count": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "shard_index": {"type": "integer", "minimum": 0, "maximum": 4095},
+        "jobs": {"type": "integer", "minimum": 1, "maximum": 16},
+        "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 3600},
+        "resume": {"type": "boolean"},
+    },
+    "required": [],
+}
+
 CAMPAIGN_PROFILES: dict[str, CampaignProfile] = {
+    "abc_step_import": CampaignProfile(
+        profile_id="abc_step_import",
+        run_profile_id="corpus",
+        tool="test_harness/tools/run_corpus.py",
+        args_schema=ABC_STEP_IMPORT_ARGS_SCHEMA,
+        defaults={
+            "target_cases": 1000,
+            "shard_count": 1,
+            "shard_index": 0,
+            "jobs": 1,
+            "timeout_seconds": 180.0,
+            "resume": True,
+        },
+        required_bindings=frozenset({"runner", "dataset", "out"}),
+    ),
     "abc_boolean_mass_recut": CampaignProfile(
         profile_id="abc_boolean_mass_recut",
         run_profile_id="corpus",
@@ -206,6 +235,26 @@ def _safe_binding(name: str, raw: Any, roots: frozenset[str]) -> str:
     return normalized
 
 
+def _safe_dataset_binding(raw: Any) -> str:
+    """Accept a host-owned external dataset while keeping model bindings inert.
+
+    Dataset paths come from trusted local UI/CLI configuration, never from the
+    model-authored campaign request.  Runner and output bindings remain
+    repository-relative, while a user may keep a large read-only corpus on a
+    separate drive.
+    """
+
+    if not isinstance(raw, str) or not raw.strip():
+        raise CampaignRequestError("binding dataset must be a non-empty path")
+    text = raw.strip()
+    if UNSAFE_PATH_TEXT.search(text):
+        raise CampaignRequestError("binding dataset contains unsafe path characters")
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    return _safe_binding("dataset", text, frozenset({"artifacts", "test_harness"}))
+
+
 def resolve_campaign_argv(
     request: dict[str, Any],
     *,
@@ -223,9 +272,41 @@ def resolve_campaign_argv(
     if unknown:
         raise CampaignRequestError(f"unknown fixed campaign bindings: {unknown}")
     runner = _safe_binding("runner", bindings["runner"], frozenset({"build", "artifacts"}))
-    dataset = _safe_binding("dataset", bindings["dataset"], frozenset({"artifacts", "test_harness"}))
+    dataset = _safe_dataset_binding(bindings["dataset"])
     out = _safe_binding("out", bindings["out"], frozenset({"artifacts"}))
     args = normalized["args"]
+    if profile.profile_id == "abc_step_import":
+        argv = [
+            sys.executable,
+            profile.tool,
+            "--runner",
+            runner,
+            "--dataset-list",
+            dataset,
+            "--out",
+            out,
+            "--limit",
+            str(args["target_cases"]),
+            "--preserve-input-order",
+            "--shard-count",
+            str(args["shard_count"]),
+            "--shard-index",
+            str(args["shard_index"]),
+            "--jobs",
+            str(args["jobs"]),
+            "--timeout",
+            str(args["timeout_seconds"]),
+            "--hash-inputs",
+            "--require-input-sha256",
+            "--require-input-count",
+            str(args["target_cases"]),
+            "--triage-out",
+            f"{out.rstrip('/')}/triage",
+            "--fail-on-triage-error",
+        ]
+        if args["resume"]:
+            argv.extend(["--resume", "--resume-mode", "completed"])
+        return argv
     argv = [
         sys.executable,
         profile.tool,

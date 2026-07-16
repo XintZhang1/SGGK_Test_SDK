@@ -6,13 +6,17 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import threading
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from test_harness.authoring_gateway.config import PROFILE_SPECS, load_gateway_config
+from test_harness.nx import detect_nx_environment, probe_nx_python
 from test_harness.orchestration.runtime import MessageApiRuntime
 from test_harness.orchestration.workflow import HarnessWorkflow
 
+from .abc_dataset import AbcDatasetBackend
 from .settings import UiSettings, UiSettingsStore
 from .state import active_session_root, read_artifact, session_snapshot
 
@@ -21,8 +25,18 @@ class HarnessUiApplication:
     def __init__(self, repo_root: str | Path) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.settings = UiSettingsStore(self.repo_root)
+        self.abc = AbcDatasetBackend(self.repo_root)
+        self._nx_lock = threading.Lock()
+        self._nx_detection_key = ""
+        self._nx_detection: dict[str, Any] = {}
+        self._nx_probe: dict[str, Any] = {"schema_version": 1, "operation": "probe", "status": "not_run"}
+        self._nx_probe_identity = ""
 
-    def readiness(self, settings: UiSettings | None = None) -> list[dict[str, Any]]:
+    def readiness(
+        self,
+        settings: UiSettings | None = None,
+        nx: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         value = settings or self.settings.load()
         vswhere = (
             Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
@@ -31,6 +45,22 @@ class HarnessUiApplication:
             / "vswhere.exe"
         )
         cmake = self._cmake()
+        profile = PROFILE_SPECS[value.profile]
+        api_key_ready = bool(self.settings.api_key(value.profile)) or not profile.api_key_required
+        nx_state = nx or self.nx_state(value)
+        nx_detection = nx_state.get("detection") if isinstance(nx_state, dict) else {}
+        nx_probe = nx_state.get("probe") if isinstance(nx_state, dict) else {}
+        dataset_ready = bool(value.campaign_dataset and Path(value.campaign_dataset).is_file())
+        source_check = (
+            self._check("source_boundary", "外网数据边界", not value.source_root, "不向 SiliconFlow 发送 SDK 源码")
+            if value.profile != "intranet"
+            else self._check(
+                "source",
+                "SDK 源码",
+                not value.source_root or Path(value.source_root).is_dir(),
+                value.source_root or "可选",
+            )
+        )
         checks = [
             self._check(
                 "python",
@@ -38,16 +68,16 @@ class HarnessUiApplication:
                 all(importlib.util.find_spec(x) for x in ("jsonschema", "PIL")),
                 "jsonschema / Pillow",
             ),
-            self._check("message_api", "Message API", bool(value.base_url and value.model), "填写内网地址和模型名"),
+            self._check(
+                "message_api",
+                "SiliconFlow GLM-5.2",
+                bool(value.base_url and value.model and api_key_ready),
+                value.model if api_key_ready else "请保存 SiliconFlow API Key",
+            ),
             self._check(
                 "sdk", "SGGK SDK", bool(value.sdk_dir and Path(value.sdk_dir).is_dir()), value.sdk_dir or "尚未选择"
             ),
-            self._check(
-                "source",
-                "SDK 源码",
-                not value.source_root or Path(value.source_root).is_dir(),
-                value.source_root or "可选",
-            ),
+            source_check,
             self._check(
                 "runner",
                 "用例运行器",
@@ -56,6 +86,26 @@ class HarnessUiApplication:
             ),
             self._check("vs2022", "Visual Studio 2022 C++", vswhere.is_file(), str(vswhere)),
             self._check("cmake", "CMake", bool(cmake), str(cmake) if cmake else "未找到"),
+            self._check(
+                "abc_dataset",
+                "ABC 数据集（可选）",
+                dataset_ready,
+                value.campaign_dataset or "可下载全量数据，或绑定含可验证索引的 fetch 根目录",
+            ),
+            self._check(
+                "nx_journal",
+                "NX Journal 环境（可选）",
+                bool(isinstance(nx_detection, dict) and nx_detection.get("ok")),
+                self._nx_detail(nx_detection),
+            ),
+            self._check(
+                "nx_python",
+                "NX Python API 验证（可选）",
+                bool(isinstance(nx_probe, dict) and nx_probe.get("ok")),
+                str(nx_probe.get("status") or "尚未运行真实探针")
+                if isinstance(nx_probe, dict)
+                else "尚未运行真实探针",
+            ),
         ]
         return checks
 
@@ -65,9 +115,12 @@ class HarnessUiApplication:
 
     def public_state(self) -> dict[str, Any]:
         value = self.settings.load()
+        nx = self.nx_state(value)
         snapshot = session_snapshot(self.repo_root)
         snapshot["settings"] = self.settings.public()
-        snapshot["readiness"] = self.readiness(value)
+        snapshot["abc"] = self.abc.snapshot()
+        snapshot["nx"] = nx
+        snapshot["readiness"] = self.readiness(value, nx)
         snapshot["ready_to_start"] = all(
             check["ok"]
             for check in snapshot["readiness"]
@@ -79,11 +132,146 @@ class HarnessUiApplication:
         values = payload.get("settings")
         if not isinstance(values, dict):
             raise ValueError("settings must be an object")
+        values = dict(values)
+        requested_dataset = str(values.get("campaign_dataset") or "").strip()
+        if requested_dataset:
+            report = self.abc.inspect_existing(requested_dataset)
+            if not report.get("ready"):
+                errors = report.get("errors") or report.get("warnings") or [
+                    "ABC dataset index is not campaign-ready"
+                ]
+                raise ValueError("; ".join(str(item) for item in errors[:4]))
+            values["campaign_dataset"] = str(report.get("campaign_dataset") or "")
         api_key = payload.get("api_key")
         if api_key is not None and not isinstance(api_key, str):
             raise ValueError("api_key must be a string")
+        previous = self.settings.load()
         saved = self.settings.save(values, api_key=api_key, clear_api_key=payload.get("clear_api_key") is True)
+        if saved.nx_root_dir != previous.nx_root_dir:
+            with self._nx_lock:
+                self._nx_detection_key = ""
+                self._nx_detection = {}
+                self._nx_probe = {"schema_version": 1, "operation": "probe", "status": "not_run"}
+                self._nx_probe_identity = ""
         return saved.public_dict(api_key_configured=bool(self.settings.api_key(saved.profile)))
+
+    @staticmethod
+    def _nx_detail(detection: Any) -> str:
+        if not isinstance(detection, dict):
+            return "尚未检测"
+        selected = str(detection.get("selected_root") or "")
+        if selected:
+            return selected
+        diagnostics = detection.get("diagnostics")
+        if isinstance(diagnostics, list) and diagnostics and isinstance(diagnostics[0], dict):
+            return str(diagnostics[0].get("message") or detection.get("status") or "未找到 NX")
+        return str(detection.get("status") or "未找到 NX")
+
+    def nx_state(self, settings: UiSettings | None = None, *, refresh: bool = False) -> dict[str, Any]:
+        value = settings or self.settings.load()
+        key = value.nx_root_dir
+        with self._nx_lock:
+            cached = bool(self._nx_detection) and self._nx_detection_key == key and not refresh
+            if cached:
+                return {"detection": deepcopy(self._nx_detection), "probe": deepcopy(self._nx_probe)}
+        roots = [key] if key else []
+        try:
+            detection = detect_nx_environment(explicit_roots=roots)
+        except Exception as exc:  # keep the local UI available when vendor discovery fails
+            detection = {
+                "schema_version": 1,
+                "operation": "detect",
+                "ok": False,
+                "status": "detection_failed",
+                "selected_root": "",
+                "installations": [],
+                "diagnostics": [{"code": "NX_DETECTION_FAILED", "severity": "error", "message": str(exc)}],
+            }
+        with self._nx_lock:
+            if self._nx_detection_key != key:
+                self._nx_probe = {"schema_version": 1, "operation": "probe", "status": "not_run"}
+                self._nx_probe_identity = ""
+            detection_identity = self._nx_identity(detection)
+            if (
+                self._nx_probe.get("status") not in {"not_run", "running"}
+                and self._nx_probe_identity != detection_identity
+            ):
+                self._nx_probe = {"schema_version": 1, "operation": "probe", "status": "not_run"}
+                self._nx_probe_identity = ""
+            self._nx_detection_key = key
+            self._nx_detection = detection
+            return {"detection": deepcopy(detection), "probe": deepcopy(self._nx_probe)}
+
+    @staticmethod
+    def _nx_identity(detection: Any) -> str:
+        if not isinstance(detection, dict):
+            return ""
+        selected_root = str(detection.get("selected_root") or "")
+        installations = detection.get("installations")
+        run_journal = ""
+        if isinstance(installations, list):
+            selected = next(
+                (
+                    item
+                    for item in installations
+                    if isinstance(item, dict) and str(item.get("root") or "") == selected_root
+                ),
+                None,
+            )
+            paths = selected.get("paths") if isinstance(selected, dict) else None
+            if isinstance(paths, dict):
+                run_journal = str(paths.get("run_journal") or "")
+        return f"{selected_root.casefold()}|{run_journal.casefold()}" if selected_root else ""
+
+    def probe_nx(self) -> dict[str, Any]:
+        value = self.settings.load()
+        roots = [value.nx_root_dir] if value.nx_root_dir else []
+        with self._nx_lock:
+            self._nx_probe = {"schema_version": 1, "operation": "probe", "status": "running"}
+            self._nx_probe_identity = ""
+        try:
+            result = probe_nx_python(
+                explicit_roots=roots,
+                timeout_seconds=value.nx_probe_timeout_seconds,
+            )
+        except Exception as exc:
+            result = {
+                "schema_version": 1,
+                "operation": "probe",
+                "ok": False,
+                "status": "launch_failed",
+                "error": str(exc),
+                "diagnostics": [{"code": "NX_PROBE_FAILED", "severity": "error", "message": str(exc)}],
+            }
+            with self._nx_lock:
+                self._nx_probe = result
+                self._nx_probe_identity = ""
+            raise
+        with self._nx_lock:
+            self._nx_probe = result
+            environment = result.get("environment")
+            if isinstance(environment, dict):
+                self._nx_detection_key = value.nx_root_dir
+                self._nx_detection = environment
+                self._nx_probe_identity = self._nx_identity(environment)
+        return result
+
+    def inspect_abc(self, path: str) -> dict[str, Any]:
+        return self.abc.inspect_existing(path)
+
+    def use_existing_abc(self, path: str) -> dict[str, Any]:
+        report = self.abc.inspect_existing(path)
+        if not report.get("ready"):
+            errors = report.get("errors") or report.get("warnings") or ["目录尚未形成可用数据集索引"]
+            raise ValueError("; ".join(str(item) for item in errors[:4]))
+        campaign_dataset = str(report.get("campaign_dataset") or "")
+        if not campaign_dataset:
+            raise ValueError("ABC dataset inspection returned no campaign dataset path")
+        saved = self.settings.save({"campaign_dataset": campaign_dataset})
+        return {
+            "inspection": report,
+            "settings": saved.public_dict(api_key_configured=bool(self.settings.api_key(saved.profile))),
+        }
 
     def workflow(self) -> HarnessWorkflow:
         settings = self.settings.validate(self.settings.load(), require_existing_paths=True)

@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import Any
-
 
 EXTENSION_TO_API = {
     ".sgt": "check_sgt",
@@ -79,7 +78,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hash-inputs",
         action="store_true",
-        help="Store SHA1 input content digests in corpus_manifest.json.",
+        help="Store SHA1 and SHA-256 input content digests in corpus_manifest.json.",
+    )
+    parser.add_argument(
+        "--require-input-sha256",
+        action="store_true",
+        help="Require every selected list entry to declare a matching SHA-256 digest.",
+    )
+    parser.add_argument(
+        "--require-input-count",
+        type=int,
+        default=0,
+        help="Fail unless at least this many input files are selected.",
     )
     parser.add_argument(
         "--triage-out",
@@ -89,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         "--triage-include-passed",
         action="store_true",
         help="Pass --include-passed to triage_artifacts.py.",
+    )
+    parser.add_argument(
+        "--fail-on-triage-error",
+        action="store_true",
+        help="Return nonzero when the requested triage command fails.",
     )
     return parser.parse_args()
 
@@ -137,9 +152,25 @@ def iter_inputs(paths: list[str], exclude_roots: list[Path], preserve_order: boo
     return sorted(set(found), key=lambda p: str(p).lower())
 
 
-def load_dataset_list(path: Path) -> list[str]:
+def _path_key(path: Path) -> str:
+    value = str(path.resolve())
+    return value.casefold() if sys.platform == "win32" else value
+
+
+def _resolve_list_entry(list_path: Path, raw: str) -> Path:
+    candidate = Path(raw).expanduser()
+    return candidate.resolve() if candidate.is_absolute() else (list_path.parent / candidate).resolve()
+
+
+def load_dataset_list(
+    path: Path,
+    expected_hashes: dict[str, tuple[str, str]] | None = None,
+) -> list[str]:
+    path = path.expanduser().resolve()
     if not path.exists():
         raise ValueError(f"dataset list not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"dataset list must be a file: {path}")
     if path.suffix.lower() == ".json":
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
@@ -153,7 +184,15 @@ def load_dataset_list(path: Path) -> list[str]:
                 continue
             raw = item.get("path") or item.get("source_file")
             if isinstance(raw, str) and raw:
-                result.append(raw)
+                resolved = _resolve_list_entry(path, raw)
+                result.append(str(resolved))
+                if expected_hashes is not None:
+                    sha256 = str(item.get("sha256") or "").lower()
+                    sha1 = str(item.get("sha1") or "").lower()
+                    if re.fullmatch(r"[0-9a-f]{64}", sha256):
+                        expected_hashes[_path_key(resolved)] = ("sha256", sha256)
+                    elif re.fullmatch(r"[0-9a-f]{40}", sha1):
+                        expected_hashes[_path_key(resolved)] = ("sha1", sha1)
         return result
 
     result = []
@@ -161,14 +200,17 @@ def load_dataset_list(path: Path) -> list[str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        result.append(line)
+        result.append(str(_resolve_list_entry(path, line)))
     return result
 
 
-def collect_dataset_paths(args: argparse.Namespace) -> list[str]:
+def collect_dataset_paths(
+    args: argparse.Namespace,
+    expected_hashes: dict[str, tuple[str, str]] | None = None,
+) -> list[str]:
     paths = list(args.dataset or [])
     for raw_list in args.dataset_list or []:
-        paths.extend(load_dataset_list(Path(raw_list)))
+        paths.extend(load_dataset_list(Path(raw_list), expected_hashes))
     return paths
 
 
@@ -194,6 +236,36 @@ def file_sha1(path: Path) -> str:
         for chunk in iter(lambda: in_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as in_file:
+        for chunk in iter(lambda: in_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def input_hash_issues(
+    inputs: list[Path],
+    expected_hashes: dict[str, tuple[str, str]],
+    *,
+    require_sha256: bool,
+) -> list[str]:
+    issues: list[str] = []
+    for input_path in inputs:
+        expected = expected_hashes.get(_path_key(input_path))
+        if expected is None:
+            issues.append(f"missing declared content hash: {input_path}")
+            continue
+        algorithm, digest = expected
+        if require_sha256 and algorithm != "sha256":
+            issues.append(f"missing declared SHA-256: {input_path}")
+            continue
+        actual = file_sha256(input_path) if algorithm == "sha256" else file_sha1(input_path)
+        if actual.lower() != digest.lower():
+            issues.append(f"content hash mismatch: {input_path}")
+    return issues
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -244,8 +316,7 @@ def run_one(runner: Path, recipe_path: Path, out_root: Path, timeout: float) -> 
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
         )
         elapsed = time.perf_counter() - started
@@ -366,6 +437,7 @@ def write_manifest(
         }
         if args.hash_inputs:
             item["sha1"] = file_sha1(input_path)
+            item["sha256"] = file_sha256(input_path)
         entries.append(item)
 
     manifest = {
@@ -419,6 +491,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--shard-count must be >= 1")
     if args.shard_index < 0 or args.shard_index >= args.shard_count:
         raise ValueError("--shard-index must satisfy 0 <= index < shard-count")
+    if args.require_input_count < 0:
+        raise ValueError("--require-input-count must be >= 0")
     if args.fail_fast and args.jobs > 1:
         print("--fail-fast with --jobs > 1 cancels pending cases after the first failure", file=sys.stderr)
 
@@ -446,8 +520,7 @@ def run_triage(out_root: Path, triage_out: str | None, include_passed: bool) -> 
         text=True,
         encoding="utf-8",
         errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     return {
         "command": cmd,
@@ -478,7 +551,8 @@ def main() -> int:
     manifest_path = out_root / "corpus_manifest.json"
     out_root.mkdir(parents=True, exist_ok=True)
 
-    dataset_paths = collect_dataset_paths(args)
+    expected_hashes: dict[str, tuple[str, str]] = {}
+    dataset_paths = collect_dataset_paths(args, expected_hashes)
     scanned_inputs = iter_inputs(dataset_paths, [out_root], preserve_order=args.preserve_input_order)
     if not scanned_inputs:
         print("no supported corpus files found", file=sys.stderr)
@@ -486,6 +560,21 @@ def main() -> int:
     selected_inputs = select_shard(scanned_inputs, args.shard_count, args.shard_index)
     if args.limit > 0:
         selected_inputs = selected_inputs[: args.limit]
+    if len(selected_inputs) < args.require_input_count:
+        print(
+            f"selected corpus input count {len(selected_inputs)} is below required {args.require_input_count}",
+            file=sys.stderr,
+        )
+        return 1
+    if args.require_input_sha256:
+        hash_issues = input_hash_issues(
+            selected_inputs,
+            expected_hashes,
+            require_sha256=True,
+        )
+        if hash_issues:
+            print("; ".join(hash_issues[:8]), file=sys.stderr)
+            return 1
     sgt_apis = args.sgt_api or ["check_sgt"]
     selected_tasks = expand_tasks(selected_inputs, sgt_apis)
 
@@ -587,7 +676,12 @@ def main() -> int:
     print(f"summary={summary_path}")
     if triage:
         print(f"triage_out={args.triage_out}")
-    return 0 if final_summary["failed"] == 0 else 2
+    triage_failed = bool(
+        args.fail_on_triage_error
+        and isinstance(triage, dict)
+        and int(triage.get("returncode") or 0) != 0
+    )
+    return 0 if final_summary["failed"] == 0 and not triage_failed else 2
 
 
 if __name__ == "__main__":

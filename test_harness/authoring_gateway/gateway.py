@@ -652,6 +652,14 @@ Fixed diagnostics:
                 "external Message API tasks must be explicitly bound to the configured "
                 "provider profile and category"
             )
+        if self.config.profile.category != "intranet" and (
+            classification != "public_interface"
+            or allowed_categories != [self.config.profile.category]
+        ):
+            raise GatewayError(
+                "external Message API tasks must declare data_classification=public_interface "
+                "and the exact configured external profile category"
+            )
         if not 0 <= max_repairs <= 3:
             raise GatewayError("max_repairs must be between 0 and 3")
         if not task.prompt.strip():
@@ -679,7 +687,10 @@ Fixed diagnostics:
             result.provenance_path = _repo_relative(self.repo_root, formal_provenance_path)
             return result
 
-        options = completion_options or CompletionOptions(response_mode="auto")
+        options = completion_options or CompletionOptions(
+            response_mode="auto",
+            thinking_mode=self.config.profile.default_thinking_mode,
+        )
         if options.response_mode in {"auto", "json_schema"} and options.response_schema is None:
             options = replace(options, response_schema=response_schema_for_contract(task.output_contract))
         prompt = task.prompt

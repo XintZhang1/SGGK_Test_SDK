@@ -7,7 +7,7 @@ API parameters are host-owned implementation details.
 
 This module deliberately separates three authorities:
 
-* Qwen proposes and revises test artifacts through the Message API;
+* the configured model proposes and revises test artifacts through the Message API;
 * fixed host code validates, hashes, stores, and interprets state transitions;
 * the SDK runner is not reachable until a hash-bound approval attestation has
   been created for the latest immutable round.
@@ -309,7 +309,7 @@ def build_internal_form(
     *,
     request_id: str,
 ) -> dict[str, Any]:
-    """Create the broad internal intent envelope that Qwen turns into cases."""
+    """Create the broad internal intent envelope that the model turns into cases."""
 
     target_api = str(resolution.get("resolved_api") or "needs_harness_extension")
     apis = capabilities.get("apis") if isinstance(capabilities.get("apis"), Mapping) else {}
@@ -321,9 +321,9 @@ def build_internal_form(
         oracles = ["topocheck"]
     body_required = [str(item) for item in capability.get("body_required", []) if item]
     geometry: dict[str, Any] = {
-        "family": "qwen_risk_driven",
+        "family": "model_risk_driven",
         "parameter_notes": (
-            "Qwen must choose runnable nominal, negative, degenerate, tolerance-boundary, "
+            "The model must choose runnable nominal, negative, degenerate, tolerance-boundary, "
             "and large-coordinate variants from the fixed Harness capabilities."
         ),
     }
@@ -347,7 +347,7 @@ def build_internal_form(
         "target_api": target_api,
         "sdk_source_refs": source_refs,
         "test_goal": (
-            "由 Qwen 依据接口能力、声明和固定示例自动设计可执行的风险驱动测试；"
+            "由当前配置模型依据接口能力、声明和固定示例自动设计可执行的风险驱动测试；"
             "普通用户不负责选择 builder、oracle、容差、用例数量或执行参数。"
         ),
         "risk_summary": (
@@ -358,14 +358,14 @@ def build_internal_form(
         "tolerance_focus": _tolerance_focus(target_api),
         "oracles": oracles,
         "expected_behavior": (
-            "Qwen 必须把每个预期转成可测 oracle，不得只检查 API 返回状态；"
+            "模型必须把每个预期转成可测 oracle，不得只检查 API 返回状态；"
             "不确定的 SDK 语义必须在审查报告中标为待确认假设。"
         ),
         "case_count": 12,
         "run_profile": "matrix",
         "input_assets": {},
         "notes": (
-            "这是 Harness 自动创建的内部 IR，不是用户表单。Qwen 可在固定能力边界内"
+            "这是 Harness 自动创建的内部 IR，不是用户表单。模型可在固定能力边界内"
             "决定完整用例设计，宿主负责门禁、哈希、审查轮次和执行。"
         ),
     }
@@ -716,6 +716,23 @@ class HarnessWorkflow:
             self.source_root = None
         self.sdk_dir_identity = path_identity(self.sdk_dir)
         self.source_root_identity = path_identity(self.source_root)
+        raw_campaign_dataset = str(getattr(runtime, "campaign_dataset", "") or "").strip()
+        if raw_campaign_dataset:
+            configured_dataset = Path(raw_campaign_dataset).expanduser()
+            self.campaign_dataset = (
+                configured_dataset.resolve()
+                if configured_dataset.is_absolute()
+                else (self.repo_root / configured_dataset).resolve()
+            )
+            if not self.campaign_dataset.exists():
+                raise WorkflowError(
+                    "configured campaign dataset does not exist; select or fetch it again"
+                )
+            if not self.campaign_dataset.is_file():
+                raise WorkflowError("configured campaign dataset must be an index or list file")
+        else:
+            self.campaign_dataset = None
+        self.campaign_dataset_identity = self._current_campaign_dataset_identity()
         self.runner_path = Path(runner_path).resolve() if runner_path else None
         if self.runner_path is not None:
             try:
@@ -726,6 +743,21 @@ class HarnessWorkflow:
                 ) from exc
         self.active_path = self.sessions_root / "active.json"
         self.lock_path = self.sessions_root / ".workflow.lock"
+
+    def _current_campaign_dataset_identity(self) -> str:
+        if self.campaign_dataset is not None and not self.campaign_dataset.is_file():
+            raise WorkflowError("configured campaign dataset disappeared or is no longer a file")
+        campaign_path_identity = path_identity(self.campaign_dataset)
+        return (
+            _sha256_json(
+                {
+                    "path_identity": campaign_path_identity,
+                    "content_sha256": _sha256_file(self.campaign_dataset),
+                }
+            )
+            if self.campaign_dataset is not None and self.campaign_dataset.is_file()
+            else campaign_path_identity
+        )
 
     def _paths(self, session_id: str) -> SessionPaths:
         root = (self.sessions_root / _safe_id(session_id)).resolve()
@@ -773,6 +805,11 @@ class HarnessWorkflow:
         if str(session.get("sdk_dir_identity") or "") != self.sdk_dir_identity:
             raise WorkflowError(
                 "active session SDK directory changed; restart the API review with the original SDK directory"
+            )
+        current_campaign_identity = self._current_campaign_dataset_identity()
+        if str(session.get("campaign_dataset_identity") or "") != current_campaign_identity:
+            raise WorkflowError(
+                "active session campaign dataset changed; restart the API review with the original dataset"
             )
 
     @staticmethod
@@ -960,6 +997,7 @@ class HarnessWorkflow:
             "data_classification": "public_interface",
             "source_root_identity": self.source_root_identity,
             "sdk_dir_identity": self.sdk_dir_identity,
+            "campaign_dataset_identity": self.campaign_dataset_identity,
             "state": "created",
             "current_round": 0,
             "current_round_sha256": "",
@@ -1047,6 +1085,17 @@ class HarnessWorkflow:
             self.capabilities,
             request_id=task_id,
         )
+        if form.get("target_api") == "step_import" and self.campaign_dataset is not None:
+            form["campaign_profile"] = "abc_step_import"
+            form["run_profile"] = "corpus"
+            form["case_count"] = 100
+            form["input_assets"] = {"host_configured_abc_dataset": True}
+            geometry = form.get("geometry") if isinstance(form.get("geometry"), dict) else {}
+            form["geometry"] = {
+                **geometry,
+                "family": "corpus",
+                "input_asset": "host-configured ABC dataset index (path hidden from model)",
+            }
         form_path = round_root / "internal" / "api_test_form.json"
         _write_json(form_path, form)
         errors, warnings = validate_form(form)
@@ -1061,6 +1110,8 @@ class HarnessWorkflow:
         source_metadata: dict[str, Any] = {
             "provider_profile": self.profile,
             "provider_profile_category": self.profile_category,
+            "data_classification": "public_interface",
+            "allowed_profile_categories": [self.profile_category],
         }
         if (
             session.get("data_classification") == "proprietary_source"
@@ -1175,7 +1226,7 @@ class HarnessWorkflow:
             decision_value = decision if isinstance(decision, Mapping) else {}
             revision_context = {
                 "user_comment": interpretation.get("user_comment", ""),
-                "qwen_interpretation": decision_value,
+                "model_interpretation": decision_value,
                 "previous_candidate": previous_value,
                 "rules": {
                     "return_complete_replacement": True,
@@ -1449,11 +1500,11 @@ class HarnessWorkflow:
         if interpretation:
             lines.extend(
                 [
-                    "## 2. 上一轮用户意见与 Qwen 理解",
+                    "## 2. 上一轮用户意见与模型理解",
                     "",
                     f"- 用户原始意见：{interpretation.get('user_comment', '')}",
-                    f"- Qwen 语义判断：`{decision.get('decision', '')}`",
-                    f"- Qwen 中文解释：{decision.get('summary_zh_cn', '')}",
+                    f"- 模型语义判断：`{decision.get('decision', '')}`",
+                    f"- 模型中文解释：{decision.get('summary_zh_cn', '')}",
                     "- 本轮采纳项：",
                     "",
                 ]
@@ -1477,7 +1528,7 @@ class HarnessWorkflow:
                 json.dumps(form, indent=2, ensure_ascii=False),
                 "```",
                 "",
-                f"## {next_index + 1}. Qwen 生成的完整候选",
+                f"## {next_index + 1}. 模型生成的完整候选",
                 "",
                 "下列 JSON 是固定门禁已经接受、但尚未执行的完整候选。字段保持原样，便于逐项复核。",
                 "",
@@ -1604,10 +1655,10 @@ class HarnessWorkflow:
                     },
                 )
                 self._save_session(session, paths)
-                raise WorkflowError(f"Qwen comment interpretation failed: {exc}") from exc
+                raise WorkflowError(f"model comment interpretation failed: {exc}") from exc
             decision = interpretation.get("decision")
             if not isinstance(decision, Mapping):
-                raise WorkflowError("Qwen comment interpretation has no decision object")
+                raise WorkflowError("model comment interpretation has no decision object")
             decision_name = str(decision.get("decision") or "")
             interpretation["user_comment"] = comment
             _write_json(comment_root / "interpretation.json", interpretation)
@@ -1705,7 +1756,7 @@ class HarnessWorkflow:
                             "",
                             f"- 接口：`{session['public_function']}`",
                             f"- 用户意见：{comment}",
-                            f"- Qwen 理解：{decision.get('summary_zh_cn', '')}",
+                            f"- 模型理解：{decision.get('summary_zh_cn', '')}",
                             "- SDK 执行：未发生",
                             "",
                         ]
@@ -1717,12 +1768,12 @@ class HarnessWorkflow:
                 payload = self.status_payload(session)
             elif decision_name == "question":
                 session["state"] = "awaiting_comment"
-                answer_path = comment_root / "qwen_answer.zh-CN.md"
+                answer_path = comment_root / "model_answer.zh-CN.md"
                 _write_text(
                     answer_path,
                     "\n".join(
                         [
-                            "# Qwen 对本轮评论的理解",
+                            "# 模型对本轮评论的理解",
                             "",
                             f"- 用户评论：{comment}",
                             f"- 回答/说明：{decision.get('summary_zh_cn', '')}",
@@ -1742,7 +1793,7 @@ class HarnessWorkflow:
                 payload = self.status_payload(session)
                 payload["answer_path"] = _repo_relative(self.repo_root, answer_path)
             else:
-                raise WorkflowError(f"unsupported Qwen review decision: {decision_name}")
+                raise WorkflowError(f"unsupported model review decision: {decision_name}")
             _write_json(completed_path, payload)
             return payload
 
@@ -1768,6 +1819,9 @@ class HarnessWorkflow:
         execution_manifest_sha256: str,
     ) -> dict[str, Any]:
         runner_hash = _sha256_file(runner_path) if runner_path and runner_path.is_file() else ""
+        campaign_dataset_identity = self._current_campaign_dataset_identity()
+        if campaign_dataset_identity != str(session.get("campaign_dataset_identity") or ""):
+            raise WorkflowError("campaign dataset changed before execution approval")
         reviewed_manifest_path = _repo_path(
             self.repo_root, round_record["manifest_path"], label="manifest"
         )
@@ -1805,8 +1859,9 @@ class HarnessWorkflow:
             ),
             "interpretation_sha256": _sha256_json(interpretation),
             "runner_sha256": runner_hash,
+            "campaign_dataset_identity": campaign_dataset_identity,
             "approved_at": _utc_now(),
-            "authority": "fixed_harness_host_after_qwen_comment_interpretation",
+            "authority": "fixed_harness_host_after_model_comment_interpretation",
         }
         return {**unsigned, "approval_sha256": _sha256_json(unsigned)}
 
@@ -1832,6 +1887,10 @@ class HarnessWorkflow:
             or approval.get("round_sha256") != round_record.get("round_sha256")
             or approval.get("candidate_sha256") != round_record.get("candidate_sha256")
             or approval.get("reviewed_manifest_sha256") != round_record.get("manifest_sha256")
+            or approval.get("campaign_dataset_identity")
+            != session.get("campaign_dataset_identity")
+            or approval.get("campaign_dataset_identity")
+            != self._current_campaign_dataset_identity()
         ):
             raise WorkflowError("execution approval is not bound to the latest immutable round")
         if (
@@ -1872,7 +1931,7 @@ class HarnessWorkflow:
             note = comment_root / "approval_not_explicit.zh-CN.md"
             _write_text(
                 note,
-                "# 尚未开始执行\n\nQwen 将评论理解为批准，但宿主未检测到明确的“同意执行”语义。"
+                "# 尚未开始执行\n\n模型将评论理解为批准，但宿主未检测到明确的“同意执行”语义。"
                 "请明确评论“这一版可以开始执行”。\n",
             )
             self._event(

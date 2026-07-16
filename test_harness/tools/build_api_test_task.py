@@ -630,6 +630,18 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
             "Use campaign_request profile_id=abc_boolean_mass_recut; fixed code expands the bounded corpus lane and filters explicit unsupported failures from bug reports.",
         ]
         preferred_format = "campaign_request"
+    elif campaign_profile_id == "abc_step_import":
+        campaign_bindings[campaign_profile_id] = {
+            "runner": "build/test_harness/Release/sggk_case_runner.exe",
+            "dataset": "artifacts/abc_dataset_full/dataset_index.json",
+            "out": "artifacts/abc_step_import",
+        }
+        guidance = dict(guidance)
+        guidance["preferred_format"] = "campaign_request"
+        guidance["notes"] = list(guidance.get("notes", [])) + [
+            "Use campaign_request profile_id=abc_step_import; fixed code binds the host-selected ABC index and runs deterministic sharded STEP import with triage.",
+        ]
+        preferred_format = "campaign_request"
 
     task = {
         "task_version": 1,

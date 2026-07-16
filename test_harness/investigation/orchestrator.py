@@ -91,7 +91,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     lines = [
         f"# Candidate Bug Investigation: {report.get('representative_case_id', '')}",
         "",
-        "> This is a Qwen-assisted candidate analysis, not a confirmed SDK bug or confirmed root cause.",
+        "> This is a model-assisted candidate analysis, not a confirmed SDK bug or confirmed root cause.",
         "",
         f"- Failure ID: `{report.get('failure_id', '')}`",
         f"- Investigators: `{report.get('successful_investigators', 0)}/{report.get('investigator_count', 0)}` successful",

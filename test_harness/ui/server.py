@@ -23,6 +23,7 @@ class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._state: dict[str, Any] = {"status": "idle", "operation": "", "error": ""}
+        self._thread: threading.Thread | None = None
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -44,7 +45,16 @@ class JobManager:
             with self._lock:
                 self._state = result
 
-        threading.Thread(target=run, name=f"harness-ui-{operation}", daemon=True).start()
+        thread = threading.Thread(target=run, name=f"harness-ui-{operation}", daemon=False)
+        with self._lock:
+            self._thread = thread
+        thread.start()
+
+    def wait(self, timeout: float | None = None) -> None:
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
 
 class HarnessUiServer(ThreadingHTTPServer):
@@ -102,7 +112,15 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             raise ValueError("request root must be an object")
         return value
 
+    def _trusted_host(self) -> bool:
+        port = int(self.server.server_address[1])
+        host = self.headers.get("Host", "").strip().casefold()
+        return host in {f"127.0.0.1:{port}", f"localhost:{port}"}
+
     def do_GET(self) -> None:
+        if not self._trusted_host():
+            self._error(HTTPStatus.FORBIDDEN, "untrusted Host header")
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/api/state":
             try:
@@ -115,6 +133,12 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/health":
             self._json({"ok": True})
+            return
+        if parsed.path == "/api/abc/status":
+            self._json({"ok": True, "abc": self.server.app.abc.snapshot()})
+            return
+        if parsed.path == "/api/nx/environment":
+            self._json({"ok": True, "nx": self.server.app.nx_state(refresh=True)})
             return
         if parsed.path == "/api/artifact":
             relative = parse_qs(parsed.query).get("path", [""])[0]
@@ -138,6 +162,9 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self) -> None:
+        if not self._trusted_host():
+            self._error(HTTPStatus.FORBIDDEN, "untrusted Host header")
+            return
         if not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), self.server.csrf_token):
             self._error(HTTPStatus.FORBIDDEN, "invalid CSRF token")
             return
@@ -146,6 +173,23 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == "/api/settings":
                 self._json({"ok": True, "settings": self.server.app.save_settings(payload)})
+                return
+            if path == "/api/abc/fetch":
+                result = self.server.app.abc.start_fetch(payload)
+                self._json({"ok": True, "abc": result}, HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/abc/cancel":
+                self._json({"ok": True, "abc": self.server.app.abc.cancel()}, HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/abc/validate":
+                self._json({"ok": True, "inspection": self.server.app.inspect_abc(str(payload.get("path") or ""))})
+                return
+            if path == "/api/abc/use-existing":
+                self._json({"ok": True, **self.server.app.use_existing_abc(str(payload.get("path") or ""))})
+                return
+            if path == "/api/nx/probe":
+                self.server.jobs.submit("nx_probe", self.server.app.probe_nx)
+                self._json({"ok": True, "job": self.server.jobs.snapshot()}, HTTPStatus.ACCEPTED)
                 return
             operations: dict[str, tuple[str, Callable[[], Any]]] = {
                 "/api/start": ("start", lambda: self.server.app.start(str(payload.get("public_function") or ""))),
@@ -176,6 +220,7 @@ def run_server(*, repo_root: str | Path, port: int = 8765, open_browser: bool = 
         pass
     finally:
         server.server_close()
+        server.jobs.wait()
 
 
 __all__ = ["HarnessUiApplication", "HarnessUiServer", "run_server"]
