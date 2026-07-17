@@ -12,6 +12,7 @@ window.HarnessJobStatus = (() => {
   let activeOperation = "";
   let startedAt = 0;
   let currentSettings = {};
+  let currentStages = [];
 
   const element = (id) => document.getElementById(id);
 
@@ -78,13 +79,21 @@ window.HarnessJobStatus = (() => {
     return hours ? `${String(hours).padStart(2, "0")}:${shortClock}` : shortClock;
   }
 
+  function activeStageLine(stages) {
+    if (!Array.isArray(stages) || !stages.length) return "";
+    const active = stages.find((stage) => stage && stage.status === "active");
+    if (!active || !active.title) return "";
+    return `当前阶段：${active.title}${active.detail ? `（${active.detail}）` : ""}`;
+  }
+
   function paint() {
     if (!startedAt) return;
     const copy = operationCopy(activeOperation, currentSettings);
     const elapsed = formatElapsed(Date.now() - startedAt);
+    const stageLine = activeStageLine(currentStages);
     element("jobProgressKicker").textContent = copy.kicker;
     element("jobProgressTitle").textContent = copy.title;
-    element("jobProgressDetail").textContent = copy.detail;
+    element("jobProgressDetail").textContent = stageLine ? `${copy.detail} ${stageLine}` : copy.detail;
     element("jobElapsed").textContent = elapsed;
     element("jobBadge").textContent = `任务 · ${copy.title} · ${elapsed}`;
     element("jobBadge").className = "badge";
@@ -108,8 +117,9 @@ window.HarnessJobStatus = (() => {
     }
   }
 
-  function sync(job, settings = {}) {
+  function sync(job, settings = {}, stages = []) {
     currentSettings = settings || {};
+    currentStages = Array.isArray(stages) ? stages : [];
     if (!job || job.status !== "running") {
       stop(job);
       return;

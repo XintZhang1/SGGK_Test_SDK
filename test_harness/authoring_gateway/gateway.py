@@ -49,6 +49,22 @@ def _safe_id(value: str) -> str:
     return result.strip("._-") or "task"
 
 
+def _storage_id(value: str, namespace: str) -> str:
+    """Map long logical IDs to stable, bounded artifact path components.
+
+    Short IDs (<32 chars) pass through unchanged so human-readable run/task
+    names stay legible; longer ones collapse to ``<namespace>_<24hex>`` to keep
+    directory paths well under Windows MAX_PATH. Mirrors the staging helper in
+    ``run_message_harness_pipeline`` so gateway depths match the pipeline's.
+    """
+
+    safe = _safe_id(value)
+    if len(safe) < 32:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}_{digest}"
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -111,7 +127,11 @@ def _atomic_write(path: Path, value: bytes) -> None:
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=path.parent,
-            prefix=f".{path.name}.",
+            # Minimal prefix/suffix to stay well under Windows MAX_PATH (260):
+            # the staged dir is already deep, so embedding the full target name
+            # (e.g. ".raw_response.json.<rand>.tmp") risks overflow. The parent
+            # dir scopes the file; os.replace atomically promotes it.
+            prefix=".~",
             suffix=".tmp",
             delete=False,
         ) as handle:
@@ -244,7 +264,11 @@ class AuthoringGateway:
             raise GatewayError("expected_output_path must stay under repository artifacts/") from exc
         if output_path.suffix.lower() != ".json" or output_path.name.endswith(".provenance.json"):
             raise GatewayError("expected_output_path must be a formal .json output, not a provenance sidecar")
-        task_root = self.staging_root / _safe_id(run_id) / _safe_id(task.task_id)
+        task_root = (
+            self.staging_root
+            / _storage_id(run_id, "run")
+            / _storage_id(task.task_id, "task")
+        )
         provenance_path = output_path.with_name(f"{output_path.stem}.provenance.json")
         return task_root, output_path, provenance_path
 
@@ -582,7 +606,11 @@ Fixed diagnostics:
                 with tempfile.NamedTemporaryFile(
                     mode="wb",
                     dir=target.parent,
-                    prefix=f".{target.name}.{label}.",
+                    # Minimal prefix/suffix to stay under Windows MAX_PATH (260):
+                    # the formal output lives under a deep staging dir, so
+                    # embedding ".candidate.json.output.<rand>.tmp" can overflow.
+                    # The parent dir scopes the file; os.replace promotes it.
+                    prefix=f".~{label}.",
                     suffix=".tmp",
                     delete=False,
                 ) as handle:

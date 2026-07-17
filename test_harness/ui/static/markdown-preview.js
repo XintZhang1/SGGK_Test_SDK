@@ -7,6 +7,12 @@
   const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
   const BULLET = /^\s*[-*+]\s+(.+)$/;
   const ORDERED = /^\s*\d+[.)]\s+(.+)$/;
+  const BLOCKQUOTE = /^\s*>\s?(.*)$/;
+  // A GFM table row starts and ends with a pipe (possibly with leading/trailing space).
+  const TABLE_ROW = /^\s*\|.*\|\s*$/;
+  const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/;
+  const CODE_FOLD_LINE_THRESHOLD = 60;
+  const CODE_FOLD_CHAR_THRESHOLD = 4000;
 
   function textToken(value) {
     return { type: "text", value };
@@ -64,7 +70,27 @@
       || FENCE.test(line)
       || HEADING.test(line)
       || BULLET.test(line)
-      || ORDERED.test(line);
+      || ORDERED.test(line)
+      || BLOCKQUOTE.test(line)
+      || TABLE_ROW.test(line);
+  }
+
+  function splitTableRow(line) {
+    return line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+  }
+
+  function shouldFoldCode(value) {
+    if (!value) return false;
+    if (value.includes("\n")) {
+      const lineCount = value.split("\n").length;
+      if (lineCount > CODE_FOLD_LINE_THRESHOLD) return true;
+    }
+    return value.length > CODE_FOLD_CHAR_THRESHOLD;
   }
 
   function parse(source) {
@@ -104,6 +130,28 @@
           inline: parseInline(heading[2]),
         });
         index += 1;
+        continue;
+      }
+
+      if (TABLE_ROW.test(line) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1])) {
+        const header = splitTableRow(line);
+        index += 2;
+        const rows = [];
+        while (index < lines.length && TABLE_ROW.test(lines[index])) {
+          rows.push(splitTableRow(lines[index]).map((cell) => parseInline(cell)));
+          index += 1;
+        }
+        blocks.push({ type: "table", header: header.map((cell) => parseInline(cell)), rows });
+        continue;
+      }
+
+      if (BLOCKQUOTE.test(line)) {
+        const body = [];
+        while (index < lines.length && BLOCKQUOTE.test(lines[index])) {
+          body.push(lines[index].replace(BLOCKQUOTE, "$1"));
+          index += 1;
+        }
+        blocks.push({ type: "blockquote", inline: parseInline(body.join("\n").trim()) });
         continue;
       }
 
@@ -190,6 +238,38 @@
         article.append(list);
         return;
       }
+      if (block.type === "blockquote") {
+        const quote = documentValue.createElement("blockquote");
+        const paragraph = documentValue.createElement("p");
+        appendInline(documentValue, paragraph, block.inline);
+        quote.append(paragraph);
+        article.append(quote);
+        return;
+      }
+      if (block.type === "table") {
+        const table = documentValue.createElement("table");
+        const tableHead = documentValue.createElement("thead");
+        const headRow = documentValue.createElement("tr");
+        block.header.forEach((cell) => {
+          const th = documentValue.createElement("th");
+          appendInline(documentValue, th, cell);
+          headRow.append(th);
+        });
+        tableHead.append(headRow);
+        const tableBody = documentValue.createElement("tbody");
+        block.rows.forEach((row) => {
+          const tr = documentValue.createElement("tr");
+          row.forEach((cell) => {
+            const td = documentValue.createElement("td");
+            appendInline(documentValue, td, cell);
+            tr.append(td);
+          });
+          tableBody.append(tr);
+        });
+        table.append(tableHead, tableBody);
+        article.append(table);
+        return;
+      }
       if (block.type === "code_block") {
         const pre = documentValue.createElement("pre");
         pre.className = "markdown-code-block";
@@ -197,7 +277,18 @@
         code.textContent = block.value;
         if (block.language) code.dataset.language = block.language;
         pre.append(code);
-        article.append(pre);
+        if (shouldFoldCode(block.value)) {
+          const details = documentValue.createElement("details");
+          details.className = "markdown-code-fold";
+          const summary = documentValue.createElement("summary");
+          const lineCount = block.value.split("\n").length;
+          const label = block.language ? `${block.language} 代码块` : "代码块";
+          summary.textContent = `展开 / 收起 ${label}（约 ${lineCount} 行）`;
+          details.append(summary, pre);
+          article.append(details);
+        } else {
+          article.append(pre);
+        }
       }
     });
 

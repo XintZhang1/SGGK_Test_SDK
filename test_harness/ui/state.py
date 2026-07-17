@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 TEXT_SUFFIXES = {
     ".c",
@@ -481,6 +482,148 @@ def derive_stages(session: dict[str, Any] | None, events: list[dict[str, Any]]) 
     return stages
 
 
+def _case_count(candidate: Mapping[str, Any]) -> int:
+    """Count test cases in a formal candidate, tolerant of every candidate kind."""
+
+    if not isinstance(candidate, Mapping):
+        return 0
+    for key in ("cases", "recipes", "inputs", "checks"):
+        value = candidate.get(key)
+        if isinstance(value, list) and value:
+            return len(value)
+    dsl = candidate.get("dsl")
+    if isinstance(dsl, Mapping) and isinstance(dsl.get("cases"), list):
+        return len(dsl["cases"])
+    recipe = candidate.get("recipe")
+    if isinstance(recipe, Mapping) and isinstance(recipe.get("cases"), list):
+        return len(recipe["cases"])
+    return 0
+
+
+def _candidate_kind(candidate: Mapping[str, Any]) -> str:
+    if isinstance(candidate, Mapping):
+        kind = str(candidate.get("kind") or "").strip()
+        if kind:
+            return kind
+    return ""
+
+
+def round_overview(
+    repo_root: Path,
+    session_root: Path | None,
+    session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """A compact, human-first summary of what the model produced this round.
+
+    Surfaced as a card above the file tree so unfamiliar users can read "what
+    was generated / what is the test idea / why it failed" without clicking
+    into files. Reuses fields already written by the workflow and the fixed
+    review packet; never re-invokes the model.
+    """
+
+    state = str((session or {}).get("state") or "idle")
+    status = _artifact_status(session)
+    overview: dict[str, Any] = {
+        "round_number": int((session or {}).get("current_round") or 0),
+        "tone": status.get("tone", "neutral"),
+        "headline": status.get("title", "还没有测试产物"),
+        "purpose": "",
+        "risk": "",
+        "expected": "",
+        "candidate_kind": "",
+        "case_count": 0,
+        "oracle_count": 0,
+        "review_report_path": "",
+        "candidate_path": "",
+        "fixed_review_report_path": "",
+        "failure_reason": "",
+        "next_hint": status.get("detail", ""),
+        "available": False,
+    }
+
+    if session_root is None or not session_root.is_dir():
+        return overview
+
+    round_number = overview["round_number"]
+    if round_number > 0:
+        round_manifest_path = session_root / "rounds" / f"{round_number:04d}" / "round_manifest.json"
+        try:
+            manifest = _read_object(round_manifest_path)
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        review_report = _relative_artifact_path(
+            repo_root, session_root, (session or {}).get("current_review_report_path", "")
+        )
+        fixed_review_report = _relative_artifact_path(
+            repo_root, session_root, manifest.get("fixed_review_report_path", "")
+        )
+        candidate_rel = _relative_artifact_path(
+            repo_root, session_root, manifest.get("candidate_path", "")
+        )
+        overview["review_report_path"] = review_report or fixed_review_report
+        overview["fixed_review_report_path"] = fixed_review_report
+        overview["candidate_path"] = candidate_rel
+
+        candidate: Mapping[str, Any] = {}
+        if candidate_rel:
+            try:
+                candidate = _read_object(session_root / candidate_rel)
+            except (OSError, json.JSONDecodeError):
+                candidate = {}
+        overview["candidate_kind"] = _candidate_kind(candidate)
+        overview["case_count"] = _case_count(candidate)
+
+        review_packet_rel = _relative_artifact_path(
+            repo_root, session_root, manifest.get("review_packet_path", "")
+        )
+        if review_packet_rel:
+            try:
+                packet = _read_object(session_root / review_packet_rel)
+            except (OSError, json.JSONDecodeError):
+                packet = {}
+            summary = packet.get("review_summary") if isinstance(packet.get("review_summary"), Mapping) else {}
+            generation = packet.get("generation") if isinstance(packet.get("generation"), Mapping) else {}
+            verification = (
+                packet.get("machine_verification")
+                if isinstance(packet.get("machine_verification"), Mapping)
+                else {}
+            )
+            overview["purpose"] = str(summary.get("purpose_zh_cn") or "")
+            overview["risk"] = str(summary.get("risk_summary_zh_cn") or "")
+            overview["expected"] = str(summary.get("expected_behavior_zh_cn") or "")
+            oracles = summary.get("oracles")
+            overview["oracle_count"] = len(oracles) if isinstance(oracles, list) else 0
+            if not overview["candidate_kind"] and generation.get("output_kind"):
+                overview["candidate_kind"] = str(generation.get("output_kind") or "")
+            overview["gate_ok"] = bool(verification.get("fixed_gate_ok"))
+            overview["authoring_accepted"] = bool(verification.get("authoring_accepted"))
+
+        overview["available"] = True
+
+    last_error = str((session or {}).get("last_error") or "")
+    terminal = {"generation_failed", "execution_failed", "rejected"}
+    if state in terminal or last_error:
+        overview["failure_reason"] = last_error
+        if state == "generation_failed":
+            overview["tone"] = "error"
+            overview["headline"] = (
+                f"第 {round_number} 轮测试方案生成未完成" if round_number > 0 else "测试方案生成未完成"
+            )
+            overview["next_hint"] = "查看下方生成失败报告了解模型响应或固定门禁问题。"
+        elif state == "execution_failed":
+            overview["tone"] = "error"
+            overview["headline"] = (
+                f"第 {round_number} 轮 SDK 实测未通过" if round_number > 0 else "SDK 实测未通过"
+            )
+            overview["next_hint"] = "查看下方最终测试报告中的失败摘要与 SDK 执行明细。"
+        elif state == "rejected":
+            overview["tone"] = "neutral"
+            overview["headline"] = "测试任务已拒绝"
+            overview["next_hint"] = "查看任务拒绝报告了解用户意见与拒绝原因。"
+
+    return overview
+
+
 def session_snapshot(repo_root: Path) -> dict[str, Any]:
     root = active_session_root(repo_root)
     session: dict[str, Any] | None = None
@@ -506,7 +649,8 @@ def session_snapshot(repo_root: Path) -> dict[str, Any]:
         "events": events,
         "artifacts": artifacts,
         "artifact_summary": _artifact_summary(repo_root, root, session, artifacts),
+        "round_overview": round_overview(repo_root, root, session),
     }
 
 
-__all__ = ["active_session_root", "read_artifact", "session_snapshot"]
+__all__ = ["active_session_root", "read_artifact", "session_snapshot", "round_overview"]

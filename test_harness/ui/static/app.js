@@ -180,6 +180,87 @@ function renderArtifactSummary(summary, items) {
   });
 }
 
+function renderRoundOverview(overview) {
+  const root = $("roundOverview");
+  root.replaceChildren();
+  const value = overview || {};
+  // Only show the card when there is a round to summarize or a failure to explain.
+  if (!value.available && !value.failure_reason) {
+    root.classList.add("hidden");
+    return;
+  }
+  root.className = `round-overview tone-${value.tone || "neutral"}`;
+
+  const head = document.createElement("div");
+  head.className = "round-overview-head";
+  head.append(
+    text("span", "", "round-overview-mark"),
+    text("h3", value.headline || "本轮概览", "round-overview-title"),
+  );
+
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label) => {
+    if (!label) return;
+    chips.append(text("span", label, "round-chip"));
+  };
+  if (value.round_number) addChip(`第 ${value.round_number} 轮`);
+  if (value.candidate_kind) addChip(`类型 ${value.candidate_kind}`);
+  if (value.case_count) addChip(`${value.case_count} 个用例`);
+  if (value.oracle_count) addChip(`${value.oracle_count} 个 Oracle`);
+  if (value.gate_ok === true) addChip("机器门禁通过");
+  else if (value.gate_ok === false) addChip("机器门禁未通过");
+  if (chips.childNodes.length) head.append(chips);
+
+  root.append(head);
+
+  const fields = [
+    { label: "测试思路", value: value.purpose },
+    { label: "风险覆盖", value: value.risk },
+    { label: "预期行为", value: value.expected },
+    { label: "下一步", value: value.next_hint },
+  ];
+  fields.forEach((field) => {
+    if (!field.value) return;
+    const row = document.createElement("div");
+    row.className = "round-overview-field";
+    row.append(text("span", field.label, "round-overview-label"), text("span", field.value, "round-overview-value"));
+    root.append(row);
+  });
+
+  if (value.failure_reason) {
+    const failure = document.createElement("div");
+    failure.className = "round-overview-failure";
+    failure.append(
+      text("strong", "失败原因"),
+      text("span", value.failure_reason, "round-overview-failure-text"),
+    );
+    root.append(failure);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "round-overview-actions";
+  const addAction = (label, path) => {
+    if (!path) return;
+    const item = artifactByPath(path);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "round-overview-action";
+    button.disabled = item?.previewable === false;
+    button.title = path;
+    button.append(text("strong", label), text("span", path, "round-overview-action-path"));
+    button.addEventListener("click", () => loadArtifact(path));
+    actions.append(button);
+  };
+  if (value.failure_reason && value.tone === "error") {
+    addAction("查看失败报告", value.review_report_path || value.fixed_review_report_path);
+  } else {
+    addAction("查看本轮审查报告", value.review_report_path || value.fixed_review_report_path);
+  }
+  addAction("查看完整测试方案", value.candidate_path);
+  if (actions.childNodes.length) root.append(actions);
+}
+
 function renderArtifacts(items, summary = {}) {
   const root = $("artifactList");
   const scrollTop = root.scrollTop;
@@ -434,11 +515,12 @@ function render(next) {
   $("sessionBadge").textContent = `会话 · ${session.state || "idle"}`;
   const busy = next.job.status === "running";
   $("repairButton").hidden = session.state !== "execution_failed";
-  window.HarnessJobStatus.sync(next.job, next.settings);
+  window.HarnessJobStatus.sync(next.job, next.settings, next.stages);
 
   renderStages(next.stages);
   renderReadiness(next.readiness);
   renderEvents(next.events);
+  renderRoundOverview(next.round_overview);
   renderArtifacts(next.artifacts, next.artifact_summary);
   renderABC(next.abc);
   renderNX(next.nx);

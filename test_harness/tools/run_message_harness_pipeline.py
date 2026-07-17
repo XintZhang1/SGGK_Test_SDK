@@ -213,7 +213,12 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=path.parent,
-            prefix=f".{path.name}.",
+            # Keep the temp name short: on Windows each path is capped at
+            # MAX_PATH (260), so embedding the full target name (e.g.
+            # ".candidate.json.output.<rand>.tmp") plus a deep staging dir can
+            # overflow. Use a minimal prefix/suffix; the parent dir already
+            # scopes the file and os.replace atomically promotes it.
+            prefix=".~",
             suffix=".tmp",
             delete=False,
         ) as handle:
