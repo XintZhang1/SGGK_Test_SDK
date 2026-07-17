@@ -12,6 +12,7 @@ from test_harness.authoring_gateway.review_comment import (
     build_review_comment_task,
     deterministic_empty_comment_fallback,
     finalize_review_comment_response,
+    normalize_review_comment_candidate,
     response_schema,
     sha256_json,
     validate_review_comment_response,
@@ -235,6 +236,92 @@ def test_valid_response_is_schema_checked_and_finalized_with_host_evidence() -> 
     assert record["schema_version"] == 2
     assert record["source"] == "model_message_api"
     assert record["model_called"] is True
+
+
+def test_structured_constraints_are_coerced_before_validation() -> None:
+    task = build_review_comment_task("请使用全部 builder 类型。", context())
+    candidate = revise_response()
+    candidate["constraints"] = [
+        {"scope": "cases", "rule": "至少一半用例必须使用生成拓扑体 builder。"},
+        {"scope": "geometry", "rule": "target 和 tool 的 builder 类型应多样化组合。"},
+        {"scope": "geometry", "rule": "target 和 tool 的 builder 类型应多样化组合。"},
+        "保留固定门禁语义。",
+    ]
+
+    normalized, notes = normalize_review_comment_candidate(candidate)
+    report = validate_review_comment_response(normalized, task)
+
+    assert report.ok is True
+    assert normalized["constraints"] == [
+        "[cases] 至少一半用例必须使用生成拓扑体 builder。",
+        "[geometry] target 和 tool 的 builder 类型应多样化组合。",
+        "保留固定门禁语义。",
+    ]
+    assert any("coerced to string" in note for note in notes)
+    assert any("duplicate entry dropped" in note for note in notes)
+    record = finalize_review_comment_response(normalized, task)
+    assert record["decision"]["constraints"] == normalized["constraints"]
+
+
+def test_normalization_leaves_unrecognized_shapes_for_validator() -> None:
+    task = build_review_comment_task("请增加负例。", context())
+    candidate = revise_response()
+    candidate["constraints"] = [["nested", "list"]]
+
+    normalized, notes = normalize_review_comment_candidate(candidate)
+    report = validate_review_comment_response(normalized, task)
+
+    assert notes == ()
+    assert report.ok is False
+    assert "RESPONSE_SCHEMA_INVALID" in diagnostic_codes(report)
+
+
+def test_requested_changes_aliases_are_coerced_before_validation() -> None:
+    full_scopes = (
+        "adapter", "campaign", "coverage", "dataset", "geometry", "negative", "oracles",
+        "other", "plan", "provenance", "recipes", "cases", "schema", "smoke", "source",
+        "execution", "documentation",
+    )
+    task = build_review_comment_task("请使用全部 builder 类型。", context(allowed_scopes=full_scopes))
+    candidate = revise_response()
+    candidate["requested_changes"] = [
+        {
+            "scope": "cases",
+            "description": "至少一半用例改用生成拓扑体 builder。",
+            "rationale": "当前用例只覆盖解析几何体。",
+        },
+        {
+            "scope": "cases",
+            "description": "至少一半用例改用生成拓扑体 builder。",
+            "rationale": "当前用例只覆盖解析几何体。",
+        },
+        {
+            "scope": "builders",
+            "description": "target 和 tool 的 builder 类型应多样化组合。",
+        },
+    ]
+
+    normalized, notes = normalize_review_comment_candidate(candidate)
+    report = validate_review_comment_response(normalized, task)
+
+    assert report.ok is True
+    assert normalized["requested_changes"] == [
+        {
+            "scope": "cases",
+            "instruction": "至少一半用例改用生成拓扑体 builder。（rationale: 当前用例只覆盖解析几何体。）",
+            "priority": "medium",
+        },
+        {
+            "scope": "other",
+            "instruction": "target 和 tool 的 builder 类型应多样化组合。",
+            "priority": "medium",
+        },
+    ]
+    assert any("description renamed to instruction" in note for note in notes)
+    assert any("rationale: folded into instruction" in note for note in notes)
+    assert any("priority: defaulted to medium" in note for note in notes)
+    assert any("scope: coerced to other" in note for note in notes)
+    assert any("duplicate entry dropped" in note for note in notes)
 
 
 @pytest.mark.parametrize(

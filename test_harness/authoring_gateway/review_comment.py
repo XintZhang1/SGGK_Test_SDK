@@ -104,7 +104,9 @@ Use approve, reject, or question with an empty requested_changes array. Keep
 summary_zh_cn concise and written in Chinese. For decision=question, answer the
 user's question from the supplied subject_outline in summary_zh_cn and state
 clearly when the reviewed evidence is insufficient. Constraints are declarative
-requirements only; they cannot grant execution authority."""
+requirements only; they cannot grant execution authority. The constraints array
+must contain plain strings, never objects. Every requested_changes item must be
+an object with exactly the keys scope, instruction, and priority."""
 
 
 _FORBIDDEN_TEXT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -650,6 +652,136 @@ def validate_review_comment_response(
     return ReviewCommentValidation(not diagnostics, tuple(diagnostics), response_sha256)
 
 
+_CONSTRAINT_TEXT_KEYS = ("rule", "instruction", "constraint", "text", "requirement", "description")
+_CHANGE_INSTRUCTION_KEYS = ("instruction", "description", "rule", "text", "change", "action")
+_CHANGE_PRIORITIES = ("blocker", "high", "medium", "low")
+_CHANGE_KNOWN_KEYS = frozenset({"scope", "instruction", "priority"})
+
+
+def _constraint_object_to_string(item: Mapping[str, Any]) -> str:
+    """Render one structured constraint object as a deterministic plain string."""
+
+    scope = item.get("scope")
+    parts: list[str] = []
+    for key in _CONSTRAINT_TEXT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+            break
+    if not parts:
+        for key in sorted(item):
+            if key == "scope":
+                continue
+            value = item[key]
+            if isinstance(value, str) and value.strip():
+                parts.append(f"{key}: {value.strip()}")
+            else:
+                parts.append(f"{key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+    text = "; ".join(parts)
+    if isinstance(scope, str) and scope.strip():
+        return f"[{scope.strip()}] {text}"
+    return text
+
+
+def _normalize_requested_change(item: Any, index: int, notes: list[str]) -> Any:
+    """Coerce one requested-change object toward the fixed schema shape.
+
+    Renames common instruction aliases, folds unrecognized extra fields into
+    the instruction text so no model content is silently dropped, defaults a
+    missing/invalid priority to medium, and maps an unregistered scope to
+    ``other``. Anything still invalid afterwards is left for the validator.
+    """
+
+    if not isinstance(item, Mapping):
+        return item
+    change = deepcopy(dict(item))
+    instruction = change.get("instruction")
+    if not (isinstance(instruction, str) and instruction.strip()):
+        for key in _CHANGE_INSTRUCTION_KEYS:
+            value = change.get(key)
+            if isinstance(value, str) and value.strip():
+                change["instruction"] = value.strip()
+                notes.append(f"$.requested_changes[{index}]: {key} renamed to instruction")
+                break
+    extras: list[str] = []
+    for key in sorted(k for k in change if k not in _CHANGE_KNOWN_KEYS):
+        value = change.pop(key)
+        if isinstance(value, str) and value.strip():
+            if value.strip() == str(change.get("instruction") or "").strip():
+                continue
+            extras.append(f"{key}: {value.strip()}")
+        else:
+            extras.append(f"{key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+        notes.append(f"$.requested_changes[{index}].{key}: folded into instruction")
+    if extras:
+        base = str(change.get("instruction") or "").strip()
+        change["instruction"] = f"{base}（{'; '.join(extras)}）" if base else "; ".join(extras)
+    priority = change.get("priority")
+    if not (isinstance(priority, str) and priority in _CHANGE_PRIORITIES):
+        change["priority"] = "medium"
+        notes.append(f"$.requested_changes[{index}].priority: defaulted to medium")
+    scope = change.get("scope")
+    if not (isinstance(scope, str) and scope in REVIEW_SCOPES):
+        change["scope"] = "other"
+        notes.append(f"$.requested_changes[{index}].scope: coerced to other")
+    return change
+
+
+def normalize_review_comment_candidate(candidate: Any) -> tuple[Any, tuple[str, ...]]:
+    """Coerce frequent model shape deviations before validation.
+
+    Only deterministic, content-preserving coercions are applied; every
+    coercion is reported in the returned notes so the recorded validation
+    evidence stays auditable. Anything not recognized here is left untouched
+    for the schema validator to reject.
+    """
+
+    if not isinstance(candidate, Mapping):
+        return candidate, ()
+    value = deepcopy(dict(candidate))
+    notes: list[str] = []
+    constraints = value.get("constraints")
+    if isinstance(constraints, list):
+        normalized: list[Any] = []
+        for index, item in enumerate(constraints):
+            if isinstance(item, str):
+                normalized.append(item)
+            elif isinstance(item, Mapping):
+                normalized.append(_constraint_object_to_string(item))
+                notes.append(f"$.constraints[{index}]: object coerced to string")
+            elif isinstance(item, (int, float, bool)):
+                normalized.append(json.dumps(item, ensure_ascii=False))
+                notes.append(f"$.constraints[{index}]: scalar coerced to string")
+            else:
+                normalized.append(item)
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        for item in normalized:
+            key = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                notes.append("$.constraints: duplicate entry dropped after coercion")
+                continue
+            seen.add(key)
+            deduped.append(item)
+        value["constraints"] = deduped
+    changes = value.get("requested_changes")
+    if isinstance(changes, list):
+        normalized_changes = [
+            _normalize_requested_change(item, index, notes) for index, item in enumerate(changes)
+        ]
+        deduped_changes: list[Any] = []
+        seen_changes: set[str] = set()
+        for item in normalized_changes:
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen_changes:
+                notes.append("$.requested_changes: duplicate entry dropped after coercion")
+                continue
+            seen_changes.add(key)
+            deduped_changes.append(item)
+        value["requested_changes"] = deduped_changes
+    return value, tuple(notes)
+
+
 def finalize_review_comment_response(
     candidate: Mapping[str, Any],
     task: ReviewCommentTask,
@@ -727,6 +859,7 @@ __all__ = [
     "build_review_comment_task",
     "deterministic_empty_comment_fallback",
     "finalize_review_comment_response",
+    "normalize_review_comment_candidate",
     "response_schema",
     "sha256_json",
     "sha256_text",

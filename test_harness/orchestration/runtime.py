@@ -13,6 +13,7 @@ from test_harness.authoring_gateway.review_comment import (
     ReviewCommentContext,
     build_review_comment_task,
     finalize_review_comment_response,
+    normalize_review_comment_candidate,
     validate_review_comment_response,
 )
 from test_harness.tools.run_message_harness_pipeline import MessageHarnessPipeline
@@ -202,13 +203,24 @@ class MessageApiRuntime:
             }
             _write_json(output_dir / f"message_attempt_{attempt:02d}.json", metadata)
             if completion.candidate is not None:
-                validation = validate_review_comment_response(completion.candidate, task)
+                normalized_candidate, normalization_notes = normalize_review_comment_candidate(
+                    completion.candidate
+                )
+                if normalization_notes:
+                    _write_json(
+                        output_dir / f"normalization_attempt_{attempt:02d}.json",
+                        {
+                            "attempt": attempt,
+                            "notes": list(normalization_notes),
+                        },
+                    )
+                validation = validate_review_comment_response(normalized_candidate, task)
                 _write_json(
                     output_dir / f"validation_attempt_{attempt:02d}.json",
                     validation.as_dict(),
                 )
                 if validation.ok:
-                    finalized = finalize_review_comment_response(completion.candidate, task)
+                    finalized = finalize_review_comment_response(normalized_candidate, task)
                     finalized["provider"] = self.config.public_metadata()
                     finalized["message_attempts"] = attempt
                     _write_json(output_dir / "comment_decision.json", finalized)

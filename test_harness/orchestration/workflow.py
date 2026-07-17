@@ -423,6 +423,26 @@ def build_internal_form(
         geometry["target_builder"] = builders[0]
         if "tool" in body_required or len(builders) > 1:
             geometry["tool_builder"] = builders[1] if len(builders) > 1 else builders[0]
+        builder_meta = capabilities.get("body_builders")
+        builder_meta = builder_meta if isinstance(builder_meta, Mapping) else {}
+        generated_builders = [
+            builder
+            for builder in builders
+            if str((builder_meta.get(builder) or {}).get("family") or "").startswith(
+                ("generated_", "pre_boolean", "support_sweep")
+            )
+        ]
+        coverable_note = "、".join(builder for builder in builders if builder != "loaded_sgt")
+        geometry["available_builders"] = builders
+        if generated_builders:
+            geometry["generated_topology_builders"] = generated_builders
+        geometry["builder_diversity"] = (
+            "target_builder/tool_builder 只是第一个示例组合，绝不是限制。"
+            f"全部用例合起来必须覆盖以下每一种 builder：{coverable_note}"
+            "（loaded_sgt 仅在宿主绑定输入资产时可用，不得虚构路径）；"
+            "至少一半用例必须用 generated_topology_builders 中的生成拓扑体作为 target 或 tool；"
+            "target 与 tool 的 builder 组合必须多样化，禁止所有用例都使用同一对 builder。"
+        )
     declarations = resolution.get("declarations")
     source_refs: list[str] = []
     if isinstance(declarations, list):

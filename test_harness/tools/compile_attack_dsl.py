@@ -125,6 +125,28 @@ PROVENANCE_FIELDS = {
     "source_risk_categories",
     "source_review",
 }
+# Case-level fields the compiler actually consumes. Anything else (for example
+# a case-level "chain" the model invented) must fail closed instead of being
+# silently dropped, which would compile a different test than the reviewed one.
+CASE_KNOWN_FIELDS = frozenset(
+    {
+        "case_id",
+        "id",
+        "target",
+        "tool",
+        "options",
+        "expectations",
+        "key_points",
+        "variants",
+        "sweeps",
+        "paired_sweeps",
+        "metadata",
+        "source_file",
+    }
+    | PROVENANCE_FIELDS
+)
+# Option keys consumed outside flatten_options itself.
+OPTION_STRUCT_FIELDS = {"expectations", "metadata"}
 
 
 class DslError(ValueError):
@@ -477,6 +499,12 @@ def normalize_case(raw_case: dict[str, Any], defaults: dict[str, Any]) -> dict[s
 
 def flatten_options(options: dict[str, Any], scope: dict[str, float]) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    unknown = sorted(key for key in options if key not in OPTION_FIELDS and key not in OPTION_STRUCT_FIELDS)
+    if unknown:
+        raise DslError(
+            f"options: unsupported fields {unknown}; the runner has no such option and "
+            "silently dropping it would compile a different test than reviewed"
+        )
     for key, value in options.items():
         if key not in OPTION_FIELDS:
             continue
@@ -1098,6 +1126,13 @@ def compile_one_case(
 ) -> list[dict[str, Any]]:
     base_case = normalize_case(raw_case, defaults)
     base_id = sanitize_id(resolve_string(base_case.get("case_id", base_case.get("id")), "case.case_id"))
+    unknown_fields = sorted(key for key in base_case if key not in CASE_KNOWN_FIELDS)
+    if unknown_fields:
+        raise DslError(
+            f"{base_id}: unsupported case fields {unknown_fields}; move operation chains "
+            "into target.chain/tool.chain or drop the fields instead of letting them be "
+            "silently ignored"
+        )
     expansions = case_expansions(base_case)
     recipes: list[dict[str, Any]] = []
 

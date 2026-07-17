@@ -43,6 +43,9 @@ class _OfflineRuntime:
         self.provider_profile = profile
         profile_spec = PROFILE_SPECS.get(profile)
         self.provider_profile_category = profile_spec.category if profile_spec is not None else ""
+        # Plain-data attribute mirrored from MessageApiRuntime so read-only
+        # status/show commands can construct the workflow without API config.
+        self.campaign_dataset = ""
 
     def __getattr__(self, name: str) -> Any:
         raise WorkflowError(f"runtime operation {name} is unavailable in read-only mode")
