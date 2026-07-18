@@ -1,0 +1,63 @@
+{
+  "contract_version": 1,
+  "api": "api_thicken_body",
+  "version": 1,
+  "description": "Thickens a manifold sheet body along its normal direction by a specified distance range that includes the base surface, producing one or more solid result bodies.",
+  "archetype": "unary_body_to_bodies",
+  "adapter_symbol": "RunPluginApiThickenBody",
+  "adapter_file": "adapter.inc",
+  "recipe_schema": "recipe.schema.json",
+  "sdk_headers": [
+    "Offset/API.h"
+  ],
+  "sdk_modules": [
+    "Offset",
+    "Topology"
+  ],
+  "input_roles": [
+    "target"
+  ],
+  "result_roles": [
+    "result"
+  ],
+  "topotrack": {
+    "mode": "status_only",
+    "reason": "Adapter records ModelingRet status and captures topology tracking as status/topocheck artifacts only; full topology diff is not required for this archetype."
+  },
+  "capability": {
+    "body_required": [
+      "target"
+    ],
+    "notes": [
+      "Input must be a manifold sheet body; thickening interval must include 0 (the base surface) for the SDK to find lateral edges successfully.",
+      "The defaulted ThickenOpts parameter is omitted so the SDK default is used."
+    ],
+    "preferred_format": "flat_recipe",
+    "required_fields": [
+      "api",
+      "case_id"
+    ],
+    "runner_recipe_api": true,
+    "supported_body_builders": [
+      "plane_sheet",
+      "thicken_rect_sheet",
+      "extrude_rect",
+      "sweep_circle_line",
+      "revolve_line",
+      "revolve_rect"
+    ],
+    "supported_oracles": [
+      "properties",
+      "result_bodies",
+      "topocheck"
+    ]
+  },
+  "examples": {
+    "positive": [
+      "examples/smoke.json"
+    ],
+    "negative": [
+      "examples/negative.invalid.json"
+    ]
+  }
+}

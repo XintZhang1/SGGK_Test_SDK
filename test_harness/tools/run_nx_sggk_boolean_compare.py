@@ -38,6 +38,12 @@ OPERATION_MAP = {
     "SUBTRACTION": "subtract",
     "INTERSECTION": "intersect",
 }
+# APIs whose operation is fixed by their own semantics; the runner still
+# records its *default* boolean_type in manifest options, which is meaningless
+# for these APIs and must not be trusted.
+API_FIXED_OPERATION = {
+    "api_combine_bodies": "unite",
+}
 VERDICTS = ("both_correct", "sggk_correct", "parasolid_correct", "both_wrong", "inconclusive")
 
 
@@ -98,17 +104,24 @@ def _run(command: list[str], timeout: float) -> dict[str, Any]:
 
 def _case_boolean_operation(case_dir: Path) -> str:
     recipe_path = case_dir / "input" / "recipe.json"
+    recipe: dict[str, Any] = {}
     if recipe_path.is_file():
         recipe = _load_object(recipe_path, "case recipe")
         boolean_type = str(recipe.get("boolean_type") or "").strip().upper()
         if boolean_type in OPERATION_MAP:
             return OPERATION_MAP[boolean_type]
     manifest = _load_object(case_dir / "manifest.json", "case manifest")
-    options = manifest.get("options")
-    if isinstance(options, dict):
-        boolean_type = str(options.get("boolean_type") or "").strip().upper()
-        if boolean_type in OPERATION_MAP:
-            return OPERATION_MAP[boolean_type]
+    api = str(manifest.get("api") or recipe.get("api") or "").strip()
+    if api in API_FIXED_OPERATION:
+        return API_FIXED_OPERATION[api]
+    # The runner writes its *default* boolean_type into manifest options for
+    # every API, so the fallback is only meaningful for boolean-family cases.
+    if api.startswith("api_boolean"):
+        options = manifest.get("options")
+        if isinstance(options, dict):
+            boolean_type = str(options.get("boolean_type") or "").strip().upper()
+            if boolean_type in OPERATION_MAP:
+                return OPERATION_MAP[boolean_type]
     raise OrchestratorError(f"cannot determine boolean operation for case: {case_dir}")
 
 

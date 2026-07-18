@@ -313,6 +313,22 @@ machine-checkable extension backlog; it never writes runner code. Registered
 adapter archetype vocabulary lives in `test_harness/tools/plugin_catalog.py`
 (including `binary_geometry_intersection` for the GeomInt intersection family).
 
+When the unknown API's parsed header declaration matches a registered fixed
+archetype, the session instead emits an `api_adaptation` task
+(`test_harness/tools/api_archetype_mapping.py` performs the conservative
+host-local mapping; raw header text never enters the prompt). The manifest
+carries a hash-bound adaptation contract, the model returns one bounded
+`api_plugin_candidate` adapter spec, and the fixed gate
+(`materialize_api_plugin_candidate.py`) expands it into a fixed-template
+plugin that the approval-bound execution proves in isolation
+(`build_api_plugin_candidate.py`: CMake build, positive/negative validation,
+three identical smoke replays). A passing build is registered by
+`test_harness/tools/promote_api_plugin.py`, which re-verifies the attestation
+and copies the plugin into `test_harness/api_plugins/` plus merges its
+capability into `test_harness/interface_capabilities.json`; the C++ registry
+refreshes at the next CMake configure. Unmappable or ambiguous signatures keep
+the interface-design backlog path above.
+
 ## Advanced Internal Appendix: API Forms and Raw Message Pipeline
 
 This section is for Harness maintainers and fixed-gate diagnostics. It is not a

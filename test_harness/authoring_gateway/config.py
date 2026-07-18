@@ -18,6 +18,7 @@ class ConfigError(ValueError):
 DEFAULT_PROFILE = "siliconflow"
 SILICONFLOW_DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 SILICONFLOW_DEFAULT_MODEL = "zai-org/GLM-5.2"
+SILICONFLOW_VISION_DEFAULT_MODEL = "Qwen/Qwen3-VL-32B-Instruct"
 DEFAULT_STREAM_BYTES_LIMIT = 256 * 1024 * 1024
 
 
@@ -73,6 +74,30 @@ PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
             # candidate in ~40s, while thinking mode did not finish in 20m.
             # Keep thinking available as an explicit opt-in, not the default.
             default_thinking_mode="disabled",
+            default_stream=True,
+        ),
+        # Advisory vision review of host-rendered geometry previews. This
+        # profile is never used for authoring: its candidates carry no
+        # execution authority and the authoring `siliconflow` lock above is
+        # independent of it. Shares the SiliconFlow API key; base URL and
+        # model stay locked with their own env-var names so the authoring
+        # profile's env overrides cannot leak into vision calls.
+        "siliconflow_vision": ProfileSpec(
+            name="siliconflow_vision",
+            category="external",
+            base_url_env="SILICONFLOW_VISION_BASE_URL",
+            api_key_env="SILICONFLOW_API_KEY",
+            model_env="SILICONFLOW_VISION_MODEL",
+            ca_bundle_env="SILICONFLOW_VISION_CA_BUNDLE",
+            api_key_required=True,
+            provenance_source_type="siliconflow_vision_message_api",
+            default_base_url=SILICONFLOW_DEFAULT_BASE_URL,
+            default_model=SILICONFLOW_VISION_DEFAULT_MODEL,
+            require_https=True,
+            base_url_locked=True,
+            model_locked=True,
+            # Qwen2.5-VL has no enable_thinking switch; leave the field unsent.
+            default_thinking_mode="omit",
             default_stream=True,
         ),
     }

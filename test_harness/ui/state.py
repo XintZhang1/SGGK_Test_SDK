@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from collections.abc import Mapping
 
 TEXT_SUFFIXES = {
     ".c",
@@ -223,7 +223,7 @@ def list_artifacts(session_root: Path | None) -> list[dict[str, Any]]:
 
 
 def _relative_artifact_path(repo_root: Path, session_root: Path | None, value: Any) -> str:
-    if session_root is None or not isinstance(value, (str, Path)) or not str(value):
+    if session_root is None or not isinstance(value, str | Path) or not str(value):
         return ""
     path = Path(value)
     resolved = path.resolve() if path.is_absolute() else (repo_root / path).resolve()
@@ -240,7 +240,8 @@ def _artifact_status(session: dict[str, Any] | None) -> dict[str, str]:
         "idle": (
             "neutral",
             "还没有测试产物",
-            "输入公开接口并开始生成后，这里会按用途整理可查看的文本方案、报告和运行结果；二进制产物仍保留在 session 目录。",
+            "输入公开接口并开始生成后，这里会按用途整理可查看的文本方案、报告和运行结果；"
+            "二进制产物仍保留在 session 目录。",
         ),
         "created": (
             "info",
@@ -624,6 +625,340 @@ def round_overview(
     return overview
 
 
+EXECUTION_OVERVIEW_STATES = {"executing", "completed", "execution_failed"}
+EXECUTION_OVERVIEW_MAX_CASES = 100
+EXECUTION_OVERVIEW_MAX_COMMANDS = 24
+EXECUTION_OVERVIEW_MAX_GROUPS = 20
+EXECUTION_OVERVIEW_MAX_REASONS = 8
+EXECUTION_OVERVIEW_MAX_VALIDATION_FAILURES = 8
+EXECUTION_OVERVIEW_TEXT_LIMIT = 200
+EXECUTION_OVERVIEW_ERROR_LIMIT = 400
+
+
+def _read_json_quiet(path: Path) -> dict[str, Any]:
+    """Read one JSON object; missing or corrupt content degrades to {}."""
+
+    try:
+        return _read_object(path)
+    except (OSError, ValueError):
+        return {}
+
+
+def _bounded_strings(value: Any, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _truncate_text(value: Any, limit: int = EXECUTION_OVERVIEW_TEXT_LIMIT) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return text[: limit - 1] + "…"
+    return text
+
+
+def _nonneg_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _elapsed_seconds(value: Any) -> float:
+    try:
+        return round(float(value or 0.0), 3)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _returncode(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _command_steps(execution: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project command records without argv/stdout/stderr so no command text reaches the UI."""
+
+    commands = execution.get("commands")
+    if not isinstance(commands, list):
+        return []
+    steps: list[dict[str, Any]] = []
+    for command in commands[:EXECUTION_OVERVIEW_MAX_COMMANDS]:
+        if not isinstance(command, Mapping):
+            continue
+        returncode = _returncode(command.get("returncode"))
+        ok_value = command.get("ok")
+        steps.append(
+            {
+                "name": str(command.get("name") or ""),
+                "returncode": returncode,
+                "ok": bool(ok_value) if isinstance(ok_value, bool) else returncode == 0,
+                "elapsed_seconds": _elapsed_seconds(command.get("elapsed_seconds")),
+            }
+        )
+    return steps
+
+
+def _case_outcome(result: Mapping[str, Any]) -> str:
+    if bool(result.get("skipped")):
+        return "skip"
+    if bool(result.get("timed_out")):
+        return "timeout"
+    if _returncode(result.get("returncode")) == 0:
+        return "pass"
+    return "fail"
+
+
+def _triage_reason_map(triage: Mapping[str, Any]) -> dict[str, list[str]]:
+    reasons: dict[str, list[str]] = {}
+    for key in ("failures", "cases"):
+        entries = triage.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            case_id = str(entry.get("case_id") or "")
+            if not case_id or case_id in reasons:
+                continue
+            reasons[case_id] = _bounded_strings(entry.get("reasons"), EXECUTION_OVERVIEW_MAX_REASONS)
+    return reasons
+
+
+def _execution_case_row(
+    repo_root: Path,
+    session_root: Path,
+    result: Mapping[str, Any],
+    triage_reasons: Mapping[str, list[str]],
+) -> dict[str, Any]:
+    case_id = str(result.get("case_id") or "")
+    returncode = _returncode(result.get("returncode"))
+    timed_out = bool(result.get("timed_out"))
+    skipped = bool(result.get("skipped"))
+    artifact_rel = _relative_artifact_path(repo_root, session_root, result.get("artifact_dir") or "")
+    phase = ""
+    error_message = ""
+    validation_failures: list[str] = []
+    if artifact_rel:
+        case_dir = session_root / artifact_rel
+        run_state = _read_json_quiet(case_dir / "run_state.json")
+        phase = str(run_state.get("last_phase") or run_state.get("phase") or "")
+        status = _read_json_quiet(case_dir / "report" / "status.json")
+        if status.get("succeeded") is not True:
+            error_message = _truncate_text(status.get("error_message"))
+        validation = _read_json_quiet(case_dir / "report" / "validation.json")
+        validation_failures = _bounded_strings(
+            validation.get("failures"), EXECUTION_OVERVIEW_MAX_VALIDATION_FAILURES
+        )
+    return {
+        "case_id": case_id,
+        "outcome": _case_outcome(result),
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "skipped": skipped,
+        "elapsed_seconds": _elapsed_seconds(result.get("elapsed_seconds")),
+        "phase": phase,
+        "error_message": error_message,
+        "validation_failures": validation_failures,
+        "triage_reasons": list(triage_reasons.get(case_id, [])),
+        "artifact_path": artifact_rel,
+    }
+
+
+def _failure_group_rows(triage: Mapping[str, Any]) -> list[dict[str, Any]]:
+    groups = triage.get("failure_groups")
+    if not isinstance(groups, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for group in groups[:EXECUTION_OVERVIEW_MAX_GROUPS]:
+        if not isinstance(group, Mapping):
+            continue
+        signature = group.get("representative_failure_signature")
+        signature = signature if isinstance(signature, Mapping) else {}
+        rows.append(
+            {
+                "count": _nonneg_int(group.get("count")),
+                "apis": _bounded_strings(group.get("apis"), EXECUTION_OVERVIEW_MAX_REASONS),
+                "reasons": _bounded_strings(group.get("reasons"), EXECUTION_OVERVIEW_MAX_REASONS),
+                "representative_case_id": str(group.get("representative_case_id") or ""),
+                "signature": {
+                    "kind": str(signature.get("kind") or ""),
+                    "phase": str(signature.get("phase") or ""),
+                    "sdk_error_code": _returncode(signature.get("sdk_error_code")),
+                },
+            }
+        )
+    return rows
+
+
+def execution_overview(
+    repo_root: Path,
+    session_root: Path | None,
+    session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """A compact, human-first summary of one SDK execution attempt.
+
+    Mirrors round_overview(): reads only artifacts already written by the
+    pipeline (execution_result.json, recipe_summary.json, per-case reports,
+    triage_summary.json) and the session record, never re-runs anything.  It
+    never raises: missing files yield empty sections and corrupt JSON is
+    treated as missing, so the UI card degrades instead of breaking the
+    snapshot.  Every path surfaced to the frontend is session-relative.
+    """
+
+    overview: dict[str, Any] = {
+        "available": False,
+        "attempt_path": "",
+        "execution_result_path": "",
+        "state": str((session or {}).get("state") or ""),
+        "ok": None,
+        "status": "",
+        "candidate_cause": "",
+        "error": "",
+        "commands": [],
+        "total_elapsed_seconds": 0.0,
+        "totals": {"total": 0, "passed": 0, "failed": 0, "timed_out": 0, "skipped": 0},
+        "cases": [],
+        "cases_truncated": False,
+        "failure_groups": [],
+        "parasolid": {"ran": False},
+        "visual_review": {"ran": False},
+        "cases_root": "",
+        "triage_root": "",
+    }
+    if session_root is None or not isinstance(session, Mapping):
+        return overview
+    if overview["state"] not in EXECUTION_OVERVIEW_STATES:
+        return overview
+    attempt_rel = _relative_artifact_path(repo_root, session_root, session.get("current_execution_attempt_path"))
+    if not attempt_rel:
+        return overview
+    overview["attempt_path"] = attempt_rel
+    overview["available"] = True
+    try:
+        attempt_root = session_root / attempt_rel
+        result_path = attempt_root / "execution_result.json"
+        if result_path.is_file():
+            overview["execution_result_path"] = f"{attempt_rel}/execution_result.json"
+        result_doc = _read_json_quiet(result_path)
+        task_results = result_doc.get("results")
+        task_result = next(
+            (item for item in task_results if isinstance(item, Mapping)),
+            {},
+        ) if isinstance(task_results, list) else {}
+        execution = task_result.get("execution") if isinstance(task_result.get("execution"), Mapping) else {}
+        ok_value = execution.get("ok")
+        if isinstance(ok_value, bool):
+            overview["ok"] = ok_value
+        elif isinstance(result_doc.get("ok"), bool):
+            overview["ok"] = bool(result_doc.get("ok"))
+        overview["status"] = str(execution.get("status") or "")
+        overview["candidate_cause"] = str(execution.get("candidate_cause") or "")
+        overview["error"] = _truncate_text(
+            execution.get("error") or task_result.get("error") or result_doc.get("error"),
+            EXECUTION_OVERVIEW_ERROR_LIMIT,
+        )
+        overview["commands"] = _command_steps(execution)
+        overview["total_elapsed_seconds"] = round(
+            sum(step["elapsed_seconds"] for step in overview["commands"]), 3
+        )
+        artifacts = execution.get("artifacts") if isinstance(execution.get("artifacts"), Mapping) else {}
+        cases_root_rel = _relative_artifact_path(repo_root, session_root, artifacts.get("cases") or "")
+        triage_root_rel = _relative_artifact_path(repo_root, session_root, artifacts.get("triage") or "")
+        overview["cases_root"] = cases_root_rel
+        overview["triage_root"] = triage_root_rel
+
+        recipe_summary = (
+            _read_json_quiet(session_root / cases_root_rel / "recipe_summary.json") if cases_root_rel else {}
+        )
+        for key in ("total", "passed", "failed", "timed_out", "skipped"):
+            overview["totals"][key] = _nonneg_int(recipe_summary.get(key))
+        triage_doc = (
+            _read_json_quiet(session_root / triage_root_rel / "triage_summary.json") if triage_root_rel else {}
+        )
+        reason_map = _triage_reason_map(triage_doc)
+        results = recipe_summary.get("results")
+        ordered = sorted(
+            (item for item in results if isinstance(item, Mapping)),
+            key=lambda item: (0 if _case_outcome(item) in {"fail", "timeout"} else 1, str(item.get("case_id") or "")),
+        ) if isinstance(results, list) else []
+        overview["cases_truncated"] = len(ordered) > EXECUTION_OVERVIEW_MAX_CASES
+        overview["cases"] = [
+            _execution_case_row(repo_root, session_root, item, reason_map)
+            for item in ordered[:EXECUTION_OVERVIEW_MAX_CASES]
+        ]
+        overview["failure_groups"] = _failure_group_rows(triage_doc)
+
+        parasolid = session.get("parasolid_comparison")
+        if isinstance(parasolid, Mapping) and parasolid.get("ran") is True:
+            verdict_counts = parasolid.get("verdict_counts")
+            raw_attention = parasolid.get("attention_cases")
+            attention_cases = []
+            for entry in raw_attention[:24] if isinstance(raw_attention, list) else []:
+                if not isinstance(entry, Mapping):
+                    continue
+                attention_cases.append(
+                    {
+                        "case_id": str(entry.get("case_id") or ""),
+                        "verdict": str(entry.get("verdict") or ""),
+                        "cause_class": str(entry.get("cause_class") or ""),
+                    }
+                )
+            overview["parasolid"] = {
+                "ran": True,
+                "ok": bool(parasolid.get("ok")),
+                "total": _nonneg_int(parasolid.get("total")),
+                "consistent": _nonneg_int(parasolid.get("consistent")),
+                "attention": _nonneg_int(parasolid.get("attention")),
+                "verdict_counts": dict(verdict_counts) if isinstance(verdict_counts, Mapping) else {},
+                "attention_cases": attention_cases,
+                "report_path": _relative_artifact_path(
+                    repo_root, session_root, parasolid.get("report_path") or ""
+                ),
+            }
+
+        visual = session.get("visual_review")
+        if isinstance(visual, Mapping) and visual.get("ran") is True:
+            visual_summary = visual.get("summary") if isinstance(visual.get("summary"), Mapping) else {}
+            visual_cases = []
+            raw_visual_cases = visual.get("cases") if isinstance(visual.get("cases"), list) else []
+            for entry in raw_visual_cases[:24]:
+                if not isinstance(entry, Mapping):
+                    continue
+                visual_cases.append(
+                    {
+                        "case_id": str(entry.get("case_id") or ""),
+                        "plausibility": str(entry.get("plausibility") or ""),
+                        "flags": _bounded_strings(entry.get("flags"), 8),
+                    }
+                )
+            overview["visual_review"] = {
+                "ran": True,
+                "ok": bool(visual.get("ok")),
+                "note": _truncate_text(visual.get("note") or "", 200),
+                "summary": {
+                    key: _nonneg_int(visual_summary.get(key))
+                    for key in ("reviewed", "plausible", "suspect", "implausible", "flags")
+                },
+                "report_path": _relative_artifact_path(
+                    repo_root, session_root, visual.get("report_path") or ""
+                ),
+                "cases": visual_cases,
+            }
+    except Exception:  # noqa: BLE001 - the read-only projection must never break the UI snapshot
+        pass
+    return overview
+
+
 def session_snapshot(repo_root: Path) -> dict[str, Any]:
     root = active_session_root(repo_root)
     session: dict[str, Any] | None = None
@@ -650,7 +985,8 @@ def session_snapshot(repo_root: Path) -> dict[str, Any]:
         "artifacts": artifacts,
         "artifact_summary": _artifact_summary(repo_root, root, session, artifacts),
         "round_overview": round_overview(repo_root, root, session),
+        "execution_overview": execution_overview(repo_root, root, session),
     }
 
 
-__all__ = ["active_session_root", "read_artifact", "session_snapshot", "round_overview"]
+__all__ = ["active_session_root", "read_artifact", "session_snapshot", "round_overview", "execution_overview"]

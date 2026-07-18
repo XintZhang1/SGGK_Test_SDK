@@ -21,11 +21,14 @@ from test_harness.tools.run_message_harness_pipeline import MessageHarnessPipeli
 from .workflow import WorkflowError, _safe_id, _write_json
 
 INTERFACE_DESIGN_TASK_TYPE = "interface_dsl_design"
-# The interface-design subagent designs support for one unknown API from SDK
-# header evidence.  It deliberately runs GLM-5.2 with thinking enabled and a
-# long generation budget: the design contract is large and the user accepts
-# long generation for this role (the default authoring lane keeps thinking
-# disabled because it did not finish in 20 minutes for full code generation).
+API_ADAPTATION_TASK_TYPE = "api_adaptation"
+# The interface-design and fixed-archetype adaptation subagents both design
+# support for one unknown API from host-parsed SDK evidence.  They deliberately
+# run GLM-5.2 with thinking enabled and a long generation budget: the design
+# contract is large and the user accepts long generation for these roles (the
+# default authoring lane keeps thinking disabled because it did not finish in
+# 20 minutes for full code generation).
+LONG_GENERATION_TASK_TYPES = frozenset({INTERFACE_DESIGN_TASK_TYPE, API_ADAPTATION_TASK_TYPE})
 INTERFACE_DESIGN_MAX_TOKENS = 65_536
 INTERFACE_DESIGN_TIMEOUT_SECONDS = 3_600.0
 
@@ -47,8 +50,10 @@ class MessageApiRuntime:
         jobs: int = 1,
         execution_timeout_seconds: float = 180.0,
         campaign_dataset: str | Path = "",
+        sdk_dir: str | Path | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
+        self.sdk_dir = Path(sdk_dir).expanduser().resolve() if sdk_dir else None
         requested_profile = profile.strip()
         self.config = config or load_gateway_config(requested_profile)
         if self.config.profile.name != requested_profile:
@@ -80,10 +85,11 @@ class MessageApiRuntime:
             repo_root=self.repo_root,
             staging_root=staging_root,
             client=self.client,
+            sdk_dir=self.sdk_dir,
         )
 
     def _authoring_options(self, task_type: str = "") -> CompletionOptions:
-        if task_type == INTERFACE_DESIGN_TASK_TYPE:
+        if task_type in LONG_GENERATION_TASK_TYPES:
             return CompletionOptions(
                 response_mode="auto",
                 temperature=0.1,
@@ -118,7 +124,7 @@ class MessageApiRuntime:
         staging_root: Path,
     ) -> Mapping[str, Any]:
         task_type = self._manifest_task_type(manifest_path)
-        candidate_count = 1 if task_type == INTERFACE_DESIGN_TASK_TYPE else self.candidate_count
+        candidate_count = 1 if task_type in LONG_GENERATION_TASK_TYPES else self.candidate_count
         result = self._pipeline(staging_root).run_manifest(
             manifest_path,
             run_id=run_id,

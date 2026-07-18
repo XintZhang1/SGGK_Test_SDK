@@ -5,14 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
-
+from campaign_profiles import CAMPAIGN_PROFILES, allowed_campaign_profiles
 from harness_capabilities import (
     api_guidance,
     derive_interface_family,
@@ -24,7 +23,7 @@ from harness_capabilities import (
     supported_body_builders,
     supported_oracles,
 )
-from campaign_profiles import CAMPAIGN_PROFILES, allowed_campaign_profiles
+from jsonschema import Draft202012Validator
 from model_fixed_gate_contracts import fixed_gate_contract_for_api
 from plugin_catalog import ALLOWED_ARCHETYPES
 
@@ -40,7 +39,82 @@ FORM_SCHEMA_PATH = REPO_ROOT / "test_harness/forms/api_test_form.schema.json"
 FORM_SCHEMA = json.loads(FORM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
 FORM_VALIDATOR = Draft202012Validator(FORM_SCHEMA)
 
+
+def refresh_capabilities() -> None:
+    """Reload the capability registry (and every derived view) from disk.
+
+    The module-level views are import-time conveniences for the CLI; a
+    long-lived UI server can promote a new plugin mid-process, and every
+    task-building entry point must see it without a restart.
+    """
+
+    global CAPABILITIES, SUPPORTED_APIS, SUPPORTED_BODY_BUILDERS, SUPPORTED_ORACLES
+    global API_GUIDANCE, ORACLE_GUIDANCE, RUN_PROFILES
+    CAPABILITIES = load_capabilities()
+    SUPPORTED_APIS = supported_apis(CAPABILITIES)
+    SUPPORTED_BODY_BUILDERS = supported_body_builders(CAPABILITIES)
+    SUPPORTED_ORACLES = supported_oracles(CAPABILITIES)
+    API_GUIDANCE = api_guidance(CAPABILITIES)
+    ORACLE_GUIDANCE = oracle_guidance(CAPABILITIES)
+    RUN_PROFILES = run_profiles(CAPABILITIES)
+
 INTERFACE_DESIGN_TASK_TYPE = "interface_dsl_design"
+
+PLUGIN_CONTRACT_MAX_SCHEMA_BYTES = 64 * 1024
+PLUGIN_CONTRACT_MAX_EXAMPLES = 2
+PLUGIN_CONTRACT_MAX_EXAMPLE_BYTES = 16 * 1024
+
+
+def plugin_contract_for(target_api: str, capabilities: dict[str, Any]) -> dict[str, Any]:
+    """Load the checked-in plugin recipe contract for prompt grounding.
+
+    The model never sees plugin file paths; the schema and example contents are
+    embedded so plugin-backed APIs get concrete recipe grounding instead of
+    letting the model guess fields.  Bounded and tolerant: any irregularity
+    simply yields no section (plugin catalog validation owns loud failures).
+    """
+
+    apis = capabilities.get("apis") if isinstance(capabilities.get("apis"), dict) else {}
+    record = apis.get(target_api)
+    if not isinstance(record, dict) or not isinstance(record.get("plugin"), dict):
+        return {}
+    plugin = record["plugin"]
+    schema_ref = str(plugin.get("recipe_schema") or "")
+    if not schema_ref or Path(schema_ref).is_absolute() or ".." in Path(schema_ref).parts:
+        return {}
+    schema_path = (REPO_ROOT / schema_ref).resolve()
+    try:
+        schema_path.relative_to(REPO_ROOT)
+    except ValueError:
+        return {}
+    try:
+        if schema_path.stat().st_size > PLUGIN_CONTRACT_MAX_SCHEMA_BYTES:
+            return {}
+        schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(schema, dict):
+        return {}
+    examples: list[dict[str, Any]] = []
+    examples_dir = schema_path.parent / "examples"
+    if examples_dir.is_dir():
+        for example_path in sorted(examples_dir.glob("*.json")):
+            if example_path.name.endswith(".invalid.json"):
+                continue
+            try:
+                if example_path.stat().st_size > PLUGIN_CONTRACT_MAX_EXAMPLE_BYTES:
+                    continue
+                example = json.loads(example_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            examples.append({"name": example_path.name, "recipe": example})
+            if len(examples) >= PLUGIN_CONTRACT_MAX_EXAMPLES:
+                break
+    return {
+        "api": str(plugin.get("api") or target_api),
+        "recipe_schema": schema,
+        "examples": examples,
+    }
 
 # Fixed vocabulary for the interface-design subagent.  The cluster taxonomy
 # mirrors compile_attack_dsl.CLUSTER_TYPES; keep them aligned.
@@ -173,7 +247,9 @@ def select_example_pack(form: dict[str, Any]) -> dict[str, Any] | None:
             loaded_manifest = read_json(manifest_path)
             if isinstance(loaded_manifest, dict):
                 manifest = loaded_manifest
-        positive_paths = as_string_list(manifest.get("positive_example_paths")) or as_string_list(raw_pack.get("example_paths"))
+        positive_paths = as_string_list(manifest.get("positive_example_paths")) or as_string_list(
+            raw_pack.get("example_paths")
+        )
         example_paths = [repo_path(item) for item in positive_paths]
         for single_key in ("example_dsl_path", "example_recipe_path", "example_json_path"):
             single_path = repo_path(raw_pack.get(single_key))
@@ -192,7 +268,12 @@ def select_example_pack(form: dict[str, Any]) -> dict[str, Any] | None:
         example_paths = deduped_example_paths
         negative_example_paths = [
             path
-            for path in (repo_path(item) for item in as_string_list(manifest.get("negative_example_paths") or raw_pack.get("negative_example_paths")))
+            for path in (
+                repo_path(item)
+                for item in as_string_list(
+                    manifest.get("negative_example_paths") or raw_pack.get("negative_example_paths")
+                )
+            )
             if path is not None
         ]
         markdown = read_text_if_present(md_path) if md_path else ""
@@ -258,7 +339,7 @@ def dataset_source_strings(value: Any) -> list[str]:
         for key, item in value.items():
             if isinstance(item, str) and key in {"path", "source_file", "file"}:
                 result.append(item)
-            elif isinstance(item, (dict, list)):
+            elif isinstance(item, dict | list):
                 result.extend(dataset_source_strings(item))
         return result
     return []
@@ -365,7 +446,10 @@ def dataset_index_source_files(
             files.append(display)
             if len(files) >= limit:
                 break
-    return files, {"source_file_suffix_counts": dict(sorted(by_suffix.items())), "source_file_count": sum(by_suffix.values())}
+    return files, {
+        "source_file_suffix_counts": dict(sorted(by_suffix.items())),
+        "source_file_count": sum(by_suffix.values()),
+    }
 
 
 def asset_path_record(
@@ -481,6 +565,7 @@ def input_asset_availability(form: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_form(form: Any) -> tuple[list[str], list[str]]:
+    refresh_capabilities()
     errors: list[str] = []
     warnings: list[str] = []
     if not isinstance(form, dict):
@@ -499,7 +584,10 @@ def validate_form(form: Any) -> tuple[list[str], list[str]]:
     if isinstance(oracles, list):
         for oracle in oracles:
             if oracle not in SUPPORTED_ORACLES:
-                warnings.append(f"unknown oracle {oracle!r}; model should map it to a supported oracle or request extension")
+                warnings.append(
+                    f"unknown oracle {oracle!r}; model should map it to a supported oracle "
+                    "or request extension"
+                )
 
     run_profile = form.get("run_profile")
     if run_profile not in RUN_PROFILES:
@@ -587,29 +675,61 @@ If the requested API or body builder is unsupported, return:
 
 Hard rules:
 - Prefer attack DSL for api_boolean.
-- For 100k+ corpus campaigns, do not emit individual DSL cases; emit campaign_request only when Allowed campaign profiles lists a profile.
-- For mass coverage inside attack_dsl, do not enumerate cases: declare `cluster_bases` (named base geometries) plus `parameter_clusters` (typed clusters over one varying parameter each). Fixed code expands each cluster deterministically into at most 50 cases, so combine many bases, cluster types, and grids to reach 100k+ runnable recipes.
-- Parameter cluster types: translate_axis, translate_line, scale_uniform, size_dimension, contact_band, tolerance_sweep, angle_sweep, large_coordinate_shift, boolean_type_cycle, option_toggle, mirror_sign, seeded_jitter, uv_domain, enum_cycle. Every cluster vary path must resolve in its base; grids use {{"kind":"linspace"|"geomspace"|"values", ...}} with count <= 50.
-- Complexity is gated: the fixed complexity gate scores every case and rejects simple-only candidates. Cover at least 4 of these dimensions across the candidate: multi-op chains, generated topology builders, tolerance bands around exact contact/geom_tol/topo_tol, large coordinates within max_model_size, degenerate or empty-result inputs, non-trivial transforms, and at least two measurable oracle families per case. At least half of the cases must each combine 3+ dimensions, and at least one case must use a multi-op chain or generated topology builder. Simple primitive pairs are allowed only as a minority of smoke anchors.
+- For 100k+ corpus campaigns, do not emit individual DSL cases; emit campaign_request only when
+  Allowed campaign profiles lists a profile.
+- For mass coverage inside attack_dsl, do not enumerate cases: declare `cluster_bases` (named base
+  geometries) plus `parameter_clusters` (typed clusters over one varying parameter each). Fixed code
+  expands each cluster deterministically into at most 50 cases, so combine many bases, cluster types,
+  and grids to reach 100k+ runnable recipes.
+- Parameter cluster types: translate_axis, translate_line, scale_uniform, size_dimension, contact_band,
+  tolerance_sweep, angle_sweep, large_coordinate_shift, boolean_type_cycle, option_toggle, mirror_sign,
+  seeded_jitter, uv_domain, enum_cycle. Every cluster vary path must resolve in its base; grids use
+  {{"kind":"linspace"|"geomspace"|"values", ...}} with count <= 50.
+- Complexity is gated: the fixed complexity gate scores every case and rejects simple-only candidates.
+  Cover at least 4 of these dimensions across the candidate: multi-op chains, generated topology
+  builders, tolerance bands around exact contact/geom_tol/topo_tol, large coordinates within
+  max_model_size, degenerate or empty-result inputs, non-trivial transforms, and at least two
+  measurable oracle families per case. At least half of the cases must each combine 3+ dimensions,
+  and at least one case must use a multi-op chain or generated topology builder. Simple primitive
+  pairs are allowed only as a minority of smoke anchors.
 - Do not invent SDK calls outside the runner schema.
-- Never return command, commands, tool, executable, runner, dataset, out, cwd, env, or shell fields. For campaign_request, select only profile_id plus bounded args.
-- For flat_recipe source_file fields, use only a concrete path from Input asset availability when available. Do not copy example source_file paths unless they appear there as available.
-- If no concrete source_file is available for a source-file recipe, return needs_harness_extension or an allowed campaign_request instead of inventing a path.
+- Never return command, commands, tool, executable, runner, dataset, out, cwd, env, or shell fields.
+  For campaign_request, select only profile_id plus bounded args.
+- For flat_recipe source_file fields, use only a concrete path from Input asset availability when
+  available. Do not copy example source_file paths unless they appear there as available.
+- If no concrete source_file is available for a source-file recipe, return needs_harness_extension
+  or an allowed campaign_request instead of inventing a path.
 - Use constants topo_tol=0.01, geom_tol=0.00001, max_model_size=500000.0 unless the form overrides them.
 - Use stable id values on all important chain steps.
 - Add real oracles, not only API status checks.
-- Use only supported expectation fields. Do not emit an `expectations.properties` array; property checks use direct fields such as `require_finite_properties`, `require_nonnegative_length_area`, `total_volume`, or `total_abs_volume`.
-- `expectations.result_bodies` must be an object such as `{{"min": 1}}` or `{{"min": 1, "max": 1}}`; do not emit a scalar.
-- Boolean expectation fields such as `boolean_volume_relation` and `boolean_bbox_relation` must be literal true/false values, never objects, formulas, or relation strings.
-- For chain bodies, put profile builders before generated-body ops: `rect_profile -> extrude`, `circle_profile -> extrude` for a cylinder, `rect_profile -> thicken` or `thicken_rect_sheet`, `circle_profile -> sweep_line`, and `line_profile/radial_rect_profile -> revolve`.
-- For simple primitive tools such as cylinders and spheres, prefer direct body builders (`solid_cylinder`, `solid_sphere`) unless the generated-chain behavior is the point of the test. In a chain, a direct body builder can be used as `{{"op":"solid_cylinder", ...}}`.
-- When using `point_ref`, declare the point under root `key_points` or case `key_points`; otherwise use an explicit `point` array.
-- Distance oracles must use `distance_checks` as a list with roles and expected/min/max fields; do not use `expectations.distance`.
-- `support_sweep` / `support_sweep_bspline_surface` requires concrete `path_radius`, `profile_radius`, and `height` numeric fields.
-- `line_profile -> revolve` requires `bottom_radius`, `top_radius`, and `height`; do not use a free-form `points` array for the revolved profile.
-- Nested boolean chain steps use `op:"boolean"` with a supported pattern; do not invent `boolean_subtract`, `boolean_union`, or `boolean_intersect` ops. Either include a `tool` object in the boolean step, or put base body then tool body/transform immediately before `op:"boolean"`.
-- Metric expectations such as `total_volume` should be objects like `{{"min":0.0}}` or `{{"expected":0.0}}`; scalar shorthand is accepted, but object form is clearer.
-- For multi-value tolerance boundaries, prefer `sweeps` or `paired_sweeps`; do not put vector-valued fields such as `translate`, `axis`, or `point` into scalar sweep shorthand.
+- Use only supported expectation fields. Do not emit an `expectations.properties` array; property
+  checks use direct fields such as `require_finite_properties`, `require_nonnegative_length_area`,
+  `total_volume`, or `total_abs_volume`.
+- `expectations.result_bodies` must be an object such as `{{"min": 1}}` or `{{"min": 1, "max": 1}}`;
+  do not emit a scalar.
+- Boolean expectation fields such as `boolean_volume_relation` and `boolean_bbox_relation` must be
+  literal true/false values, never objects, formulas, or relation strings.
+- For chain bodies, put profile builders before generated-body ops: `rect_profile -> extrude`,
+  `circle_profile -> extrude` for a cylinder, `rect_profile -> thicken` or `thicken_rect_sheet`,
+  `circle_profile -> sweep_line`, and `line_profile/radial_rect_profile -> revolve`.
+- For simple primitive tools such as cylinders and spheres, prefer direct body builders
+  (`solid_cylinder`, `solid_sphere`) unless the generated-chain behavior is the point of the test.
+  In a chain, a direct body builder can be used as `{{"op":"solid_cylinder", ...}}`.
+- When using `point_ref`, declare the point under root `key_points` or case `key_points`; otherwise
+  use an explicit `point` array.
+- Distance oracles must use `distance_checks` as a list with roles and expected/min/max fields;
+  do not use `expectations.distance`.
+- `support_sweep` / `support_sweep_bspline_surface` requires concrete `path_radius`, `profile_radius`,
+  and `height` numeric fields.
+- `line_profile -> revolve` requires `bottom_radius`, `top_radius`, and `height`; do not use a
+  free-form `points` array for the revolved profile.
+- Nested boolean chain steps use `op:"boolean"` with a supported pattern; do not invent
+  `boolean_subtract`, `boolean_union`, or `boolean_intersect` ops. Either include a `tool` object in
+  the boolean step, or put base body then tool body/transform immediately before `op:"boolean"`.
+- Metric expectations such as `total_volume` should be objects like `{{"min":0.0}}` or
+  `{{"expected":0.0}}`; scalar shorthand is accepted, but object form is clearer.
+- For multi-value tolerance boundaries, prefer `sweeps` or `paired_sweeps`; do not put vector-valued
+  fields such as `translate`, `axis`, or `point` into scalar sweep shorthand.
 - Use sweeps or paired_sweeps for tolerance boundaries.
 - Emit valid JSON only.
 
@@ -637,6 +757,130 @@ Developer form:
 """
 
 
+def render_api_adaptation_prompt(
+    contract: dict[str, Any],
+    doc_evidence: list[dict[str, Any]],
+    form: dict[str, Any],
+) -> str:
+    """Prompt for the fixed-archetype API adaptation task.
+
+    The model sees the host-owned adaptation contract (which carries only the
+    normalized public-interface signature) plus bounded public Doxygen briefs.
+    It returns exactly one ``api_plugin_candidate`` object; fixed host gates
+    re-validate every rule spelled out below before anything is materialized,
+    built, or executed.  Raw SDK header text never enters this prompt.
+    """
+
+    contract_json = json.dumps(contract, indent=2, ensure_ascii=False)
+    docs_json = json.dumps(doc_evidence, indent=2, ensure_ascii=False)
+    form_json = json.dumps(form, indent=2, ensure_ascii=False)
+    archetype = str(contract.get("adapter_archetype") or "")
+    if archetype == "unary_body_to_bodies":
+        archetype_rules = """- adapter_spec.archetype must be "unary_body_to_bodies"; do not emit clone_field.
+- adapter_spec.scalar_params must mirror the contract signature's scalar parameters in
+  name, order, and cpp_type (double/float/int/bool/std::string; Integer maps to int).
+  Each entry adds a unique recipe_field (snake_case, never colliding with runner fields
+  such as api, case_id, expectations, or target_*/tool_* prefixes) and a safe default
+  of the matching JSON type. The defaulted const *Opts& parameter is NOT exposed: the
+  fixed adapter omits it so the SDK default is used.
+- smoke_recipe.expectations.result_bodies.min must be an integer >= 1 (the API may
+  legitimately return one or more bodies); max is optional.
+- recipe_schema.required must contain "target_kind" in addition to the shared required fields.
+- recipe_schema.properties must expose numeric target_translate_x/y/z placement levers, and you
+  SHOULD use placement/extreme values (large coordinates, tolerance-band distances) so generated
+  cases reach the host complexity floor.
+- recipe_schema.properties.expectations.properties.result_bodies must be a strict object
+  requiring min with {"type": "integer", "minimum": 1}; max, when present, must be an
+  integer schema with minimum >= 1.
+- topotrack.mode must equal the contract's status_only mode: the fixed adapter records
+  ModelingRet status and captures topology tracking as status/topocheck artifacts only."""
+    else:
+        archetype_rules = """- adapter_spec.archetype must be "body_list_to_body"; do not emit scalar_params.
+- adapter_spec.clone_field names the single recipe boolean field bound to the SDK clone
+  parameter of the signature.
+- smoke_recipe.expectations.result_bodies must require exactly one body: {"min": 1, "max": 1}.
+- recipe_schema.properties.expectations.properties.result_bodies must be a strict object
+  requiring min and max with const 1 each.
+- topotrack.mode must equal the contract's unavailable mode: the API returns BodyPtr and
+  exposes no ModelingRet TopoTrack channel."""
+    return f"""You are the SGGK fixed-archetype API adaptation subagent. The host resolver parsed the
+requested public API's header declaration and issued the immutable adaptation contract below.
+Return exactly one JSON object of kind "api_plugin_candidate" — a bounded adapter specification,
+never code, commands, or paths.
+
+Return exactly one JSON object with this shape:
+{{
+  "kind": "api_plugin_candidate",
+  "api": "exact contract target_api",
+  "description": "one sentence about the adapted API",
+  "adapter_spec": {{
+    "archetype": "exact contract adapter_archetype",
+    "function_name": "exact contract function_name",
+    "sdk_header": "exact contract sdk_header",
+    "sdk_modules": ["exact contract sdk_modules"],
+    "clone_field": "body_list_to_body only",
+    "scalar_params": [{{"name": "...", "cpp_type": "...", "recipe_field": "...", "default": 0}}]
+  }},
+  "recipe_schema": {{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object", "additionalProperties": false,
+    "required": ["api", "case_id", "expectations", "..."],
+    "properties": {{"api": {{"const": "contract target_api"}}, "...": "..."}}
+  }},
+  "smoke_recipe": {{"api": "...", "case_id": "...", "...": "concrete runnable values"}},
+  "negative_recipe": {{"...": "smoke_recipe plus exactly one added unknown field"}},
+  "capability": {{
+    "preferred_format": "flat_recipe", "runner_recipe_api": true,
+    "body_required": ["..."],
+    "required_fields": ["api", "case_id", "..."],
+    "supported_body_builders": ["..."],
+    "supported_oracles": ["..."],
+    "notes": ["..."]
+  }},
+  "topotrack": {{"mode": "exact contract topotrack_mode", "reason": "..."}}
+}}
+
+Hard rules enforced by the fixed host gates (violations are rejected deterministically):
+- Every identity field must equal the adaptation contract exactly: api, adapter_spec.archetype,
+  adapter_spec.function_name, adapter_spec.sdk_header, adapter_spec.sdk_modules (same set),
+  and topotrack.mode.
+{archetype_rules}
+- smoke_recipe.expectations.require_property_calculations, require_finite_properties, and
+  require_nonnegative_volume must all be true.
+- recipe_schema must be a strict object with additionalProperties=false, required must contain
+  "api", "case_id", and "expectations", properties.api.const must equal the contract target_api,
+  expectations must be an inline strict object listing all fixed oracle fields in its required
+  array, and the three require_* fields must use const=true. Only local "#..." $ref fragments
+  are allowed.
+- capability.preferred_format must be "flat_recipe", capability.runner_recipe_api must be true,
+  capability.required_fields must contain "api" and "case_id", and
+  capability.supported_oracles must contain every contract required_oracles entry.
+- negative_recipe must equal smoke_recipe plus exactly one added unknown field (nothing removed,
+  renamed, or retyped); it must fail only the matching additionalProperties=false check.
+- Never return command, commands, argv, executable, runner, shell, env, cwd, tool, url, or
+  dataset fields anywhere in the object.
+- smoke_recipe must construct its input body with the runner's FLAT convention: a target_kind
+  field plus target_* scalar params (for example "target_kind": "plane_sheet", "target_length":
+  10.0, "target_width": 10.0). Never invent nested shapes such as "body", "target", or
+  "boolean.target" — they silently build the wrong input. target_kind must come from the fixed
+  runner builder vocabulary: solid_sphere, solid_cylinder, solid_cone, solid_torus, solid_wedge,
+  plane_sheet, extrude_rect, thicken_rect_sheet, sweep_circle_line,
+  support_sweep_bspline_surface, revolve_line, revolve_rect, pre_boolean_cylinder_wedge. The
+  smoke must construct valid positive solid geometry, not an edge case that cannot pass its own
+  oracles.
+- Emit valid JSON only.
+
+Trusted adaptation contract (host-issued; the gates recompute and enforce it):
+{contract_json}
+
+Bounded public Doxygen briefs for the requested API (opaque doc_* references; may be empty):
+{docs_json}
+
+Developer form:
+{form_json}
+"""
+
+
 def render_interface_design_prompt(form: dict[str, Any]) -> str:
     """Prompt for the interface-design subagent (unknown API route).
 
@@ -648,7 +892,9 @@ def render_interface_design_prompt(form: dict[str, Any]) -> str:
 
     form_json = json.dumps(form, indent=2, ensure_ascii=False)
     declarations = form.get("sdk_source_refs")
-    declarations_json = json.dumps(declarations if isinstance(declarations, list) else [], indent=2, ensure_ascii=False)
+    declarations_json = json.dumps(
+        declarations if isinstance(declarations, list) else [], indent=2, ensure_ascii=False
+    )
     archetypes_json = json.dumps(sorted(ALLOWED_ARCHETYPES), indent=2, ensure_ascii=False)
     cluster_types_json = json.dumps(INTERFACE_DESIGN_CLUSTER_TYPES, indent=2, ensure_ascii=False)
     dimensions_json = json.dumps(INTERFACE_DESIGN_COMPLEXITY_DIMENSIONS, indent=2, ensure_ascii=False)
@@ -667,21 +913,24 @@ Return exactly one JSON object with this shape:
     "return_channels": ["curves|points|bodies|status|topology"]
   }},
   "builder_requirements": [
-    {{"builder_id": "...", "geometry_kind": "plane|cylinder_surface|bspline_curve|...", "parameters": {{"name": "type"}}, "rationale": "..."}}
+    {{"builder_id": "...", "geometry_kind": "plane|cylinder_surface|bspline_curve|...",
+      "parameters": {{"name": "type"}}, "rationale": "..."}}
   ],
   "archetype_match": {{"archetype": "one registered archetype id", "fit": "exact|partial|none", "gaps": ["..."]}},
   "proposed_recipe_fields": {{"field_name": "type and meaning"}},
   "proposed_artifacts": ["reports or debug outputs the extension should produce"],
   "validation_oracle": {{"oracle_family": "how the smoke proves correctness beyond API status"}},
   "parameter_cluster_plan": [
-    {{"cluster_type": "one registered cluster type", "target_parameter": "recipe field or chain path", "rationale": "...", "estimated_cases": 50}}
+    {{"cluster_type": "one registered cluster type", "target_parameter": "recipe field or chain path",
+      "rationale": "...", "estimated_cases": 50}}
   ],
   "complexity_plan": {{
     "dimensions": ["dimensions from the fixed list that apply to this interface"],
     "degenerate_inputs": ["..."],
     "tolerance_boundaries": ["..."]
   }},
-  "minimum_smoke_case": {{"case_id": "requested_api_smoke_001", "api": "requested_api_name", "...": "concrete smoke values from proposed_recipe_fields"}},
+  "minimum_smoke_case": {{"case_id": "requested_api_smoke_001", "api": "requested_api_name",
+    "...": "concrete smoke values from proposed_recipe_fields"}},
   "patch_plan": [
     {{"layer": "schema", "change": "add recipe/form fields", "files": ["test_harness/..."]}},
     {{"layer": "validator", "change": "reject missing or invalid fields", "files": ["test_harness/tools/..."]}},
@@ -692,9 +941,12 @@ Return exactly one JSON object with this shape:
 }}
 
 Hard rules:
-- Read the SDK header declarations below carefully: parameters, options structs, return types, and overloads drive interface_signature and builder_requirements.
-- archetype_match.archetype must be one of the registered archetypes below; use fit=none only when no archetype family matches and explain the gap.
-- parameter_cluster_plan must use only the registered cluster types below; each cluster expands to at most 50 cases, so plan several cluster types per interface.
+- Read the SDK header declarations below carefully: parameters, options structs, return types, and
+  overloads drive interface_signature and builder_requirements.
+- archetype_match.archetype must be one of the registered archetypes below; use fit=none only when
+  no archetype family matches and explain the gap.
+- parameter_cluster_plan must use only the registered cluster types below; each cluster expands to
+  at most 50 cases, so plan several cluster types per interface.
 - complexity_plan.dimensions must use only the fixed dimension list below.
 - validation_oracle must name measurable oracles (counts, properties, topology relations), never API status alone.
 - minimum_smoke_case must instantiate proposed_recipe_fields with small literal values.
@@ -720,11 +972,15 @@ Developer form:
 
 
 def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> dict[str, Any]:
+    refresh_capabilities()
     target_api = str(form.get("target_api", "needs_harness_extension"))
     request_id = str(form.get("request_id", form_path.stem))
     guidance = API_GUIDANCE.get(target_api, API_GUIDANCE["needs_harness_extension"])
     selected_oracles = as_string_list(form.get("oracles"))
-    oracle_notes = [ORACLE_GUIDANCE.get(oracle, f"Map {oracle} to a supported oracle or request extension.") for oracle in selected_oracles]
+    oracle_notes = [
+        ORACLE_GUIDANCE.get(oracle, f"Map {oracle} to a supported oracle or request extension.")
+        for oracle in selected_oracles
+    ]
     example_pack = select_example_pack(form)
     asset_availability = input_asset_availability(form)
     selected_example_pack = example_pack["id"] if example_pack else ""
@@ -747,7 +1003,8 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
         guidance = dict(guidance)
         guidance["preferred_format"] = "campaign_request"
         guidance["notes"] = list(guidance.get("notes", [])) + [
-            "Use campaign_request profile_id=abc_boolean_mass_recut; fixed code expands the bounded corpus lane and filters explicit unsupported failures from bug reports.",
+            "Use campaign_request profile_id=abc_boolean_mass_recut; fixed code expands the bounded "
+            "corpus lane and filters explicit unsupported failures from bug reports.",
         ]
         preferred_format = "campaign_request"
     elif campaign_profile_id == "abc_step_import":
@@ -759,7 +1016,8 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
         guidance = dict(guidance)
         guidance["preferred_format"] = "campaign_request"
         guidance["notes"] = list(guidance.get("notes", [])) + [
-            "Use campaign_request profile_id=abc_step_import; fixed code binds the host-selected ABC index and runs deterministic sharded STEP import with triage.",
+            "Use campaign_request profile_id=abc_step_import; fixed code binds the host-selected ABC "
+            "index and runs deterministic sharded STEP import with triage.",
         ]
         preferred_format = "campaign_request"
 
@@ -799,6 +1057,9 @@ def build_task(form_path: Path, form: dict[str, Any], warnings: list[str]) -> di
         "allowed_campaign_profiles": campaign_profiles,
         "campaign_bindings": campaign_bindings,
     }
+    plugin_contract = plugin_contract_for(target_api, CAPABILITIES)
+    if plugin_contract:
+        task["plugin_contract"] = plugin_contract
     task["prompt"] = render_prompt(form, guidance, oracle_notes, example_pack, asset_availability, campaign_profiles)
     return task
 

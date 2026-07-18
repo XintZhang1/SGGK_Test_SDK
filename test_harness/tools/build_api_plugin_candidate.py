@@ -7,14 +7,13 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -53,8 +52,7 @@ def _run(
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
             check=False,
             shell=False,
@@ -150,6 +148,27 @@ def _sdk_identity(sdk_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
             json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
     }
+
+
+def _workspace_validate_argv(workspace: Path, recipe: Path) -> list[str]:
+    """Build the fixed recipe-validation command bound to the isolated workspace.
+
+    The offline embeddable runtime resolves imports from its own ``._pth``
+    entries (the checked-in repository), never from the validated script's
+    directory.  Without an explicit bootstrap the workspace copy of
+    ``validate_recipe.py`` would discover the checked-in plugin catalog
+    instead of the isolated one, so every not-yet-registered plugin API would
+    be rejected as unknown.  The command stays fixed and ``shell=False``; only
+    host-derived absolute paths enter the bootstrap.
+    """
+
+    tools_dir = workspace / "test_harness" / "tools"
+    bootstrap = (
+        f"import sys; sys.path.insert(0, {str(tools_dir)!r}); "
+        f"sys.argv = ['validate_recipe.py', {str(recipe)!r}, '--model-asset-policy']; "
+        "from validate_recipe import main; raise SystemExit(main())"
+    )
+    return [sys.executable, "-c", bootstrap]
 
 
 def build_candidate(
@@ -262,24 +281,14 @@ def build_candidate(
             commands.append(
                 _run(
                     "validate_positive_recipe",
-                    [
-                        sys.executable,
-                        str(workspace / "test_harness/tools/validate_recipe.py"),
-                        str(smoke),
-                        "--model-asset-policy",
-                    ],
+                    _workspace_validate_argv(workspace, smoke),
                     cwd=workspace,
                     timeout=timeout,
                 )
             )
             negative_result = _run(
                 "validate_negative_recipe",
-                [
-                    sys.executable,
-                    str(workspace / "test_harness/tools/validate_recipe.py"),
-                    str(negative),
-                    "--model-asset-policy",
-                ],
+                _workspace_validate_argv(workspace, negative),
                 cwd=workspace,
                 timeout=timeout,
             )

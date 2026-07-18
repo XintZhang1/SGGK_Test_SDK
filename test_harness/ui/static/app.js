@@ -261,6 +261,211 @@ function renderRoundOverview(overview) {
   if (actions.childNodes.length) root.append(actions);
 }
 
+const EXECUTION_OUTCOME_LABELS = { pass: "通过", fail: "失败", timeout: "超时", skip: "跳过" };
+
+function renderExecutionOverview(overview) {
+  const root = $("executionOverview");
+  root.replaceChildren();
+  const value = overview || {};
+  if (!value.available) {
+    root.classList.add("hidden");
+    return;
+  }
+  const tone = value.ok === true ? "success" : (value.ok === false ? "error" : "info");
+  root.className = `round-overview execution-overview tone-${tone}`;
+
+  const head = document.createElement("div");
+  head.className = "round-overview-head";
+  head.append(
+    text("span", "", "round-overview-mark"),
+    text("h3", "SDK 执行结果概览", "round-overview-title"),
+  );
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label, className) => {
+    if (!label) return;
+    chips.append(text("span", label, className || "round-chip"));
+  };
+  const statusLabel = value.status || (value.ok === true ? "执行通过" : (value.ok === false ? "执行未通过" : "执行中"));
+  addChip(`执行状态 ${statusLabel}`);
+  const totals = value.totals || {};
+  if (Number(totals.total) > 0) {
+    addChip(`共 ${totals.total} 例`);
+    addChip(`通过 ${totals.passed || 0}`, "round-chip exec-chip-pass");
+    if (Number(totals.failed) > 0) addChip(`失败 ${totals.failed}`, "round-chip exec-chip-fail");
+    if (Number(totals.timed_out) > 0) addChip(`超时 ${totals.timed_out}`, "round-chip exec-chip-timeout");
+    if (Number(totals.skipped) > 0) addChip(`跳过 ${totals.skipped}`, "round-chip exec-chip-skip");
+  }
+  if (Number(value.total_elapsed_seconds) > 0) {
+    addChip(`总耗时 ${Number(value.total_elapsed_seconds).toFixed(1)} s`);
+  }
+  if (chips.childNodes.length) head.append(chips);
+  root.append(head);
+
+  const addField = (label, content) => {
+    if (!content) return;
+    const row = document.createElement("div");
+    row.className = "round-overview-field";
+    row.append(text("span", label, "round-overview-label"), text("span", content, "round-overview-value"));
+    root.append(row);
+  };
+  addField("失败归因", value.candidate_cause);
+
+  const steps = (value.commands || []).filter((step) => step.name);
+  if (steps.length) {
+    const stepRow = document.createElement("div");
+    stepRow.className = "round-overview-chips execution-steps";
+    steps.forEach((step) => {
+      const cls = step.ok ? "exec-chip-pass" : "exec-chip-fail";
+      const rc = step.returncode === null || step.returncode === undefined ? "?" : step.returncode;
+      stepRow.append(text(
+        "span",
+        `${step.name} · rc=${rc} · ${Number(step.elapsed_seconds || 0).toFixed(2)} s`,
+        `round-chip ${cls}`,
+      ));
+    });
+    root.append(stepRow);
+  }
+
+  const parasolid = value.parasolid || {};
+  if (parasolid.ran) {
+    addField("Parasolid 对比", `与 Parasolid 一致 ${parasolid.consistent || 0} / 需关注 ${parasolid.attention || 0}`);
+    const attentionCases = Array.isArray(parasolid.attention_cases) ? parasolid.attention_cases : [];
+    if (attentionCases.length) {
+      root.append(text("div", "Parasolid 需关注用例（诊断线索）", "execution-section-title"));
+      const list = document.createElement("div");
+      list.className = "round-overview-chips execution-steps";
+      attentionCases.slice(0, 24).forEach((entry) => {
+        const label = [entry.case_id, entry.verdict, entry.cause_class].filter(Boolean).join(" · ");
+        list.append(text("span", label || "未命名用例", "round-chip exec-chip-fail"));
+      });
+      root.append(list);
+    }
+  }
+
+  const visual = value.visual_review || {};
+  if (visual.ran) {
+    const vs = visual.summary || {};
+    addField(
+      "视觉复核（咨询性意见）",
+      visual.ok
+        ? `复核 ${vs.reviewed || 0} 例：合理 ${vs.plausible || 0} / 存疑 ${vs.suspect || 0}`
+          + ` / 不合理 ${vs.implausible || 0} / 误用标记 ${vs.flags || 0}`
+        : (visual.note || "未产出报告"),
+    );
+    const flagged = (Array.isArray(visual.cases) ? visual.cases : []).filter(
+      (entry) => (entry.plausibility && entry.plausibility !== "plausible") || (entry.flags || []).length,
+    );
+    if (visual.ok && flagged.length) {
+      root.append(text("div", "视觉复核存疑用例（仅供参考，不构成结论）", "execution-section-title"));
+      const list = document.createElement("div");
+      list.className = "round-overview-chips execution-steps";
+      flagged.slice(0, 24).forEach((entry) => {
+        const flags = (entry.flags || []).join("/");
+        const label = [entry.case_id, entry.plausibility, flags].filter(Boolean).join(" · ");
+        list.append(text("span", label || "未命名用例", "round-chip exec-chip-timeout"));
+      });
+      root.append(list);
+    }
+  }
+
+  if (value.error) {
+    const failure = document.createElement("div");
+    failure.className = "round-overview-failure";
+    failure.append(
+      text("strong", "失败摘要"),
+      text("span", value.error, "round-overview-failure-text"),
+    );
+    root.append(failure);
+  }
+
+  const groups = value.failure_groups || [];
+  if (groups.length) {
+    root.append(text("div", "失败分组", "execution-section-title"));
+    const wrap = document.createElement("div");
+    wrap.className = "execution-groups";
+    groups.forEach((group) => {
+      const signature = group.signature || {};
+      const title = [signature.kind, signature.phase].filter(Boolean).join(" · ") || "失败组";
+      const card = document.createElement("div");
+      card.className = "execution-group";
+      card.append(
+        text("strong", `${title} × ${group.count || 0}`, "execution-group-title"),
+        text("span", `代表用例 ${group.representative_case_id || "—"}`, "execution-group-detail"),
+      );
+      if ((group.reasons || []).length) {
+        card.append(text("span", `原因：${group.reasons.join("、")}`, "execution-group-detail"));
+      }
+      if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
+        card.append(text("span", `SDK 错误码 ${signature.sdk_error_code}`, "execution-group-detail"));
+      }
+      wrap.append(card);
+    });
+    root.append(wrap);
+  }
+
+  const cases = value.cases || [];
+  if (cases.length) {
+    const heading = value.cases_truncated
+      ? `用例结果（共 ${Number(totals.total) || cases.length} 例，仅显示前 ${cases.length} 条，失败/超时优先）`
+      : "用例结果";
+    root.append(text("div", heading, "execution-section-title"));
+    const wrap = document.createElement("div");
+    wrap.className = "execution-table-wrap";
+    const table = document.createElement("table");
+    table.className = "execution-table";
+    const headRow = document.createElement("tr");
+    ["用例", "状态", "阶段", "耗时", "失败原因 / Oracle 失败", "产物路径"].forEach((label) => {
+      headRow.append(text("th", label));
+    });
+    const thead = document.createElement("thead");
+    thead.append(headRow);
+    table.append(thead);
+    const tbody = document.createElement("tbody");
+    cases.forEach((row) => {
+      const outcome = EXECUTION_OUTCOME_LABELS[row.outcome] ? row.outcome : "pass";
+      const reason = row.error_message
+        || (row.validation_failures || []).join("；")
+        || (row.triage_reasons || []).join("、");
+      const tr = document.createElement("tr");
+      tr.className = `exec-row-${outcome}`;
+      const statusCell = document.createElement("td");
+      statusCell.append(text("span", EXECUTION_OUTCOME_LABELS[outcome], `exec-chip exec-chip-${outcome}`));
+      tr.append(
+        text("td", row.case_id || "—", "execution-case-id"),
+        statusCell,
+        text("td", row.phase || "—"),
+        text("td", `${Number(row.elapsed_seconds || 0).toFixed(2)} s`),
+        text("td", reason || "—", "execution-reason"),
+        text("td", row.artifact_path || "—", "execution-path"),
+      );
+      tbody.append(tr);
+    });
+    table.append(tbody);
+    wrap.append(table);
+    root.append(wrap);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "round-overview-actions";
+  const addAction = (label, path) => {
+    if (!path) return;
+    const item = artifactByPath(path);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "round-overview-action";
+    button.disabled = item?.previewable === false;
+    button.title = path;
+    button.append(text("strong", label), text("span", path, "round-overview-action-path"));
+    button.addEventListener("click", () => loadArtifact(path));
+    actions.append(button);
+  };
+  addAction("查看 SDK 执行明细", value.execution_result_path);
+  addAction("查看 Parasolid 对比报告", parasolid.report_path || "");
+  addAction("查看视觉复核报告", visual.report_path || "");
+  if (actions.childNodes.length) root.append(actions);
+}
+
 function renderArtifacts(items, summary = {}) {
   const root = $("artifactList");
   const scrollTop = root.scrollTop;
@@ -521,6 +726,7 @@ function render(next) {
   renderReadiness(next.readiness);
   renderEvents(next.events);
   renderRoundOverview(next.round_overview);
+  renderExecutionOverview(next.execution_overview);
   renderArtifacts(next.artifacts, next.artifact_summary);
   renderABC(next.abc);
   renderNX(next.nx);

@@ -144,6 +144,53 @@ def test_subject_outline_allows_cpp_boolean_branch_conditions() -> None:
     assert "||" in condition
 
 
+def test_subject_outline_allows_harness_cad_vocabulary_keys() -> None:
+    review_context = context(
+        subject_outline={
+            "candidate": {
+                "minimum_smoke_case": {
+                    "expected_topo_counts": {"shells": 1, "faces": 6, "edges": 12},
+                    "edge_endpoints": ["p0", "p1"],
+                    "envelope": {"xmin": 0.0, "xmax": 1.0},
+                    "security_note": "公开接口词汇，不含敏感信息。",
+                },
+                "capability": {
+                    "runner_recipe_api": True,
+                    "supported_oracles": ["result_bodies", "properties"],
+                },
+            }
+        }
+    )
+
+    outline = review_context.as_dict()["subject_outline"]
+    smoke = outline["candidate"]["minimum_smoke_case"]
+    assert smoke["expected_topo_counts"]["shells"] == 1
+    assert smoke["edge_endpoints"] == ["p0", "p1"]
+    assert outline["candidate"]["capability"]["runner_recipe_api"] is True
+
+
+@pytest.mark.parametrize(
+    "forbidden_key",
+    [
+        "shell",
+        "command",
+        "commands",
+        "api_key",
+        "SILICONFLOW_API_KEY",
+        "base_url",
+        "endpoint",
+        "token",
+        "runner",
+        "env",
+    ],
+)
+def test_subject_outline_still_rejects_authority_keys(forbidden_key: str) -> None:
+    with pytest.raises(ReviewCommentError) as excinfo:
+        context(subject_outline={"candidate": {forbidden_key: "x"}})
+
+    assert excinfo.value.code == "SENSITIVE_OUTLINE_FIELD_FORBIDDEN"
+
+
 def test_subject_outline_is_hash_bound_and_detached_from_caller_mutation() -> None:
     outline = {
         "cases": [

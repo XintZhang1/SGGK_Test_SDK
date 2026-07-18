@@ -1,0 +1,18 @@
+{
+  "api": "api_thicken_body",
+  "case_id": "smoke_thicken_plane_sheet",
+  "expectations": {
+    "require_finite_properties": true,
+    "require_nonnegative_volume": true,
+    "require_property_calculations": true,
+    "result_bodies": {
+      "min": 1
+    }
+  },
+  "max_dist": 1.0,
+  "min_dist": 0.0,
+  "target_kind": "plane_sheet",
+  "target_length": 10.0,
+  "target_width": 10.0,
+  "undeclared_field": "trigger_additionalProperties_rejection"
+}

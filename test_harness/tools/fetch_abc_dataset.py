@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch, verify, and sample official ABC dataset chunks."""
+"""Fetch, verify, and sample official ABC dataset chunks.
+
+Sample extraction defaults to a deterministic seeded per-chunk selection
+(``--sample-strategy seeded``) so ABC testing is not biased toward the head of
+each archive; ``--sample-strategy head`` reproduces the legacy first-N
+selection for rerunning historical lanes.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ import csv
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -31,6 +38,8 @@ FORMAT_EXTENSIONS = {
 RESUMABLE_CURL_RETURN_CODES = {18, 56}
 DOWNLOAD_BUFFER_BYTES = 1024 * 1024
 PROGRESS_SCHEMA_VERSION = 1
+DEFAULT_SAMPLE_SEED = 20260706
+SAMPLE_STRATEGIES = ("head", "seeded")
 
 
 class FetchError(RuntimeError):
@@ -85,6 +94,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--extract-mode", choices=["none", "sample", "full"], default="sample")
     parser.add_argument("--sample-count", type=int, default=50, help="Files per chunk/format for sample extraction")
+    parser.add_argument(
+        "--sample-strategy",
+        choices=list(SAMPLE_STRATEGIES),
+        default="seeded",
+        help="Sample selection per chunk: 'seeded' draws a deterministic seeded sample across the archive; "
+        "'head' takes the first N files (legacy behavior)",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=DEFAULT_SAMPLE_SEED,
+        help="Seed for --sample-strategy seeded; recorded in the plan, progress, and extraction markers",
+    )
     parser.add_argument("--run-discovery", action="store_true", help="Run discover_corpus.py over extracted STEP files")
     parser.add_argument(
         "--run-feature-profile", action="store_true", help="Run profile_cad_features.py after discovery"
@@ -149,6 +171,8 @@ class ProgressReporter:
             "plan_path": "",
             "summary_path": "",
             "dataset_index": "",
+            "sample_strategy": "",
+            "sample_seed": None,
             "download": {
                 "total_bytes": 0,
                 "completed_bytes": 0,
@@ -193,6 +217,8 @@ class ProgressReporter:
         self._state["out_root"] = str(out_root.resolve())
         self._state["download_root"] = str(downloads.resolve())
         self._state["plan_path"] = str((out_root / "abc_fetch_plan.json").resolve())
+        self._state["sample_strategy"] = str(plan.get("sample_strategy") or "")
+        self._state["sample_seed"] = plan.get("sample_seed")
         self._refresh_download_metrics()
         self._write(force=True)
 
@@ -294,6 +320,8 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "partial_path",
         "partial_size_bytes",
         "remaining_bytes",
+        "sample_strategy",
+        "sample_seed",
     ]
     with path.open("w", newline="", encoding="utf-8") as out_file:
         writer = csv.DictWriter(out_file, fieldnames=fieldnames)
@@ -798,6 +826,7 @@ def markdown_fetch_plan(plan: dict[str, Any]) -> str:
         f"- Download root: `{plan.get('download_root')}`",
         f"- Formats: `{', '.join(plan.get('formats', []))}`",
         f"- Chunks: `{plan.get('selected_chunk_count')}`",
+        f"- Sample extraction: strategy `{plan.get('sample_strategy')}` seed `{plan.get('sample_seed')}`",
         f"- Archives: `{plan.get('selected_archive_count')}`",
         f"- Total selected bytes: `{plan.get('total_bytes')}` ({plan.get('total_gib')} GiB)",
         f"- Existing archive bytes: `{plan.get('existing_bytes')}` ({plan.get('existing_gib')} GiB)",
@@ -828,6 +857,46 @@ def write_fetch_plan(out_root: Path, plan: dict[str, Any]) -> None:
     rows = [row for row in plan.get("archives", []) if isinstance(row, dict)]
     write_csv(out_root / "abc_fetch_plan.csv", rows)
     write_text(out_root / "abc_fetch_plan.md", markdown_fetch_plan(plan))
+
+
+def select_sample_files(
+    files: list[str],
+    *,
+    sample_count: int,
+    strategy: str,
+    seed: int,
+    chunk: int,
+    fmt: str,
+) -> list[str]:
+    """Choose the deterministic per-chunk sample, preserving the archive listing order.
+
+    ``head`` reproduces the legacy first-N selection. ``seeded`` draws from the
+    sorted member names with a seed bound to the chunk and format, so every
+    chunk/format is sampled independently and repeated runs select the same
+    files.
+    """
+
+    if sample_count >= len(files):
+        return list(files)
+    if strategy == "head":
+        return files[:sample_count]
+    chosen = set(random.Random(f"{seed}:{chunk}:{fmt}").sample(sorted(files), sample_count))
+    return [entry for entry in files if entry in chosen]
+
+
+def sample_mode_label(args: argparse.Namespace) -> str:
+    """Extraction identity used for marker paths and output directories.
+
+    ``head`` keeps the legacy ``sample<N>`` label so historical extractions are
+    reused; seeded samples include the seed so different strategies or seeds of
+    the same count never alias.
+    """
+
+    if args.extract_mode == "full":
+        return "full"
+    if args.sample_strategy == "head":
+        return f"sample{args.sample_count}"
+    return f"sample{args.sample_count}_seed{args.sample_seed}"
 
 
 def archive_list(archive_path: Path) -> list[str]:
@@ -1016,6 +1085,11 @@ def main() -> int:
             extracted_root = out_root / "extracted"
             reporter.phase("planning", "Building ABC fetch plan")
             plan = build_fetch_plan(out_root, downloads, formats, chunks, entries_by_format, sizes, md5s)
+            plan["sample_strategy"] = args.sample_strategy
+            plan["sample_seed"] = args.sample_seed
+            for row in plan["archives"]:
+                row["sample_strategy"] = args.sample_strategy
+                row["sample_seed"] = args.sample_seed
             write_fetch_plan(out_root, plan)
             reporter.configure(out_root, downloads, plan)
             summary_path = out_root / "abc_fetch_summary.json"
@@ -1036,6 +1110,8 @@ def main() -> int:
                         "existing_gib": plan["existing_gib"],
                         "missing_or_incomplete_count": plan["missing_or_incomplete_count"],
                     },
+                    "sample_strategy": args.sample_strategy,
+                    "sample_seed": args.sample_seed,
                 }
                 write_json(summary_path, summary)
                 reporter.completed(summary=summary_path, plan_only=True)
@@ -1101,8 +1177,19 @@ def main() -> int:
                         suffix = FORMAT_EXTENSIONS[fmt]
                         listing = archive_list(archive_path)
                         files = [entry for entry in listing if entry.lower().endswith(suffix)]
-                        include_files = files if args.extract_mode == "full" else files[: args.sample_count]
-                        mode_label = "full" if args.extract_mode == "full" else f"sample{args.sample_count}"
+                        include_files = (
+                            files
+                            if args.extract_mode == "full"
+                            else select_sample_files(
+                                files,
+                                sample_count=args.sample_count,
+                                strategy=args.sample_strategy,
+                                seed=args.sample_seed,
+                                chunk=chunk,
+                                fmt=fmt,
+                            )
+                        )
+                        mode_label = sample_mode_label(args)
                         out_dir = extracted_root / f"chunk_{chunk:04d}_{mode_label}"
                         marker_path = extraction_marker_path(out_root, archive_path, mode_label)
                         extract = reusable_extraction(
@@ -1123,18 +1210,19 @@ def main() -> int:
                             extract["archive_file_count"] = len(files)
                             extract["extracted_file_count"] = count_extracted_files(out_dir, suffix)
                             if extract["ok"] and extract["extracted_file_count"] >= len(include_files):
-                                write_json_atomic(
-                                    marker_path,
-                                    {
-                                        "completed_at": now_utc(),
-                                        "archive": archive_path.name,
-                                        "archive_md5": str(verify.get("md5") or expected_md5 or ""),
-                                        "archive_file_count": len(files),
-                                        "include_file_count": len(include_files),
-                                        "include_list": extract.get("include_list", ""),
-                                        "out": str(out_dir.resolve()),
-                                    },
-                                )
+                                marker: dict[str, Any] = {
+                                    "completed_at": now_utc(),
+                                    "archive": archive_path.name,
+                                    "archive_md5": str(verify.get("md5") or expected_md5 or ""),
+                                    "archive_file_count": len(files),
+                                    "include_file_count": len(include_files),
+                                    "include_list": extract.get("include_list", ""),
+                                    "out": str(out_dir.resolve()),
+                                }
+                                if args.extract_mode == "sample":
+                                    marker["sample_strategy"] = args.sample_strategy
+                                    marker["sample_seed"] = args.sample_seed
+                                write_json_atomic(marker_path, marker)
                         if not extract["ok"]:
                             command_failures += 1
                             if args.fail_on_command:
@@ -1215,6 +1303,8 @@ def main() -> int:
                 "full_dataset": bool(args.full_dataset),
                 "extract_mode": args.extract_mode,
                 "sample_count": args.sample_count,
+                "sample_strategy": args.sample_strategy,
+                "sample_seed": args.sample_seed,
                 "records": records,
                 "optional_commands": optional_commands,
                 "command_failures": command_failures,

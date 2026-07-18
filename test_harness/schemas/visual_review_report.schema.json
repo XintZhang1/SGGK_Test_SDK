@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SGGK Advisory Visual Review Report",
+  "description": "Advisory vision-model judgment of host-rendered case geometry previews. This output is evidence only: it never gates, approves, executes, or alters any candidate or verdict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "case_reviews", "overall_notes_zh_cn"],
+  "properties": {
+    "kind": {"const": "visual_review_report"},
+    "schema_version": {"const": 1},
+    "case_reviews": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "geometry_plausibility",
+          "view_consistency",
+          "misuse_flags",
+          "confidence",
+          "notes_zh_cn"
+        ],
+        "properties": {
+          "case_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+          "geometry_plausibility": {"enum": ["plausible", "suspect", "implausible"]},
+          "view_consistency": {"enum": ["consistent", "inconsistent", "unclear"]},
+          "misuse_flags": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {"enum": ["tool_misplaced", "scale_suspect", "empty_result", "view_mismatch", "other"]}
+          },
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "notes_zh_cn": {"type": "string", "maxLength": 500}
+        }
+      }
+    },
+    "overall_notes_zh_cn": {"type": "string", "maxLength": 1000}
+  }
+}

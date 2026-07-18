@@ -20,9 +20,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .client import CompletionOptions, OpenAICompatibleMessageClient, canonical_json_bytes
+from .client import (
+    ClientError,
+    CompletionOptions,
+    OpenAICompatibleMessageClient,
+    canonical_json_bytes,
+    prepare_images,
+)
 from .config import GatewayConfig
-from .contracts import ContractDiagnostic, ContractReport, response_schema_for_contract, validate_candidate
+from .contracts import (
+    ContractDiagnostic,
+    ContractReport,
+    normalize_visual_review_candidate,
+    response_schema_for_contract,
+    validate_candidate,
+)
 
 DEFAULT_SYSTEM_PROMPT = """You author bounded SGGK harness test descriptions.
 Return exactly one JSON object in choices[0].message.content.
@@ -32,6 +44,8 @@ Follow the task's output_contract exactly; deterministic local code validates th
 """
 
 SOURCE_TASK_TYPES = frozenset({"source_attack", "sggk_source_attack"})
+# Host-supplied geometry renders per task (e.g. advisory visual review).
+MAX_TASK_IMAGES = 8
 
 
 class GatewayError(ValueError):
@@ -165,6 +179,10 @@ class TaskSpec:
     manifest_path: str = ""
     allowed_campaign_profiles: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Host-supplied geometry renders (never model-derived). Each path goes
+    # through the same containment + SHA-256 binding discipline as prompts;
+    # the prepared image bytes never persist — only hashes and sizes do.
+    image_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -366,6 +384,19 @@ Fixed diagnostics:
                 "user_chars": len(prompt),
                 "user_sha256": _sha256_text(prompt),
             },
+            "images": {
+                "count": len(options.images),
+                "items": [
+                    {
+                        "path": _repo_relative(self.repo_root, Path(image.path)),
+                        "sha256": image.sha256,
+                        "mime": image.mime,
+                        "source_bytes": image.source_bytes,
+                        "prepared_bytes": image.prepared_bytes,
+                    }
+                    for image in options.images
+                ],
+            },
             "output_contract": task.output_contract,
             "allowed_campaign_profiles": task.allowed_campaign_profiles,
             "response_options": {
@@ -425,6 +456,8 @@ Fixed diagnostics:
             "error_kind": completion.error_kind,
             "response_mode": completion.final_mode,
             "usage": completion.usage,
+            "image_count": completion.image_count,
+            "image_sha256": list(completion.image_sha256),
             "contract": report.as_dict(),
             "promotion": {
                 "eligible": report.ok,
@@ -558,6 +591,8 @@ Fixed diagnostics:
             "finish_reason": completion.finish_reason,
             "final_mode": completion.final_mode,
             "usage": completion.usage,
+            "image_count": completion.image_count,
+            "image_sha256": list(completion.image_sha256),
             "events": completion.events,
             "provider_responses": completion.response_records,
         }
@@ -714,6 +749,18 @@ Fixed diagnostics:
             )
         run_id = _safe_id(run_id or self.new_run_id())
         task_root, output_path, formal_provenance_path = self._task_paths(task, run_id)
+        resolved_images: list[Path] = []
+        for raw_image in task.image_paths:
+            image_path = _inside(self.repo_root, raw_image, label="image_path")
+            if not image_path.is_file():
+                raise GatewayError(f"task image does not exist: {image_path}")
+            resolved_images.append(image_path)
+        if len(resolved_images) > MAX_TASK_IMAGES:
+            raise GatewayError(f"task carries too many images: {len(resolved_images)} > {MAX_TASK_IMAGES}")
+        try:
+            prepared_images = tuple(prepare_images(resolved_images, max_images=MAX_TASK_IMAGES))
+        except ClientError as exc:
+            raise GatewayError(f"task images fail the fixed budgets: {exc}") from exc
         result = GatewayRunResult(
             ok=False,
             task_id=task.task_id,
@@ -738,6 +785,9 @@ Fixed diagnostics:
         )
         if options.response_mode in {"auto", "json_schema"} and options.response_schema is None:
             options = replace(options, response_schema=response_schema_for_contract(task.output_contract))
+        # Images only ever come from containment-checked TaskSpec.image_paths;
+        # caller-supplied options cannot inject unprepared pixel data.
+        options = replace(options, images=prepared_images)
         prompt = task.prompt
         prior_attempt = 0
         last_diagnostics: list[dict[str, Any]] = []
@@ -759,6 +809,7 @@ Fixed diagnostics:
                 options=options,
             )
             elapsed = time.perf_counter() - started_perf
+            promotable_candidate = completion.candidate
             if completion.candidate is None:
                 report = ContractReport(
                     False,
@@ -769,8 +820,12 @@ Fixed diagnostics:
                 )
                 diagnostics = report.as_dict()["diagnostics"]
             else:
+                if isinstance(promotable_candidate, dict) and str(
+                    promotable_candidate.get("kind") or ""
+                ) == "visual_review_report":
+                    promotable_candidate = normalize_visual_review_candidate(promotable_candidate)
                 report = validate_candidate(
-                    completion.candidate,
+                    promotable_candidate,
                     task.output_contract,
                     allowed_campaign_profiles=task.allowed_campaign_profiles,
                     secret_values=self.config.secrets,
@@ -792,8 +847,8 @@ Fixed diagnostics:
             self._write_attempt(attempt_root, request_manifest, completion, report, provenance)
             result.attempts = attempt
             result.diagnostics = list(_redact(diagnostics, self.config.secrets))
-            if report.ok and isinstance(completion.candidate, dict):
-                candidate_hash = _sha256_bytes(canonical_json_bytes(completion.candidate))
+            if report.ok and isinstance(promotable_candidate, dict):
+                candidate_hash = _sha256_bytes(canonical_json_bytes(promotable_candidate))
                 formal_provenance = self._formal_provenance(
                     task,
                     run_id,
@@ -805,7 +860,7 @@ Fixed diagnostics:
                 )
                 try:
                     self._promote(
-                        completion.candidate,
+                        promotable_candidate,
                         formal_provenance,
                         output_path,
                         formal_provenance_path,

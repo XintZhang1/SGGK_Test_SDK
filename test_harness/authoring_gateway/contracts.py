@@ -15,9 +15,68 @@ SUPPORTED_KINDS = frozenset(
         "needs_harness_extension",
         "campaign_request",
         "api_plugin_candidate",
+        "visual_review_report",
     }
 )
 FILESYSTEM_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+VISUAL_REVIEW_PLAUSIBILITY = frozenset({"plausible", "suspect", "implausible"})
+VISUAL_REVIEW_CONSISTENCY = frozenset({"consistent", "inconsistent", "unclear"})
+VISUAL_REVIEW_MISUSE_FLAGS = frozenset(
+    {"tool_misplaced", "scale_suspect", "empty_result", "view_mismatch", "other"}
+)
+VISUAL_REVIEW_TOP_LEVEL_FIELDS = frozenset(
+    {"kind", "schema_version", "case_reviews", "overall_notes_zh_cn"}
+)
+VISUAL_REVIEW_CASE_FIELDS = frozenset(
+    {"case_id", "geometry_plausibility", "view_consistency", "misuse_flags", "confidence", "notes_zh_cn"}
+)
+# Advisory output must never smuggle execution authority into the harness.
+VISUAL_REVIEW_AUTHORITY_FIELDS = frozenset(
+    {
+        "command",
+        "commands",
+        "tool",
+        "runner",
+        "approve",
+        "approval",
+        "execute",
+        "execution",
+        "decision",
+        "gate",
+    }
+)
+VISUAL_REVIEW_MAX_CASES = 64
+VISUAL_REVIEW_MAX_FLAGS = 16
+VISUAL_REVIEW_MAX_CASE_NOTES_CHARS = 500
+VISUAL_REVIEW_MAX_OVERALL_NOTES_CHARS = 1000
+
+
+def normalize_visual_review_candidate(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Deterministically drop null / non-string misuse_flags entries.
+
+    Fixed host-side normalization for a known vision-model quirk
+    (``"misuse_flags": [null]``); every other field is left untouched and the
+    raw candidate remains preserved in the attempt evidence.
+    """
+
+    candidate = dict(value)
+    reviews = candidate.get("case_reviews")
+    if isinstance(reviews, list):
+        normalized_reviews: list[Any] = []
+        for item in reviews:
+            if not isinstance(item, dict):
+                normalized_reviews.append(item)
+                continue
+            entry = dict(item)
+            flags = entry.get("misuse_flags")
+            if isinstance(flags, list):
+                entry["misuse_flags"] = [
+                    flag for flag in flags if isinstance(flag, str) and flag.strip()
+                ]
+            normalized_reviews.append(entry)
+        candidate["case_reviews"] = normalized_reviews
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -299,7 +358,7 @@ def _validate_cluster_seed(candidate: Mapping[str, Any], diagnostics: list[Contr
                     f"Set {key} using the source predicate represented by this seed.",
                 )
             )
-    if not isinstance(candidate.get("contact_value"), (int, float)) or isinstance(
+    if not isinstance(candidate.get("contact_value"), int | float) or isinstance(
         candidate.get("contact_value"), bool
     ):
         diagnostics.append(
@@ -404,11 +463,202 @@ def _validate_api_plugin_candidate(
                     "Return the complete fixed-archetype plugin candidate JSON.",
                 )
             )
+
+
+def _validate_visual_review_report(
+    candidate: Mapping[str, Any],
+    diagnostics: list[ContractDiagnostic],
+) -> None:
+    """Validate advisory vision-review output; it carries no execution authority."""
+
+    unknown_top_level = sorted(str(key) for key in candidate if key not in VISUAL_REVIEW_TOP_LEVEL_FIELDS)
+    if unknown_top_level:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_FIELDS_UNKNOWN",
+                "$",
+                f"visual_review_report contains forbidden or unknown fields: {unknown_top_level}.",
+                "Use only kind, schema_version, case_reviews, and overall_notes_zh_cn.",
+            )
+        )
+    authority_fields = sorted(str(key) for key in candidate if str(key) in VISUAL_REVIEW_AUTHORITY_FIELDS)
+    if authority_fields:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_AUTHORITY_FIELD_FORBIDDEN",
+                "$",
+                f"visual_review_report must not carry execution-authority fields: {authority_fields}.",
+                "Visual review is advisory only; remove approval/execution fields.",
+            )
+        )
+    if candidate.get("schema_version") != 1:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_SCHEMA_VERSION_INVALID",
+                "$.schema_version",
+                "visual_review_report requires schema_version 1.",
+                "Set schema_version to 1.",
+                1,
+            )
+        )
+    reviews = candidate.get("case_reviews")
+    if not isinstance(reviews, list) or not reviews:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_CASES_MISSING",
+                "$.case_reviews",
+                "visual_review_report requires a non-empty case_reviews array.",
+                "Return one review object per inspected case.",
+            )
+        )
+        reviews = []
+    elif len(reviews) > VISUAL_REVIEW_MAX_CASES:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_CASE_LIMIT",
+                "$.case_reviews",
+                f"A single visual review may contain at most {VISUAL_REVIEW_MAX_CASES} case reviews.",
+                "Split the review across multiple bounded tasks.",
+            )
+        )
+    for index, review in enumerate(reviews if isinstance(reviews, list) else []):
+        path = f"$.case_reviews[{index}]"
+        if not isinstance(review, dict):
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CASE_NOT_OBJECT",
+                    path,
+                    "Each case review must be an object.",
+                    "Replace the entry with a case review object.",
+                )
+            )
+            continue
+        unknown_fields = sorted(str(key) for key in review if key not in VISUAL_REVIEW_CASE_FIELDS)
+        if unknown_fields:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CASE_FIELDS_UNKNOWN",
+                    path,
+                    f"Case review contains forbidden or unknown fields: {unknown_fields}.",
+                    "Use only case_id, geometry_plausibility, view_consistency, misuse_flags, confidence, notes_zh_cn.",
+                )
+            )
+        case_authority = sorted(str(key) for key in review if str(key) in VISUAL_REVIEW_AUTHORITY_FIELDS)
+        if case_authority:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_AUTHORITY_FIELD_FORBIDDEN",
+                    path,
+                    f"Case review must not carry execution-authority fields: {case_authority}.",
+                    "Visual review is advisory only; remove approval/execution fields.",
+                )
+            )
+        if not _nonempty_string(review.get("case_id")):
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CASE_ID_MISSING",
+                    f"{path}.case_id",
+                    "Each case review requires a non-empty case_id.",
+                    "Echo the case_id from the prompt's image listing.",
+                )
+            )
+        else:
+            _validate_case_id(review.get("case_id"), f"{path}.case_id", diagnostics)
+        plausibility = review.get("geometry_plausibility")
+        if plausibility not in VISUAL_REVIEW_PLAUSIBILITY:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_PLAUSIBILITY_INVALID",
+                    f"{path}.geometry_plausibility",
+                    "geometry_plausibility must be plausible, suspect, or implausible.",
+                    "Choose one of the declared plausibility values.",
+                    sorted(VISUAL_REVIEW_PLAUSIBILITY),
+                )
+            )
+        consistency = review.get("view_consistency")
+        if consistency not in VISUAL_REVIEW_CONSISTENCY:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CONSISTENCY_INVALID",
+                    f"{path}.view_consistency",
+                    "view_consistency must be consistent, inconsistent, or unclear.",
+                    "Choose one of the declared consistency values.",
+                    sorted(VISUAL_REVIEW_CONSISTENCY),
+                )
+            )
+        flags = review.get("misuse_flags")
+        if not isinstance(flags, list) or any(not isinstance(item, str) for item in flags):
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_FLAGS_INVALID",
+                    f"{path}.misuse_flags",
+                    "misuse_flags must be an array of declared flag strings (empty allowed).",
+                    "Use an array of declared misuse flag strings.",
+                    sorted(VISUAL_REVIEW_MISUSE_FLAGS),
+                )
+            )
+        else:
+            if len(flags) > VISUAL_REVIEW_MAX_FLAGS:
+                diagnostics.append(
+                    _error(
+                        "VISUAL_REVIEW_FLAGS_LIMIT",
+                        f"{path}.misuse_flags",
+                        f"misuse_flags may contain at most {VISUAL_REVIEW_MAX_FLAGS} entries.",
+                        "Keep only the most relevant flags.",
+                    )
+                )
+            unknown_flags = sorted(item for item in flags if item not in VISUAL_REVIEW_MISUSE_FLAGS)
+            if unknown_flags:
+                diagnostics.append(
+                    _error(
+                        "VISUAL_REVIEW_FLAGS_UNKNOWN",
+                        f"{path}.misuse_flags",
+                        f"Unknown misuse flags: {unknown_flags}.",
+                        "Use only the declared misuse flag values.",
+                        sorted(VISUAL_REVIEW_MISUSE_FLAGS),
+                    )
+                )
+        confidence = review.get("confidence")
+        if (
+            not isinstance(confidence, int | float)
+            or isinstance(confidence, bool)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CONFIDENCE_INVALID",
+                    f"{path}.confidence",
+                    "confidence must be a number between 0 and 1.",
+                    "Return a bounded numeric confidence.",
+                )
+            )
+        notes = review.get("notes_zh_cn")
+        if not isinstance(notes, str) or len(notes) > VISUAL_REVIEW_MAX_CASE_NOTES_CHARS:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_CASE_NOTES_INVALID",
+                    f"{path}.notes_zh_cn",
+                    f"notes_zh_cn must be a string of at most {VISUAL_REVIEW_MAX_CASE_NOTES_CHARS} characters.",
+                    "Keep the per-case Chinese note within the bound.",
+                )
+            )
+    overall = candidate.get("overall_notes_zh_cn")
+    if not isinstance(overall, str) or len(overall) > VISUAL_REVIEW_MAX_OVERALL_NOTES_CHARS:
+        diagnostics.append(
+            _error(
+                "VISUAL_REVIEW_OVERALL_NOTES_INVALID",
+                "$.overall_notes_zh_cn",
+                f"overall_notes_zh_cn must be a string of at most {VISUAL_REVIEW_MAX_OVERALL_NOTES_CHARS} characters.",
+                "Keep the overall Chinese note within the bound.",
+            )
+        )
+
+
 def _schema_type_matches(value: Any, expected: str) -> bool:
     if expected == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return isinstance(value, int | float) and not isinstance(value, bool)
     if expected == "boolean":
         return isinstance(value, bool)
     if expected == "string":
@@ -495,10 +745,10 @@ def _validate_typed_args(
                     enum,
                 )
             )
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, int | float) and not isinstance(value, bool):
             minimum = field_schema.get("minimum")
             maximum = field_schema.get("maximum")
-            if isinstance(minimum, (int, float)) and value < minimum:
+            if isinstance(minimum, int | float) and value < minimum:
                 diagnostics.append(
                     _error(
                         "CAMPAIGN_ARG_BELOW_MINIMUM",
@@ -507,7 +757,7 @@ def _validate_typed_args(
                         "Use a value within the bounded profile range.",
                     )
                 )
-            if isinstance(maximum, (int, float)) and value > maximum:
+            if isinstance(maximum, int | float) and value > maximum:
                 diagnostics.append(
                     _error(
                         "CAMPAIGN_ARG_ABOVE_MAXIMUM",
@@ -743,6 +993,8 @@ def validate_candidate(
         _validate_campaign_request(candidate, diagnostics, allowed_campaign_profiles or {})
     elif kind == "api_plugin_candidate":
         _validate_api_plugin_candidate(candidate, diagnostics)
+    elif kind == "visual_review_report":
+        _validate_visual_review_report(candidate, diagnostics)
     return ContractReport(
         not any(item.severity == "error" for item in diagnostics),
         kind=kind,

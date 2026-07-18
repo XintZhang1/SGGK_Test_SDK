@@ -10,6 +10,7 @@ from .config import (
     DEFAULT_PROFILE,
     SILICONFLOW_DEFAULT_BASE_URL,
     SILICONFLOW_DEFAULT_MODEL,
+    SILICONFLOW_VISION_DEFAULT_MODEL,
     ConfigError,
     GatewayConfig,
     ProfileSpec,
@@ -28,6 +29,7 @@ __all__ = [
     "ProfileSpec",
     "SILICONFLOW_DEFAULT_BASE_URL",
     "SILICONFLOW_DEFAULT_MODEL",
+    "SILICONFLOW_VISION_DEFAULT_MODEL",
     "TaskSpec",
     "load_gateway_config",
 ]

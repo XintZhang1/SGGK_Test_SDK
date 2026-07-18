@@ -11,7 +11,6 @@ from test_harness.tools.harness_capabilities import load_capabilities, supported
 from test_harness.tools.plugin_catalog import PluginCatalogError, discover_plugins
 from test_harness.tools.validate_recipe import validate_file
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = REPO_ROOT / "test_harness/api_plugins"
 
@@ -23,7 +22,8 @@ def test_pilot_new_api_is_discovered_without_base_registry_entry() -> None:
     assert "api_combine_bodies" not in base["apis"]
 
     records = discover_plugins()
-    assert [record.api for record in records] == ["api_combine_bodies"]
+    discovered_apis = [record.api for record in records]
+    assert "api_combine_bodies" in discovered_apis
     capabilities = load_capabilities()
     assert "api_combine_bodies" in supported_recipe_apis(capabilities)
     assert capabilities["apis"]["api_combine_bodies"]["plugin"]["hashes"][
@@ -42,11 +42,12 @@ def test_plugin_recipe_uses_its_strict_schema() -> None:
 
 def test_registry_generator_emits_adapter_entry_and_manifest_hash(tmp_path: Path) -> None:
     index = generate(PLUGIN_ROOT, tmp_path)
-    assert index["plugin_count"] == 1
+    assert index["plugin_count"] >= 1
     entries = (tmp_path / "generated_plugin_entries.inc").read_text(encoding="utf-8")
     metadata = (tmp_path / "generated_plugin_metadata.inc").read_text(encoding="utf-8")
     assert '"api_combine_bodies", &RunApiCombineBodiesPlugin' in entries
-    assert index["plugins"][0]["hashes"]["manifest_sha256"] in metadata
+    combine = next(plugin for plugin in index["plugins"] if plugin["api"] == "api_combine_bodies")
+    assert combine["hashes"]["manifest_sha256"] in metadata
 
 
 def test_plugin_manifest_path_traversal_fails_closed(tmp_path: Path) -> None:

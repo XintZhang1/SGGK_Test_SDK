@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from test_harness.authoring_gateway.config import PROFILE_SPECS
+from test_harness.authoring_gateway.config import PROFILE_SPECS, ConfigError, load_gateway_config
 from test_harness.authoring_gateway.review_comment import defang_unsafe_outline_text
 from test_harness.orchestration.session_memory import gather_prior_review_memory
 from test_harness.orchestration.source_discovery import (
@@ -107,6 +108,10 @@ EXECUTION_FEEDBACK_MAX_PLUGIN_STEPS = 8
 EXECUTION_FEEDBACK_MAX_CODES_PER_STEP = 8
 EXECUTION_FEEDBACK_MAX_DIAGNOSTIC_CODES = 24
 EXECUTION_FEEDBACK_MAX_TAIL_SCAN_CHARS = 16_000
+VISUAL_REVIEW_TIMEOUT_SECONDS = 600
+VISUAL_REVIEW_MAX_CASES = 4
+VISUAL_REVIEW_CASE_ROWS = 24
+VISUAL_REVIEW_MAX_FLAGS = 8
 EXECUTION_REVISION_CAUSES = frozenset(
     {
         "harness_adapter_candidate_requires_repair",
@@ -254,6 +259,74 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise WorkflowError(f"JSON root must be an object: {path}")
     return value
+
+
+PARASOLID_ANALYSIS_TIMEOUT_SECONDS = 600
+PARASOLID_EVIDENCE_MAX_FILE_BYTES = 1024 * 1024
+PARASOLID_ATTENTION_CASE_LIMIT = 24
+PARASOLID_ATTENTION_REASON_LIMIT = 4
+PARASOLID_ATTENTION_REASON_CHARS = 120
+
+
+def _copy_parasolid_evidence(compare_root: Path, cases_root: Path) -> int:
+    """Copy per-case comparison evidence into the executed case capsules.
+
+    Only ``*.json``/``*.md`` files up to 1 MiB are copied and existing files
+    are never overwritten, so later triage/bundle/investigation passes can
+    see the verdicts without coupling to the compare root.
+    """
+
+    copied = 0
+    if not compare_root.is_dir() or not cases_root.is_dir():
+        return copied
+    for case_dir in sorted(compare_root.iterdir(), key=lambda item: item.name):
+        if not case_dir.is_dir():
+            continue
+        source_dir = case_dir / "comparison"
+        if not source_dir.is_dir():
+            continue
+        target_dir = cases_root / case_dir.name / "comparison"
+        for source in sorted(source_dir.iterdir(), key=lambda item: item.name):
+            if not source.is_file() or source.suffix.lower() not in {".json", ".md"}:
+                continue
+            try:
+                if source.stat().st_size > PARASOLID_EVIDENCE_MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            target = target_dir / source.name
+            if target.exists():
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied += 1
+    return copied
+
+
+def _parasolid_attention_rows(analysis: Any) -> list[dict[str, Any]]:
+    """Project bounded attention-case rows out of parasolid_analysis.json."""
+
+    entries = analysis.get("attention_cases") if isinstance(analysis, Mapping) else None
+    rows: list[dict[str, Any]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, Mapping):
+            continue
+        raw_reasons = entry.get("reasons")
+        reasons = [
+            str(reason)[:PARASOLID_ATTENTION_REASON_CHARS]
+            for reason in raw_reasons[:PARASOLID_ATTENTION_REASON_LIMIT]
+        ] if isinstance(raw_reasons, list) else []
+        rows.append(
+            {
+                "case_id": str(entry.get("case_id") or ""),
+                "verdict": str(entry.get("verdict") or ""),
+                "cause_class": str(entry.get("cause_class") or ""),
+                "reasons": reasons,
+            }
+        )
+        if len(rows) >= PARASOLID_ATTENTION_CASE_LIMIT:
+            break
+    return rows
 
 
 def _safe_id(value: str) -> str:
@@ -531,7 +604,7 @@ def _sanitize_outline(value: Any, *, depth: int = 0) -> Any:
         if len(value) > 4000:
             return value[:4000] + "<truncated>"
         return value
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, bool | int | float):
         return value
     return str(value)[:1000]
 
@@ -1006,6 +1079,13 @@ class HarnessWorkflow:
         if self.profile != "intranet":
             self.sdk_dir = None
             self.source_root = None
+        # Host-local probe copy of the SDK directory.  It is retained on every
+        # profile ONLY for local reads whose parsed public-interface results
+        # (normalized signature, module-relative header, bounded Doxygen brief)
+        # may enter a prompt; raw header text and the directory itself never do.
+        self._sdk_probe_dir = (
+            Path(sdk_dir).resolve() if sdk_dir and Path(sdk_dir).is_dir() else self.sdk_dir
+        )
         self.sdk_dir_identity = path_identity(self.sdk_dir)
         self.source_root_identity = path_identity(self.source_root)
         raw_campaign_dataset = str(getattr(runtime, "campaign_dataset", "") or "").strip()
@@ -1355,7 +1435,7 @@ class HarnessWorkflow:
         consistent = sum(1 for case in cases if case.get("verdict") == "both_correct")
         attention = len(cases) - consistent
         report_path = out_root / "parasolid_comparison.zh-CN.md"
-        return {
+        result: dict[str, Any] = {
             "ran": True,
             "ok": True,
             "total": summary.get("total_cases"),
@@ -1364,6 +1444,234 @@ class HarnessWorkflow:
             "verdict_counts": summary.get("verdict_counts"),
             "report_path": _repo_relative(self.repo_root, report_path) if report_path.is_file() else "",
             "batch_summary_path": _repo_relative(self.repo_root, summary_path),
+        }
+        notes: list[str] = []
+        analysis_path = out_root / "parasolid_analysis.json"
+        analysis_tool = self.repo_root / "test_harness" / "tools" / "classify_parasolid_divergence.py"
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(analysis_tool),
+                    "--compare-root",
+                    str(out_root),
+                    "--out",
+                    str(out_root),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=PARASOLID_ANALYSIS_TIMEOUT_SECONDS,
+                check=False,
+                shell=False,
+            )
+            if not analysis_path.is_file():
+                notes.append(f"差异分析未产出（rc={completed.returncode}）")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            notes.append(f"差异分析执行失败：{exc}")
+        try:
+            analysis = _read_json(analysis_path) if analysis_path.is_file() else {}
+        except (OSError, json.JSONDecodeError, WorkflowError):
+            analysis = {}
+            notes.append("差异分析结果不可解析")
+        result["analysis_path"] = _repo_relative(self.repo_root, analysis_path) if analysis_path.is_file() else ""
+        result["attention_cases"] = _parasolid_attention_rows(analysis)
+        try:
+            _copy_parasolid_evidence(out_root, cases_root)
+        except (OSError, shutil.Error) as exc:
+            notes.append(f"对比证据复制失败：{exc}")
+        if notes:
+            result["note"] = "；".join(notes)
+        return result
+
+    def _run_visual_review(
+        self,
+        session: Mapping[str, Any],
+        execution_root: Path,
+        execution_artifacts: Mapping[str, Any],
+        passed: bool,
+    ) -> dict[str, Any]:
+        """Advisory vision-model review of executed case geometry previews.
+
+        Never raises and never feeds back into gating, approval, retry, or
+        execution feedback: the result is stored as bounded session evidence
+        only. Skips cleanly (note only) when the vision profile or API key is
+        not configured, and never sends anything for non-public sessions.
+        """
+
+        if not passed:
+            return {"ran": False, "note": "执行未通过，跳过视觉模型复核"}
+        if str(session.get("data_classification") or "") != "public_interface":
+            return {"ran": False, "note": "非公开接口会话，几何预览不发送外网视觉模型"}
+        if self.profile_category != "external":
+            return {"ran": False, "note": "当前 profile 不配置外网视觉模型，跳过视觉复核"}
+        cases_ref = str(execution_artifacts.get("cases") or "")
+        if not cases_ref:
+            return {"ran": False, "note": "无执行 cases，跳过视觉复核"}
+        try:
+            cases_root = _repo_path(self.repo_root, cases_ref, label="execution cases")
+            cases_root.resolve().relative_to(execution_root.resolve())
+        except (OSError, ValueError, WorkflowError):
+            return {"ran": False, "note": "执行 cases 路径无效"}
+        if not cases_root.is_dir():
+            return {"ran": False, "note": "执行 cases 目录不存在"}
+        runtime_config = getattr(self.runtime, "config", None)
+        api_key = str(getattr(runtime_config, "api_key", "") or "")
+        try:
+            vision_config = load_gateway_config(
+                "siliconflow_vision",
+                environ={"SILICONFLOW_API_KEY": api_key},
+            )
+        except ConfigError as exc:
+            return {"ran": False, "note": f"视觉模型未配置（{exc}），跳过视觉复核"}
+        out_root = execution_root / "visual_review"
+        tool = self.repo_root / "test_harness" / "tools" / "run_visual_review.py"
+        command = [
+            sys.executable,
+            str(tool),
+            "--cases-root",
+            str(cases_root),
+            "--profile",
+            "siliconflow_vision",
+            "--out",
+            str(out_root),
+            "--max-cases",
+            str(VISUAL_REVIEW_MAX_CASES),
+            "--render-missing",
+        ]
+        env = dict(os.environ)
+        env["SILICONFLOW_API_KEY"] = vision_config.api_key
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=VISUAL_REVIEW_TIMEOUT_SECONDS,
+                check=False,
+                shell=False,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ran": True, "ok": False, "note": f"视觉复核执行失败：{exc}"}
+        report_path = out_root / "visual_review_report.json"
+        if completed.returncode != 0 or not report_path.is_file():
+            tail = (completed.stderr or completed.stdout or "").strip()[-200:]
+            return {
+                "ran": True,
+                "ok": False,
+                "note": f"视觉复核未产出报告（rc={completed.returncode}）：{tail}",
+            }
+        try:
+            report = _read_json(report_path)
+        except (OSError, json.JSONDecodeError, WorkflowError):
+            return {"ran": True, "ok": False, "note": "视觉复核报告不可解析"}
+        raw_reviews = report.get("case_reviews")
+        reviews = (
+            [item for item in raw_reviews if isinstance(item, Mapping)]
+            if isinstance(raw_reviews, list)
+            else []
+        )
+        plausible = sum(1 for item in reviews if item.get("geometry_plausibility") == "plausible")
+        suspect = sum(1 for item in reviews if item.get("geometry_plausibility") == "suspect")
+        implausible = sum(1 for item in reviews if item.get("geometry_plausibility") == "implausible")
+        flag_total = 0
+        rows: list[dict[str, Any]] = []
+        for item in reviews:
+            raw_flags = item.get("misuse_flags")
+            item_flags = (
+                [str(flag) for flag in raw_flags if isinstance(flag, str)][:VISUAL_REVIEW_MAX_FLAGS]
+                if isinstance(raw_flags, list)
+                else []
+            )
+            flag_total += len(item_flags)
+            if len(rows) < VISUAL_REVIEW_CASE_ROWS:
+                rows.append(
+                    {
+                        "case_id": str(item.get("case_id") or ""),
+                        "plausibility": str(item.get("geometry_plausibility") or ""),
+                        "flags": item_flags,
+                    }
+                )
+        markdown_path = out_root / "visual_review_report.zh-CN.md"
+        return {
+            "ran": True,
+            "ok": True,
+            "report_path": _repo_relative(self.repo_root, report_path),
+            "markdown_path": (
+                _repo_relative(self.repo_root, markdown_path) if markdown_path.is_file() else ""
+            ),
+            "summary": {
+                "reviewed": len(reviews),
+                "plausible": plausible,
+                "suspect": suspect,
+                "implausible": implausible,
+                "flags": flag_total,
+            },
+            "cases": rows,
+        }
+
+    def _run_plugin_promotion(
+        self,
+        execution_root: Path,
+        execution: Mapping[str, Any],
+        passed: bool,
+    ) -> dict[str, Any]:
+        """Promote an attested api_adaptation plugin build into the catalog.
+
+        Best-effort and never raises: a promotion failure is reported as a
+        note so it cannot break the session state machine; the build and smoke
+        evidence remains valid regardless.
+        """
+
+        artifacts = execution.get("artifacts") if isinstance(execution.get("artifacts"), Mapping) else {}
+        report_ref = str(artifacts.get("plugin_build_report") or "")
+        if not report_ref:
+            return {"ran": False, "ok": False, "api": "", "note": "非 API 插件适配执行，跳过插件注册"}
+        if not passed:
+            return {"ran": False, "ok": False, "api": "", "note": "执行未通过，跳过插件注册"}
+        try:
+            report_path = _repo_path(self.repo_root, report_ref, label="plugin_build_report")
+        except (OSError, WorkflowError):
+            return {"ran": True, "ok": False, "api": "", "note": "plugin_build_report 路径无效"}
+        out_path = execution_root / "plugin_promotion.json"
+        tool = self.repo_root / "test_harness" / "tools" / "promote_api_plugin.py"
+        command = [
+            sys.executable,
+            str(tool),
+            "--build-report",
+            str(report_path),
+            "--repo-root",
+            str(self.repo_root),
+            "--report",
+            str(out_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ran": True, "ok": False, "api": "", "note": f"插件注册执行失败：{exc}"}
+        try:
+            payload = _read_json(out_path) if out_path.is_file() else {}
+        except (OSError, json.JSONDecodeError, WorkflowError):
+            payload = {}
+        ok = completed.returncode == 0 and bool(payload.get("ok"))
+        api = str(payload.get("api") or "")
+        note = str(
+            payload.get("summary")
+            or "; ".join(str(item) for item in payload.get("errors", [])[:3])
+            or completed.stderr[-200:]
+        )
+        return {
+            "ran": True,
+            "ok": ok,
+            "api": api,
+            "note": note,
+            "report_path": _repo_relative(self.repo_root, out_path) if out_path.is_file() else "",
         }
 
     def _build_execution_feedback(
@@ -1573,6 +1881,88 @@ class HarnessWorkflow:
             self._save_session(session, paths)
             return self._generate_round(session, paths, resolution, previous=None, interpretation=None)
 
+    def _api_adaptation_binding(
+        self,
+        resolution: Mapping[str, Any],
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve an extension_backlog route to a fixed-archetype adaptation contract.
+
+        Header declarations are read host-locally on ANY profile; raw header
+        text never leaves the host.  Only the normalized public-interface
+        signature enters the contract and prompt.  Returns ``None`` (caller
+        keeps the interface-design backlog path) when the declaration set is
+        missing, unmappable, or ambiguous.
+        """
+
+        import sys
+
+        tools_root = self.repo_root / "test_harness" / "tools"
+        if str(tools_root) not in sys.path:
+            sys.path.insert(0, str(tools_root))
+        from api_archetype_mapping import build_intake
+
+        from test_harness.orchestration.public_doc_discovery import (
+            discover_public_doc_evidence,
+        )
+        from test_harness.tools.api_adaptation_contract import (
+            build_adaptation_contract,
+            sha256_json,
+        )
+
+        function_name = str(resolution.get("resolved_api") or "")
+        if not function_name or function_name == "needs_harness_extension":
+            return None
+        declarations = resolution.get("declarations")
+        if not isinstance(declarations, list) or not declarations:
+            probe_dir = self._sdk_probe_dir or self.sdk_dir
+            include_root = probe_dir / "include" if probe_dir is not None else None
+            try:
+                declarations = discover_header_declarations(
+                    str(resolution.get("requested_public_function") or function_name),
+                    include_root,
+                    limit=8,
+                )
+            except SourceDiscoveryError:
+                return None
+        candidates: list[tuple[str, int, dict[str, Any]]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in declarations:
+            if not isinstance(item, Mapping):
+                continue
+            declaration = str(item.get("declaration") or "")
+            header = str(item.get("header") or "")
+            identity = (declaration, header)
+            if not declaration or identity in seen:
+                continue
+            seen.add(identity)
+            intake = build_intake(function_name, declaration, header, request_id)
+            if intake is not None:
+                line = item.get("line")
+                candidates.append((header, int(line) if isinstance(line, int) else 0, intake))
+        # Deterministic disambiguation: overloads mapping to the SAME fixed
+        # archetype collapse to their first declaration in (header, line)
+        # order — the contract binds that exact signature by hash, and the
+        # review round shows it.  Overload sets spanning different archetypes
+        # (or no mappable declaration at all) stay on the interface-design
+        # backlog path.
+        candidates.sort(key=lambda entry: (entry[0].casefold(), entry[1]))
+        archetypes = {str(entry[2].get("adapter_archetype") or "") for entry in candidates}
+        if not candidates or len(archetypes) != 1:
+            return None
+        intake = candidates[0][2]
+        contract = build_adaptation_contract(intake)
+        probe_dir = self._sdk_probe_dir or self.sdk_dir
+        docs_root = probe_dir.parent / "docs" / "html" if probe_dir is not None else None
+        doc_evidence = discover_public_doc_evidence(function_name, docs_root)
+        return {
+            "contract": contract,
+            "contract_sha256": sha256_json(contract),
+            "doc_evidence": doc_evidence,
+            "intake": intake,
+            "overload_count": len(candidates),
+        }
+
     def _build_round_files(
         self,
         session: Mapping[str, Any],
@@ -1600,11 +1990,19 @@ class HarnessWorkflow:
         round_root = paths.round_root(number)
         round_root.mkdir(parents=True, exist_ok=False)
         task_id = _safe_id(f"{session['session_id']}_r{number:04d}")
+        # Resolve the fixed-archetype adaptation binding before building the
+        # form so raw header declarations never reach the prompt: the contract
+        # carries only the normalized public-interface signature.
+        adaptation_binding: dict[str, Any] | None = None
+        if str(resolution.get("route") or "") == "extension_backlog":
+            adaptation_binding = self._api_adaptation_binding(resolution, task_id)
         form = build_internal_form(
             resolution,
             self.capabilities,
             request_id=task_id,
         )
+        if adaptation_binding is not None:
+            form["sdk_source_refs"] = []
         if number == 1 and bool(session.get("use_memory", self.use_memory)):
             memory = gather_prior_review_memory(
                 self.sessions_root,
@@ -1637,14 +2035,32 @@ class HarnessWorkflow:
         task = build_task(form_path, form, warnings)
         expected_output = round_root / "candidate" / "candidate.json"
         is_extension_backlog = str(resolution.get("route") or "") == "extension_backlog"
+        # A checked-in plugin already *is* the harness extension for this API;
+        # the escape hatch would only let the model dodge producing runnable recipes.
+        extension_hatch = str(resolution.get("route") or "") != "checked_plugin_form"
+        adaptation_prompt = adaptation_binding is not None
         if is_extension_backlog:
-            from test_harness.tools.build_api_test_task import render_interface_design_prompt
+            if adaptation_prompt:
+                from test_harness.tools.build_api_test_task import render_api_adaptation_prompt
 
-            prompt = render_interface_design_prompt(form)
+                prompt = render_api_adaptation_prompt(
+                    adaptation_binding["contract"],
+                    adaptation_binding["doc_evidence"],
+                    form,
+                )
+            else:
+                from test_harness.tools.build_api_test_task import render_interface_design_prompt
+
+                prompt = render_interface_design_prompt(form)
         else:
-            prompt = interface_prompt(task, form, _repo_relative(self.repo_root, expected_output))
+            prompt = interface_prompt(
+                task,
+                form,
+                _repo_relative(self.repo_root, expected_output),
+                extension_hatch=extension_hatch,
+            )
         preferred = (task.get("api_guidance") or {}).get("preferred_format")
-        output_contract = contract_for(preferred)
+        output_contract = contract_for(preferred, extension_hatch=extension_hatch)
         task_type = "interface_form"
         if is_extension_backlog:
             # The interface-design subagent designs support for the unknown API;
@@ -1655,6 +2071,16 @@ class HarnessWorkflow:
                 "kind_field": "kind",
                 "allowed_kinds": ["needs_harness_extension"],
             }
+            if adaptation_binding is not None:
+                # A registered fixed archetype matches the parsed signature: the
+                # model returns one bounded adapter spec that host gates turn
+                # into a validated, built, smoke-proven plugin.
+                task_type = "api_adaptation"
+                output_contract = {
+                    "type": "json_object",
+                    "kind_field": "kind",
+                    "allowed_kinds": ["api_plugin_candidate"],
+                }
         source_metadata: dict[str, Any] = {
             "provider_profile": self.profile,
             "provider_profile_category": self.profile_category,
@@ -1802,6 +2228,16 @@ class HarnessWorkflow:
             )
         prompt_path = round_root / "prompt" / "authoring_prompt.md"
         _write_text(prompt_path, prompt)
+        adaptation_metadata: dict[str, Any] = {}
+        if adaptation_binding is not None:
+            contract = adaptation_binding["contract"]
+            adaptation_metadata = {
+                "target_api": str(contract["target_api"]),
+                "adapter_archetype": str(contract["adapter_archetype"]),
+                "intake_sha256": str(contract["intake_sha256"]),
+                "adaptation_contract": contract,
+                "adaptation_contract_sha256": str(adaptation_binding["contract_sha256"]),
+            }
         manifest = {
             "schema_version": 1,
             "generated_at": _utc_now(),
@@ -1817,7 +2253,11 @@ class HarnessWorkflow:
                     "expected_output_path": _repo_relative(self.repo_root, expected_output),
                     "output_contract": output_contract,
                     "target_api": form["target_api"],
-                    "interface_family": task.get("interface_family", ""),
+                    "interface_family": (
+                        "api_adaptation"
+                        if adaptation_binding is not None
+                        else task.get("interface_family", "")
+                    ),
                     "run_profile_id": task.get("run_profile_id", ""),
                     "allowed_campaign_profiles": campaign_profiles_for(task),
                     "review_required_before_execute": True,
@@ -1825,6 +2265,7 @@ class HarnessWorkflow:
                     "harness_round_number": number,
                     "approval_attestation_path": "",
                     **source_metadata,
+                    **adaptation_metadata,
                 }
             ],
         }
@@ -2724,6 +3165,10 @@ class HarnessWorkflow:
         execution_artifacts = execution.get("artifacts") if isinstance(execution.get("artifacts"), Mapping) else {}
         parasolid = self._run_parasolid_comparison(execution_root, execution_artifacts)
         session["parasolid_comparison"] = parasolid
+        promotion = self._run_plugin_promotion(execution_root, execution, passed)
+        session["promotion"] = promotion
+        visual_review = self._run_visual_review(session, execution_root, execution_artifacts, passed)
+        session["visual_review"] = visual_review
         report = execution_root / "final_report.zh-CN.md"
         self._write_final_report(
             report,
@@ -2733,6 +3178,8 @@ class HarnessWorkflow:
             task_result=task_result if isinstance(task_result, Mapping) else {},
             passed=passed,
             parasolid=parasolid,
+            promotion=promotion,
+            visual_review=visual_review,
         )
         session["final_report_path"] = _repo_relative(self.repo_root, report)
         completion_event: dict[str, Any] = {
@@ -2770,6 +3217,8 @@ class HarnessWorkflow:
         task_result: Mapping[str, Any],
         passed: bool,
         parasolid: Mapping[str, Any] | None = None,
+        promotion: Mapping[str, Any] | None = None,
+        visual_review: Mapping[str, Any] | None = None,
     ) -> None:
         execution = task_result.get("execution") if isinstance(task_result.get("execution"), Mapping) else {}
         lines = [
@@ -2796,10 +3245,80 @@ class HarnessWorkflow:
                     for verdict, count in verdict_counts.items():
                         if count:
                             lines.append(f"  - `{verdict}`：{count}")
+                attention_cases = parasolid.get("attention_cases")
+                if isinstance(attention_cases, list) and attention_cases:
+                    lines.append("- 需关注用例（仅为诊断线索，不构成 SDK 缺陷定论）：")
+                    for entry in attention_cases[:PARASOLID_ATTENTION_CASE_LIMIT]:
+                        if not isinstance(entry, Mapping):
+                            continue
+                        reasons = entry.get("reasons") if isinstance(entry.get("reasons"), list) else []
+                        first_reason = str(reasons[0]) if reasons else ""
+                        item = (
+                            f"`{entry.get('case_id', '')}`：verdict=`{entry.get('verdict', '')}`，"
+                            f"类别=`{entry.get('cause_class', '')}`"
+                        )
+                        if first_reason:
+                            item += f"；{first_reason}"
+                        lines.append(f"  - {item}")
+                if parasolid.get("analysis_path"):
+                    lines.append(f"- 差异分析：`{parasolid['analysis_path']}`")
                 if parasolid.get("report_path"):
                     lines.append(f"- 详细报告：`{parasolid['report_path']}`")
             else:
                 lines.append(f"- {parasolid.get('note', '未运行')}")
+            lines.append("")
+        if promotion:
+            lines.append("## API 插件注册")
+            lines.append("")
+            if promotion.get("ran") and promotion.get("ok"):
+                lines.append(f"- 已注册插件 API：`{promotion.get('api', '')}`")
+                lines.append(f"- 结果：`{promotion.get('note', '')}`")
+                lines.append(
+                    "- 下一步：重新构建 Runner（CMake configure 会刷新插件注册表），"
+                    "并人工核对 git diff 后提交。"
+                )
+            elif promotion.get("ran"):
+                lines.append(f"- 注册未成功：{promotion.get('note', '')}")
+                lines.append(
+                    "- 构建与冒烟证据仍然有效；修复问题后可运行 "
+                    "`test_harness/tools/promote_api_plugin.py` 重试。"
+                )
+            else:
+                lines.append(f"- {promotion.get('note', '未运行')}")
+            lines.append("")
+        if visual_review:
+            lines.append("## 视觉模型复核（咨询性意见，仅供参考）")
+            lines.append("")
+            if visual_review.get("ran") and visual_review.get("ok"):
+                summary = (
+                    visual_review.get("summary")
+                    if isinstance(visual_review.get("summary"), Mapping)
+                    else {}
+                )
+                lines.append(
+                    f"- 复核用例 `{summary.get('reviewed', 0)}` 例：合理 `{summary.get('plausible', 0)}`，"
+                    f"存疑 `{summary.get('suspect', 0)}`，不合理 `{summary.get('implausible', 0)}`，"
+                    f"误用标记 `{summary.get('flags', 0)}` 项"
+                )
+                flagged: list[str] = []
+                raw_cases = visual_review.get("cases")
+                for entry in raw_cases[:24] if isinstance(raw_cases, list) else []:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    entry_flags = entry.get("flags") if isinstance(entry.get("flags"), list) else []
+                    if entry.get("plausibility") in {"suspect", "implausible"} or entry_flags:
+                        flag_text = "/".join(str(flag) for flag in entry_flags)
+                        label = f"`{entry.get('case_id', '')}`：{entry.get('plausibility', '')}"
+                        flagged.append(f"{label} {flag_text}".strip())
+                if flagged:
+                    lines.append("- 存疑用例（仅为视觉线索，不构成结论）：")
+                    for item in flagged[:8]:
+                        lines.append(f"  - {item}")
+                lines.append("- 以上为视觉模型对几何预览图的咨询性判断，不参与门禁、批准、执行或失败归因。")
+                if visual_review.get("markdown_path"):
+                    lines.append(f"- 详细报告：`{visual_review['markdown_path']}`")
+            else:
+                lines.append(f"- {visual_review.get('note', '未运行')}")
             lines.append("")
         lines.extend(
             [

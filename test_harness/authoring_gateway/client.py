@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import random
 import ssl
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from .config import DEFAULT_STREAM_BYTES_LIMIT, GatewayConfig
@@ -56,6 +59,10 @@ class TransportError(RuntimeError):
         super().__init__(message)
         self.timed_out = timed_out
         self.stream_metadata = dict(stream_metadata or {})
+
+
+class ClientError(RuntimeError):
+    """A request could not be built within the fixed client budgets."""
 
 
 @dataclass(frozen=True)
@@ -161,6 +168,99 @@ class UrllibMessageTransport:
             raise TransportError(error_text) from exc
 
 
+MAX_IMAGE_EDGE_PIXELS = 1600
+IMAGE_SUFFIX_MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+
+@dataclass(frozen=True)
+class PreparedImage:
+    """A host-supplied geometry render, budget-enforced and ready to send.
+
+    ``sha256`` binds the original on-disk artifact (the provenance identity);
+    ``data`` is the re-encoded PNG payload actually transmitted. Pixel data is
+    never persisted by the client or the gateway — only hashes and sizes.
+    """
+
+    path: str
+    sha256: str
+    mime: str
+    data: bytes = field(repr=False)
+    source_bytes: int = 0
+    prepared_bytes: int = 0
+
+
+def prepare_images(
+    paths: Iterable[str | Path],
+    *,
+    max_images: int = 4,
+    max_image_bytes: int = 2 * 1024 * 1024,
+    max_total_bytes: int = 12 * 1024 * 1024,
+) -> list[PreparedImage]:
+    """Re-encode host-supplied geometry renders into bounded PNG payloads.
+
+    Paths must be absolute and already containment-checked by host code; they
+    are never model-derived. Every image is downscaled to at most
+    ``MAX_IMAGE_EDGE_PIXELS`` on its long edge and re-encoded as an optimized
+    PNG (which also strips metadata). Any budget overflow fails closed.
+    """
+
+    from PIL import Image  # lazy: text-only flows never require Pillow
+
+    items = list(paths)
+    if not items:
+        return []
+    if max_images <= 0 or max_image_bytes <= 0 or max_total_bytes <= 0:
+        raise ClientError("image budgets must be positive")
+    if len(items) > max_images:
+        raise ClientError(f"too many images: {len(items)} > {max_images}")
+    prepared: list[PreparedImage] = []
+    total_bytes = 0
+    for raw in items:
+        path = Path(raw)
+        if not path.is_absolute():
+            raise ClientError(f"image path must be absolute and host-checked: {raw}")
+        if path.suffix.lower() not in IMAGE_SUFFIX_MIMES:
+            raise ClientError(f"only .png/.jpg geometry renders are accepted: {path.name}")
+        try:
+            source = path.read_bytes()
+        except OSError as exc:
+            raise ClientError(f"image cannot be read: {path}: {exc}") from exc
+        sha256 = sha256_bytes(source)
+        try:
+            with Image.open(io.BytesIO(source)) as decoded:
+                frame = decoded.convert("RGB")
+            if max(frame.size) > MAX_IMAGE_EDGE_PIXELS:
+                frame.thumbnail(
+                    (MAX_IMAGE_EDGE_PIXELS, MAX_IMAGE_EDGE_PIXELS),
+                    Image.Resampling.LANCZOS,
+                )
+            buffer = io.BytesIO()
+            frame.save(buffer, format="PNG", optimize=True)
+        except Exception as exc:  # noqa: BLE001 - Pillow raises many types; fail closed
+            raise ClientError(f"image cannot be decoded as PNG/JPEG: {path.name}: {exc}") from exc
+        data = buffer.getvalue()
+        if len(data) > max_image_bytes:
+            raise ClientError(
+                f"prepared image exceeds {max_image_bytes} bytes after downscale: {path.name}"
+            )
+        total_bytes += len(data)
+        if total_bytes > max_total_bytes:
+            raise ClientError(f"prepared images exceed the total budget of {max_total_bytes} bytes")
+        prepared.append(
+            PreparedImage(
+                path=str(path),
+                sha256=sha256,
+                # The payload is always the re-encoded PNG, regardless of the
+                # source container format.
+                mime="image/png",
+                data=data,
+                source_bytes=len(source),
+                prepared_bytes=len(data),
+            )
+        )
+    return prepared
+
+
 @dataclass(frozen=True)
 class CompletionOptions:
     response_mode: str = "auto"
@@ -172,6 +272,10 @@ class CompletionOptions:
     stream: bool = False
     seed: int | None = None
     request_timeout_seconds: float | None = None
+    # Host-supplied, budget-enforced geometry renders (see prepare_images).
+    # Empty for the default text-only path; the gateway only ever fills this
+    # from containment-checked TaskSpec.image_paths.
+    images: tuple[PreparedImage, ...] = ()
 
     def __post_init__(self) -> None:
         if self.response_mode not in {"auto", "json_schema", "json_object", "none"}:
@@ -199,6 +303,8 @@ class CompletionResult:
     usage: dict[str, Any] = field(default_factory=dict)
     error: str = ""
     error_kind: str = ""
+    image_count: int = 0
+    image_sha256: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     response_records: list[dict[str, Any]] = field(default_factory=list)
 
@@ -802,11 +908,23 @@ class OpenAICompatibleMessageClient:
         options: CompletionOptions,
         mode: str,
     ) -> dict[str, Any]:
+        user_content: Any = user_prompt
+        if options.images:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+            for image in options.images:
+                encoded = base64.b64encode(image.data).decode("ascii")
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{image.mime};base64,{encoded}"},
+                    }
+                )
+            user_content = parts
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
             "temperature": options.temperature,
             "max_tokens": options.max_tokens,
@@ -866,6 +984,8 @@ class OpenAICompatibleMessageClient:
         options: CompletionOptions,
     ) -> CompletionResult:
         result = CompletionResult(ok=False)
+        result.image_count = len(options.images)
+        result.image_sha256 = [image.sha256 for image in options.images]
         modes = self._modes(options)
         timeout_seconds = (
             options.request_timeout_seconds

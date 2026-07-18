@@ -604,6 +604,20 @@ def copy_bundle_files(
         if copied_path:
             copied["reports"][name] = copied_path
 
+    comparison_dir = case_dir / "comparison"
+    if comparison_dir.is_dir():
+        for source in sorted(comparison_dir.glob("*.json")):
+            if not source.is_file():
+                continue
+            try:
+                if source.stat().st_size > 1024 * 1024:
+                    continue
+            except OSError:
+                continue
+            copied_path = copy_file(source, bundle_dir / "comparison" / source.name)
+            if copied_path:
+                copied.setdefault("comparison", {})[source.name] = copied_path
+
     capture_dir = Path(as_str(topotrack_probe.get("capture_artifact_dir")))
     for name in ("topo_track_summary.json", "topo_track.json", "validation.json"):
         copied_path = copy_file(
@@ -784,6 +798,10 @@ def write_bug_report(manifest: dict[str, Any], path: Path) -> None:
     for label, copied_path in inputs.items():
         if copied_path:
             lines.append(f"- {label}: `{copied_path}`")
+    comparison_files = copied.get("comparison") if isinstance(copied.get("comparison"), dict) else {}
+    for label, copied_path in comparison_files.items():
+        if copied_path:
+            lines.append(f"- comparison {label}: `{copied_path}`")
     if copied.get("preview"):
         lines.append(f"- preview: `{copied.get('preview')}`")
     if copied.get("debug_geometry"):

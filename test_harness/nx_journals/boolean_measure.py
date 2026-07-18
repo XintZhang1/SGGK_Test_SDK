@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = 1
 RESULT_KIND = "sggk_nx_boolean_measurement"
 RESULT_PREFIX = "SGGK_NX_BOOLEAN_MEASUREMENT_JSON="
@@ -62,7 +61,9 @@ def _input_record(path: Path | None) -> dict[str, Any]:
     return {"name": name, "sha256": sha256, "size_bytes": size}
 
 
-def _empty_report(target_path: Path | None = None, tool_path: Path | None = None, operation: str = "") -> dict[str, Any]:
+def _empty_report(
+    target_path: Path | None = None, tool_path: Path | None = None, operation: str = ""
+) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": RESULT_KIND,
@@ -191,10 +192,19 @@ def _tag_value(body: Any) -> int:
 
 
 def _free_edge_count(body: Any) -> tuple[int, int]:
-    """Return (edge_count, free_edge_count); free edges have fewer than two faces."""
+    """Return (edge_count, free_edge_count).
+
+    An edge shared by fewer than two faces is a boundary *candidate*.  Periodic
+    analytic seams (sphere/cylinder/cone/torus) also report a single face, but
+    they are isolated loops: no other candidate edge shares one of their
+    vertices (a closed loop may even report none).  Only candidates connected
+    to at least one other candidate through a vertex — a genuine boundary
+    chain — are counted as free edges.  Edges with no adjacent face, or whose
+    vertices cannot be probed, stay conservatively counted.
+    """
 
     edge_count = 0
-    free_edges = 0
+    candidates: list[set[str] | None] = []
     try:
         edges = list(body.GetEdges())
     except Exception:
@@ -205,7 +215,32 @@ def _free_edge_count(body: Any) -> tuple[int, int]:
             face_count = len(list(edge.GetFaces()))
         except Exception:
             face_count = 0
-        if face_count < 2:
+        if face_count >= 2:
+            continue
+        if face_count == 0:
+            candidates.append(None)
+            continue
+        try:
+            vertex_keys = {str(vertex) for vertex in edge.GetVertices()}
+        except Exception:
+            vertex_keys = None
+        candidates.append(vertex_keys if vertex_keys else set())
+    vertex_uses: dict[str, list[int]] = {}
+    for index, vertex_keys in enumerate(candidates):
+        if vertex_keys:
+            for key in vertex_keys:
+                vertex_uses.setdefault(key, []).append(index)
+    free_edges = 0
+    for index, vertex_keys in enumerate(candidates):
+        if vertex_keys is None:
+            free_edges += 1
+            continue
+        if not vertex_keys:
+            continue
+        connected = any(
+            any(other != index for other in vertex_uses.get(key, [])) for key in vertex_keys
+        )
+        if connected:
             free_edges += 1
     return edge_count, free_edges
 
@@ -431,7 +466,8 @@ def collect_boolean_measurement(
                 _diagnostic(
                     "NX_BOOLEAN_IMPORT_EMPTY",
                     "error",
-                    f"NX imported {len(target_bodies)} target and {len(tool_bodies)} tool bodies; both must be nonempty.",
+                    f"NX imported {len(target_bodies)} target and {len(tool_bodies)} tool bodies; "
+                    "both must be nonempty.",
                 )
             )
             return report

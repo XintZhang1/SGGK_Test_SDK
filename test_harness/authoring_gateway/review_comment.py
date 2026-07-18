@@ -60,12 +60,15 @@ REVIEW_STATUSES = frozenset(
         "review_rejected",
     }
 )
-_SENSITIVE_OUTLINE_KEY_PARTS = frozenset(
+# Segment-exact denylist for subject-outline keys. Matching is per
+# separator/camelCase segment so harness-owned CAD vocabulary that merely
+# *contains* a sensitive word as a substring ("shells", "edge_endpoints",
+# "envelope", "security") is not rejected, while real authority/credential
+# keys ("shell", "command", "endpoint", "env", "token", ...) stay forbidden.
+_SENSITIVE_OUTLINE_KEY_SEGMENTS = frozenset(
     {
-        "apikey",
         "argv",
         "authorization",
-        "baseurl",
         "cmd",
         "command",
         "commandline",
@@ -85,6 +88,21 @@ _SENSITIVE_OUTLINE_KEY_PARTS = frozenset(
         "token",
         "url",
         "uri",
+    }
+)
+# Concatenated authority terms that must also match inside a fully squashed
+# key ("api_key" -> "apikey", "SILICONFLOW_API_KEY" -> "...apikey").
+_SENSITIVE_OUTLINE_KEY_SQUASHED = frozenset(
+    {
+        "apikey",
+        "baseurl",
+    }
+)
+# Harness-standard compound keys that legitimately contain a sensitive word as
+# a segment (capability/plugin vocabulary, never execution authority).
+_SENSITIVE_OUTLINE_KEY_ALLOWLIST = frozenset(
+    {
+        "runnerrecipeapi",
     }
 )
 
@@ -445,7 +463,7 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 
 def _non_json_path(value: Any, path: str = "$") -> str:
-    if value is None or isinstance(value, (bool, int, str)):
+    if value is None or isinstance(value, bool | int | str):
         return ""
     if isinstance(value, float):
         return "" if value == value and value not in {float("inf"), float("-inf")} else path
@@ -514,8 +532,14 @@ def _text_diagnostics(value: str, path: str) -> list[ReviewCommentDiagnostic]:
 
 
 def _outline_key_is_sensitive(key: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "", unicodedata.normalize("NFKC", key).casefold())
-    return any(part in normalized for part in _SENSITIVE_OUTLINE_KEY_PARTS)
+    humps = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", unicodedata.normalize("NFKC", key))
+    segments = [segment for segment in re.split(r"[^A-Za-z0-9]+", humps.casefold()) if segment]
+    squashed = "".join(segments)
+    if squashed in _SENSITIVE_OUTLINE_KEY_ALLOWLIST:
+        return False
+    if any(segment in _SENSITIVE_OUTLINE_KEY_SEGMENTS for segment in segments):
+        return True
+    return any(part in squashed for part in _SENSITIVE_OUTLINE_KEY_SQUASHED)
 
 
 def _freeze_json(value: Any) -> Any:
@@ -855,7 +879,7 @@ def normalize_review_comment_candidate(candidate: Any) -> tuple[Any, tuple[str, 
             elif isinstance(item, Mapping):
                 normalized.append(_constraint_object_to_string(item))
                 notes.append(f"$.constraints[{index}]: object coerced to string")
-            elif isinstance(item, (int, float, bool)):
+            elif isinstance(item, int | float | bool):
                 normalized.append(json.dumps(item, ensure_ascii=False))
                 notes.append(f"$.constraints[{index}]: scalar coerced to string")
             else:

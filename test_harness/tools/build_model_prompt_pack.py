@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from build_api_test_task import build_task, validate_form
+from build_api_test_task import build_task, validate_form  # noqa: E402
 
 from test_harness.authoring_gateway.config import DEFAULT_PROFILE, PROFILE_SPECS  # noqa: E402
 
@@ -34,6 +34,7 @@ ALLOWED_OUTPUT_KINDS = {
     "cluster_seed",
     "needs_harness_extension",
     "campaign_request",
+    "api_plugin_candidate",
 }
 
 
@@ -170,13 +171,13 @@ Contract policy:
 """
 
 
-def contract_for(preferred: Any, *, source_task: bool = False) -> dict[str, Any]:
+def contract_for(preferred: Any, *, source_task: bool = False, extension_hatch: bool = True) -> dict[str, Any]:
     if source_task:
         allowed = ["attack_dsl", "flat_recipe", "cluster_seed", "needs_harness_extension"]
     else:
         kind = str(preferred or "").strip()
         allowed = [kind] if kind in ALLOWED_OUTPUT_KINDS else sorted(ALLOWED_OUTPUT_KINDS)
-        if "needs_harness_extension" not in allowed:
+        if extension_hatch and "needs_harness_extension" not in allowed:
             allowed.append("needs_harness_extension")
     return {
         "type": "json_object",
@@ -199,19 +200,67 @@ def campaign_profiles_for(task: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def interface_prompt(task: dict[str, Any], form: dict[str, Any], expected_output: str) -> str:
+def interface_prompt(
+    task: dict[str, Any],
+    form: dict[str, Any],
+    expected_output: str,
+    *,
+    extension_hatch: bool = True,
+) -> str:
     preferred = (task.get("api_guidance") or {}).get("preferred_format")
     task_context = {
         "task_type": "interface_form",
         "request_id": task.get("request_id"),
         "expected_output_path": expected_output,
-        "output_contract": contract_for(preferred),
+        "output_contract": contract_for(preferred, extension_hatch=extension_hatch),
         "selected_example_pack": (task.get("harness_contract") or {}).get("selected_example_pack", ""),
         "interface_family": (task.get("harness_contract") or {}).get("interface_family", ""),
         "run_profile": (task.get("harness_contract") or {}).get("run_profile", {}),
         "allowed_campaign_profiles": campaign_profiles_for(task),
         "constants": constants(),
     }
+    hatch_note = ""
+    if not extension_hatch:
+        hatch_note = (
+            "\nThis API is already supported by a checked-in harness plugin, so "
+            "needs_harness_extension is not accepted for this task; return one of "
+            "output_contract.allowed_kinds instead.\n"
+        )
+    plugin_section = ""
+    plugin_contract = task.get("plugin_contract")
+    if isinstance(plugin_contract, dict) and isinstance(plugin_contract.get("recipe_schema"), dict):
+        examples = plugin_contract.get("examples")
+        example_blocks = []
+        if isinstance(examples, list):
+            for example in examples[:2]:
+                if not isinstance(example, dict) or not isinstance(example.get("recipe"), dict):
+                    continue
+                example_blocks.append(
+                    f"Example {len(example_blocks) + 1} ({example.get('name', 'example')}):\n"
+                    + json.dumps(example["recipe"], indent=2, ensure_ascii=False)
+                )
+        examples_text = "\n\n".join(example_blocks) if example_blocks else "(none available)"
+        plugin_section = f"""
+## Checked-in Plugin Recipe Contract
+
+This API is executed through a checked-in runner plugin. Every recipe you return
+MUST validate against this exact JSON Schema — additionalProperties is false,
+so invent no fields, and every required property must be present:
+
+```json
+{json.dumps(plugin_contract["recipe_schema"], indent=2, ensure_ascii=False)}
+```
+
+Reference recipe(s) that already pass the schema and the fixed gates:
+
+```json
+{examples_text}
+```
+
+Reach the complexity floor with sanctioned levers instead of new fields: exact
+or near contact placement at ±topo_tol/geom_tol bands, large coordinates, and
+extreme-but-valid parameter values.
+"""
     return f"""# SGGK Model Interface Task
 
 {model_rules()}
@@ -224,7 +273,7 @@ def interface_prompt(task: dict[str, Any], form: dict[str, Any], expected_output
 
 ## Output Contract
 
-{output_contract_text()}
+{output_contract_text()}{hatch_note}{plugin_section}
 
 ## Developer Form
 

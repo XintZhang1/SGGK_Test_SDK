@@ -851,7 +851,13 @@ class FixedGateRunner:
             return
         self._gate_dsl(result, expanded_path, gate_root)
 
-    def _gate_extension(self, result: FixedGateResult, normalized_path: Path, gate_root: Path, task: TaskSpec | None = None) -> None:
+    def _gate_extension(
+        self,
+        result: FixedGateResult,
+        normalized_path: Path,
+        gate_root: Path,
+        task: TaskSpec | None = None,
+    ) -> None:
         report_path = gate_root / "extension_report.json"
         diagnostics_path = gate_root / "extension_diagnostics.json"
         argv = [
@@ -1023,9 +1029,11 @@ class MessageHarnessPipeline:
         reduce_failure_candidates: bool = False,
         reduction_limit: int = 3,
         reduction_max_trials: int = 32,
+        sdk_dir: str | Path | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root).resolve()
+        self.sdk_dir = Path(sdk_dir).expanduser().resolve() if sdk_dir else None
         if not self.repo_root.is_dir():
             raise PipelineError(f"repository root does not exist: {self.repo_root}")
         self.staging_root = _inside(self.repo_root, staging_root, label="staging_root")
@@ -2838,6 +2846,17 @@ Structured diagnostics:
             )
         plugin_path = _inside(self.repo_root, materialized, label="materialized_plugin")
         build_root = execution_root / "plugin_build"
+        sdk_dir = self.sdk_dir
+        if sdk_dir is None and os.environ.get("SGGK_SDK_DIR"):
+            sdk_dir = Path(os.environ["SGGK_SDK_DIR"]).expanduser().resolve()
+        if sdk_dir is None or not sdk_dir.is_dir():
+            return ExecutionResult(
+                True,
+                False,
+                "plugin_build_sdk_missing",
+                error="isolated plugin build requires a configured SDK directory (sdk_dir / SGGK_SDK_DIR)",
+                candidate_cause="harness_adapter_candidate_requires_repair",
+            )
         command = self.gates._run(  # noqa: SLF001
             "build_api_plugin_candidate",
             [
@@ -2847,6 +2866,8 @@ Structured diagnostics:
                 str(plugin_path),
                 "--out",
                 str(build_root),
+                "--sdk-dir",
+                str(sdk_dir),
                 "--smoke-replays",
                 "3",
                 "--timeout",

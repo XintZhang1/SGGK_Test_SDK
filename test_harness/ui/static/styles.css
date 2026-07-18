@@ -219,6 +219,27 @@ progress { width: 100%; height: 12px; margin: 11px 0 7px; accent-color: var(--ac
 .round-overview-action:hover { border-color: var(--accent); }
 .round-overview-action strong { color: var(--text); font-size: 12px; }
 .round-overview-action-path { overflow: hidden; color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+.execution-overview.hidden { display: none; }
+.execution-section-title { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.execution-steps { margin-top: 2px; }
+.exec-chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; line-height: 1.5; }
+.exec-chip-pass { background: #14352a; color: #7fe0b2; }
+.exec-chip-fail { background: #3d1d1f; color: #ff9d9d; }
+.exec-chip-timeout { background: #3d3118; color: #ffd27f; }
+.exec-chip-skip { background: #22303a; color: #9fb8c4; }
+.execution-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.execution-group { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid #3a2a2a; border-radius: 8px; background: #1c1518; }
+.execution-group-title { color: #ffcfcf; font-size: 12px; }
+.execution-group-detail { color: #d9b8b8; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.execution-table-wrap { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.execution-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.execution-table th { position: sticky; top: 0; padding: 6px 8px; color: var(--muted); background: #0e1d23; font-weight: 600; text-align: left; }
+.execution-table td { padding: 5px 8px; border-top: 1px solid #1c2c33; color: #cfe3e0; vertical-align: top; }
+.exec-row-fail { background: #1f1416; }
+.exec-row-timeout { background: #1f1a12; }
+.execution-case-id { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.execution-reason { max-width: 280px; overflow-wrap: anywhere; }
+.execution-path { max-width: 220px; overflow: hidden; color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-list { overflow: auto; border-right: 1px solid var(--line); }
 .artifact-group { border-bottom: 1px solid #20343c; }
 .artifact-group > summary { position: relative; display: flex; min-height: 59px; align-items: center; gap: 8px; padding: 9px 11px 9px 29px; cursor: pointer; list-style: none; background: #0e1d23; }

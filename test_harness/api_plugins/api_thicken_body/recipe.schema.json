@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "api": {
+      "const": "api_thicken_body"
+    },
+    "case_id": {
+      "type": "string"
+    },
+    "expectations": {
+      "additionalProperties": false,
+      "properties": {
+        "require_finite_properties": {
+          "const": true
+        },
+        "require_nonnegative_volume": {
+          "const": true
+        },
+        "require_property_calculations": {
+          "const": true
+        },
+        "result_bodies": {
+          "additionalProperties": false,
+          "properties": {
+            "max": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "min": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "min"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "require_property_calculations",
+        "require_finite_properties",
+        "require_nonnegative_volume",
+        "result_bodies"
+      ],
+      "type": "object"
+    },
+    "max_dist": {
+      "type": "number"
+    },
+    "min_dist": {
+      "type": "number"
+    },
+    "target_kind": {
+      "type": "string"
+    },
+    "target_length": {
+      "type": "number"
+    },
+    "target_translate_x": {
+      "type": "number"
+    },
+    "target_translate_y": {
+      "type": "number"
+    },
+    "target_translate_z": {
+      "type": "number"
+    },
+    "target_width": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "api",
+    "case_id",
+    "expectations",
+    "target_kind"
+  ],
+  "type": "object"
+}

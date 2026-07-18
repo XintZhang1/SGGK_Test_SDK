@@ -13,11 +13,17 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-
 CONTRACT_VERSION = 1
 BODY_LIST_TO_BODY_REQUIRED_ORACLES = frozenset(
     {"result_bodies", "properties", "topocheck"}
 )
+UNARY_BODY_TO_BODIES_REQUIRED_ORACLES = frozenset(
+    {"result_bodies", "properties", "topocheck"}
+)
+ARCHETYPE_REQUIRED_ORACLES = {
+    "body_list_to_body": BODY_LIST_TO_BODY_REQUIRED_ORACLES,
+    "unary_body_to_bodies": UNARY_BODY_TO_BODIES_REQUIRED_ORACLES,
+}
 CONTRACT_FIELDS = {
     "schema_version",
     "request_id",
@@ -112,18 +118,19 @@ def validate_adaptation_contract(
             or len(set(value)) != len(value)
         ):
             errors.append(f"adaptation_contract.{key} must be a non-empty unique string array")
-    if contract.get("adapter_archetype") == "body_list_to_body":
+    fixed_oracles = ARCHETYPE_REQUIRED_ORACLES.get(str(contract.get("adapter_archetype")))
+    if fixed_oracles is not None:
         required_oracles = contract.get("required_oracles")
         missing_oracles = (
-            BODY_LIST_TO_BODY_REQUIRED_ORACLES - set(required_oracles)
+            fixed_oracles - set(required_oracles)
             if isinstance(required_oracles, list)
             and all(isinstance(item, str) for item in required_oracles)
-            else BODY_LIST_TO_BODY_REQUIRED_ORACLES
+            else fixed_oracles
         )
         if missing_oracles:
             errors.append(
-                "body_list_to_body adaptation_contract.required_oracles is missing fixed host "
-                f"oracles {sorted(missing_oracles)!r}"
+                f"{contract.get('adapter_archetype')} adaptation_contract.required_oracles is "
+                f"missing fixed host oracles {sorted(missing_oracles)!r}"
             )
     signature = contract.get("function_signature")
     signature_hash = contract.get("function_signature_sha256")
@@ -176,8 +183,7 @@ def validate_candidate_identity(
     capability = candidate.get("capability") if isinstance(candidate.get("capability"), dict) else {}
     supported = capability.get("supported_oracles")
     required = set(contract.get("required_oracles") or [])
-    if contract.get("adapter_archetype") == "body_list_to_body":
-        required.update(BODY_LIST_TO_BODY_REQUIRED_ORACLES)
+    required.update(ARCHETYPE_REQUIRED_ORACLES.get(str(contract.get("adapter_archetype")), frozenset()))
     supported_are_strings = isinstance(supported, list) and all(
         isinstance(item, str) for item in supported
     )

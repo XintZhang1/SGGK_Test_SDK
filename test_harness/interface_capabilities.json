@@ -11,42 +11,62 @@
     "siliconflow_message_api": {
       "title": "SiliconFlow GLM-5.2 Message API",
       "category": "message_api",
-      "allowed_contexts": ["model_output", "regression_asset"],
+      "allowed_contexts": [
+        "model_output",
+        "regression_asset"
+      ],
       "production_boundary": "The locked external SiliconFlow profile accepts public-interface tasks only and stages GLM-5.2 message.content JSON with provenance before fixed gates run.",
       "description": "Output produced by zai-org/GLM-5.2 through the configured SiliconFlow endpoint."
     },
     "intranet_message_api": {
       "title": "Intranet Message API",
       "category": "message_api",
-      "allowed_contexts": ["model_output", "regression_asset"],
+      "allowed_contexts": [
+        "model_output",
+        "regression_asset"
+      ],
       "production_boundary": "The configured intranet endpoint returns one JSON object in message.content; the gateway stages it with provenance before fixed gates run.",
       "description": "Output produced by the configured Message API model profile."
     },
     "unknown_saved_output": {
       "title": "Unknown saved output",
       "category": "synthetic_status",
-      "allowed_contexts": ["model_output", "matrix_synthetic"],
+      "allowed_contexts": [
+        "model_output",
+        "matrix_synthetic"
+      ],
       "production_boundary": "Saved JSON exists, but no provenance sidecar identified its source.",
       "description": "Batch matrix status used when a saved JSON file exists without provenance metadata."
     },
     "missing_output": {
       "title": "Missing output",
       "category": "synthetic_status",
-      "allowed_contexts": ["model_output", "matrix_synthetic"],
+      "allowed_contexts": [
+        "model_output",
+        "matrix_synthetic"
+      ],
       "production_boundary": "No saved JSON exists for this request.",
       "description": "Batch matrix status used when the expected saved JSON has not been produced."
     },
     "invalid_provenance": {
       "title": "Invalid provenance",
       "category": "invalid",
-      "allowed_contexts": ["model_output", "regression_asset", "matrix_synthetic"],
+      "allowed_contexts": [
+        "model_output",
+        "regression_asset",
+        "matrix_synthetic"
+      ],
       "production_boundary": "The sidecar must be repaired before it can be trusted for audit.",
       "description": "Batch matrix status used when a provenance sidecar cannot be parsed or is not a JSON object."
     },
     "unspecified_saved_output": {
       "title": "Unspecified saved output",
       "category": "synthetic_status",
-      "allowed_contexts": ["model_output", "regression_asset", "matrix_synthetic"],
+      "allowed_contexts": [
+        "model_output",
+        "regression_asset",
+        "matrix_synthetic"
+      ],
       "production_boundary": "Saved JSON exists, but the sidecar omitted source_type.",
       "description": "Fallback status for provenance metadata that exists but does not name a source type."
     }
@@ -69,8 +89,8 @@
       "description": "Select a fixed local campaign profile plus bounded scalar args; command/tool/path fields are forbidden."
     },
     "needs_harness_extension": {
-        "gate": "validate_harness_extension.py then adapter backlog registration",
-        "description": "Structured non-executable report used when the current harness cannot express the requested API, builder, or oracle."
+      "gate": "validate_harness_extension.py then adapter backlog registration",
+      "description": "Structured non-executable report used when the current harness cannot express the requested API, builder, or oracle."
     },
     "api_plugin_candidate": {
       "gate": "materialize_api_plugin_candidate.py then isolated configure/build/runtime/smoke validation",
@@ -80,14 +100,20 @@
   "interface_families": {
     "api_boolean_primitives": {
       "title": "api_boolean primitive body pairs",
-      "target_apis": ["api_boolean"],
-      "geometry_families": ["primitive"],
+      "target_apis": [
+        "api_boolean"
+      ],
+      "geometry_families": [
+        "primitive"
+      ],
       "default_output_kind": "attack_dsl",
       "description": "Small primitive boolean pairs used for source-guided tolerance and oracle smoke cases."
     },
     "api_boolean_generated_ops": {
       "title": "api_boolean generated operation chains",
-      "target_apis": ["api_boolean"],
+      "target_apis": [
+        "api_boolean"
+      ],
       "geometry_families": [
         "generated_extrude",
         "generated_thicken",
@@ -102,71 +128,129 @@
     },
     "exchange_import": {
       "title": "STEP/IGES import",
-      "target_apis": ["step_import", "iges_import"],
-      "geometry_families": ["corpus", "exchange_file"],
+      "target_apis": [
+        "step_import",
+        "iges_import"
+      ],
+      "geometry_families": [
+        "corpus",
+        "exchange_file"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Import recipes and corpus handoffs for exchange-file topology."
     },
     "exchange_roundtrip": {
       "title": "STEP/IGES roundtrip",
-      "target_apis": ["step_roundtrip", "iges_roundtrip"],
-      "geometry_families": ["exchange_file"],
+      "target_apis": [
+        "step_roundtrip",
+        "iges_roundtrip"
+      ],
+      "geometry_families": [
+        "exchange_file"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Export/import roundtrip checks against existing SGT bodies."
     },
     "asset_replay": {
       "title": "SGT asset replay",
-      "target_apis": ["check_sgt"],
-      "geometry_families": ["loaded_sgt"],
+      "target_apis": [
+        "check_sgt"
+      ],
+      "geometry_families": [
+        "loaded_sgt"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Replay and TopoCheck of saved SGT assets."
     },
     "api_offset_body": {
       "title": "Body offset flat recipes",
-      "target_apis": ["api_offset_body"],
-      "geometry_families": ["primitive", "loaded_sgt", "generated_offset"],
+      "target_apis": [
+        "api_offset_body"
+      ],
+      "geometry_families": [
+        "primitive",
+        "loaded_sgt",
+        "generated_offset"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Flat recipes that construct or load one body, call api_offset_body, and validate topology/properties."
     },
     "api_boolean_split": {
       "title": "Boolean split flat recipes",
-      "target_apis": ["api_boolean_split"],
-      "geometry_families": ["primitive", "plane_sheet", "generated_ops", "loaded_sgt"],
+      "target_apis": [
+        "api_boolean_split"
+      ],
+      "geometry_families": [
+        "primitive",
+        "plane_sheet",
+        "generated_ops",
+        "loaded_sgt"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Split one constructed or loaded target body with a supported body or plane-sheet tool and validate classified result counts."
     },
     "api_boolean_slice": {
       "title": "Boolean slice flat recipes",
-      "target_apis": ["api_boolean_slice"],
-      "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
+      "target_apis": [
+        "api_boolean_slice"
+      ],
+      "geometry_families": [
+        "primitive",
+        "generated_ops",
+        "loaded_sgt"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Slice a target/tool body pair and validate the returned wire-body topology and counts."
     },
     "api_offset2d": {
       "title": "2D curve offset flat recipes",
-      "target_apis": ["api_offset2d"],
-      "geometry_families": ["line2d", "arc2d", "composite_path2d"],
+      "target_apis": [
+        "api_offset2d"
+      ],
+      "geometry_families": [
+        "line2d",
+        "arc2d",
+        "composite_path2d"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Offset bounded 2D line/arc paths and validate both successful paths and expected SDK diagnostic statuses."
     },
     "api_topology_section": {
       "title": "Topology section flat recipes",
-      "target_apis": ["api_topology_section"],
-      "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
+      "target_apis": [
+        "api_topology_section"
+      ],
+      "geometry_families": [
+        "primitive",
+        "generated_ops",
+        "loaded_sgt"
+      ],
       "default_output_kind": "flat_recipe",
       "description": "Intersect two supported topology-bearing bodies and validate the distinct returned edge/vertex topology counts."
     },
     "oracle_calibration": {
       "title": "Oracle calibration",
-      "target_apis": ["api_boolean"],
-      "geometry_families": ["primitive"],
-      "oracles_any": ["point_relation", "face_point_relation", "clash", "distance", "plane_extreme"],
+      "target_apis": [
+        "api_boolean"
+      ],
+      "geometry_families": [
+        "primitive"
+      ],
+      "oracles_any": [
+        "point_relation",
+        "face_point_relation",
+        "clash",
+        "distance",
+        "plane_extreme"
+      ],
       "default_output_kind": "attack_dsl",
       "description": "Small cases whose main purpose is calibrating oracle shape and diagnostics."
     },
     "harness_extension": {
       "title": "Harness extension request",
-      "target_apis": ["needs_harness_extension"],
+      "target_apis": [
+        "needs_harness_extension"
+      ],
       "geometry_families": [],
       "default_output_kind": "needs_harness_extension",
       "description": "Unsupported API, builder, or oracle requests that should not be forced through current gates."
@@ -217,7 +301,9 @@
       "path": "test_harness/interface_example_packs/api_boolean_generated_ops.md",
       "example_dsl_path": "test_harness/interface_example_packs/api_boolean_generated_ops.example_dsl.json",
       "match": {
-        "target_apis": ["api_boolean"],
+        "target_apis": [
+          "api_boolean"
+        ],
         "geometry_families": [
           "generated_extrude",
           "generated_thicken",
@@ -242,8 +328,14 @@
       "path": "test_harness/interface_example_packs/api_boolean_primitives.md",
       "example_dsl_path": "test_harness/interface_example_packs/api_boolean_primitives.example_dsl.json",
       "match": {
-        "target_apis": ["api_boolean"],
-        "builder_terms": ["solid_cylinder", "solid_wedge", "primitive tolerance"]
+        "target_apis": [
+          "api_boolean"
+        ],
+        "builder_terms": [
+          "solid_cylinder",
+          "solid_wedge",
+          "primitive tolerance"
+        ]
       }
     },
     "step_import_iges_import": {
@@ -256,9 +348,20 @@
         "test_harness/interface_example_packs/iges_import.example_recipe.json"
       ],
       "match": {
-        "target_apis": ["step_import", "iges_import"],
-        "geometry_families": ["corpus", "exchange_file"],
-        "builder_terms": ["STEP", "IGES", "import", "ABC"]
+        "target_apis": [
+          "step_import",
+          "iges_import"
+        ],
+        "geometry_families": [
+          "corpus",
+          "exchange_file"
+        ],
+        "builder_terms": [
+          "STEP",
+          "IGES",
+          "import",
+          "ABC"
+        ]
       }
     },
     "step_iges_roundtrip": {
@@ -271,9 +374,20 @@
         "test_harness/interface_example_packs/iges_roundtrip.example_recipe.json"
       ],
       "match": {
-        "target_apis": ["step_roundtrip", "iges_roundtrip"],
-        "geometry_families": ["exchange_file"],
-        "builder_terms": ["roundtrip", "STEP", "IGES", "export", "import"]
+        "target_apis": [
+          "step_roundtrip",
+          "iges_roundtrip"
+        ],
+        "geometry_families": [
+          "exchange_file"
+        ],
+        "builder_terms": [
+          "roundtrip",
+          "STEP",
+          "IGES",
+          "export",
+          "import"
+        ]
       }
     },
     "check_sgt_loaded_assets": {
@@ -285,9 +399,17 @@
         "test_harness/interface_example_packs/check_sgt.example_recipe.json"
       ],
       "match": {
-        "target_apis": ["check_sgt"],
-        "geometry_families": ["loaded_sgt"],
-        "builder_terms": ["SGT", "replay", "TopoCheck"]
+        "target_apis": [
+          "check_sgt"
+        ],
+        "geometry_families": [
+          "loaded_sgt"
+        ],
+        "builder_terms": [
+          "SGT",
+          "replay",
+          "TopoCheck"
+        ]
       }
     },
     "api_offset_body": {
@@ -302,9 +424,19 @@
         "test_harness/interface_example_packs/api_offset_body.invalid_recipe.json"
       ],
       "match": {
-        "target_apis": ["api_offset_body"],
-        "geometry_families": ["primitive", "loaded_sgt", "generated_offset"],
-        "builder_terms": ["offset", "api_offset_body", "body offset"]
+        "target_apis": [
+          "api_offset_body"
+        ],
+        "geometry_families": [
+          "primitive",
+          "loaded_sgt",
+          "generated_offset"
+        ],
+        "builder_terms": [
+          "offset",
+          "api_offset_body",
+          "body offset"
+        ]
       }
     },
     "api_boolean_split": {
@@ -319,9 +451,20 @@
         "test_harness/interface_example_packs/api_boolean_split.invalid_recipe.json"
       ],
       "match": {
-        "target_apis": ["api_boolean_split"],
-        "geometry_families": ["primitive", "plane_sheet"],
-        "builder_terms": ["split", "plane sheet", "outer body", "inner body", "intersection wire"]
+        "target_apis": [
+          "api_boolean_split"
+        ],
+        "geometry_families": [
+          "primitive",
+          "plane_sheet"
+        ],
+        "builder_terms": [
+          "split",
+          "plane sheet",
+          "outer body",
+          "inner body",
+          "intersection wire"
+        ]
       }
     },
     "api_boolean_slice": {
@@ -336,9 +479,19 @@
         "test_harness/interface_example_packs/api_boolean_slice.invalid_recipe.json"
       ],
       "match": {
-        "target_apis": ["api_boolean_slice"],
-        "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
-        "builder_terms": ["slice", "intersection wire", "wire body"]
+        "target_apis": [
+          "api_boolean_slice"
+        ],
+        "geometry_families": [
+          "primitive",
+          "generated_ops",
+          "loaded_sgt"
+        ],
+        "builder_terms": [
+          "slice",
+          "intersection wire",
+          "wire body"
+        ]
       }
     },
     "api_offset2d": {
@@ -355,9 +508,21 @@
         "test_harness/interface_example_packs/api_offset2d.invalid_recipe.json"
       ],
       "match": {
-        "target_apis": ["api_offset2d"],
-        "geometry_families": ["line2d", "arc2d", "composite_path2d"],
-        "builder_terms": ["2D offset", "line path", "arc path", "connect type", "degenerate curve"]
+        "target_apis": [
+          "api_offset2d"
+        ],
+        "geometry_families": [
+          "line2d",
+          "arc2d",
+          "composite_path2d"
+        ],
+        "builder_terms": [
+          "2D offset",
+          "line path",
+          "arc path",
+          "connect type",
+          "degenerate curve"
+        ]
       }
     },
     "api_topology_section": {
@@ -372,9 +537,20 @@
         "test_harness/interface_example_packs/api_topology_section.invalid_recipe.json"
       ],
       "match": {
-        "target_apis": ["api_topology_section"],
-        "geometry_families": ["primitive", "generated_ops", "loaded_sgt"],
-        "builder_terms": ["topology section", "intersection edge", "intersection vertex", "section curve"]
+        "target_apis": [
+          "api_topology_section"
+        ],
+        "geometry_families": [
+          "primitive",
+          "generated_ops",
+          "loaded_sgt"
+        ],
+        "builder_terms": [
+          "topology section",
+          "intersection edge",
+          "intersection vertex",
+          "section curve"
+        ]
       }
     },
     "oracle_calibration": {
@@ -386,9 +562,19 @@
         "test_harness/dsl/oracle_checks_smoke.json"
       ],
       "match": {
-        "target_apis": ["api_boolean"],
-        "geometry_families": ["primitive"],
-        "oracles_any": ["point_relation", "face_point_relation", "clash", "distance", "plane_extreme"]
+        "target_apis": [
+          "api_boolean"
+        ],
+        "geometry_families": [
+          "primitive"
+        ],
+        "oracles_any": [
+          "point_relation",
+          "face_point_relation",
+          "clash",
+          "distance",
+          "plane_extreme"
+        ]
       }
     }
   },
@@ -396,7 +582,10 @@
     "api_boolean": {
       "preferred_format": "attack_dsl",
       "runner_recipe_api": true,
-      "body_required": ["target", "tool"],
+      "body_required": [
+        "target",
+        "tool"
+      ],
       "supported_body_builders": [
         "solid_cylinder",
         "solid_wedge",
@@ -433,8 +622,17 @@
     "api_boolean_split": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["target", "tool"],
-      "required_fields": ["case_id", "api", "modeling_tol", "target_kind", "tool_kind"],
+      "body_required": [
+        "target",
+        "tool"
+      ],
+      "required_fields": [
+        "case_id",
+        "api",
+        "modeling_tol",
+        "target_kind",
+        "tool_kind"
+      ],
       "supported_body_builders": [
         "solid_cylinder",
         "solid_wedge",
@@ -451,7 +649,12 @@
         "pre_boolean_cylinder_wedge",
         "loaded_sgt"
       ],
-      "supported_oracles": ["split_body_counts", "result_bodies", "properties", "topocheck"],
+      "supported_oracles": [
+        "split_body_counts",
+        "result_bodies",
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use target_* and tool_* fields; plane_sheet is the minimal supported planar splitter.",
         "Use split_outer_bodies, split_inner_bodies, split_wire_bodies, and split_total_bodies for classified count bounds."
@@ -460,8 +663,17 @@
     "api_boolean_slice": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["target", "tool"],
-      "required_fields": ["case_id", "api", "modeling_tol", "target_kind", "tool_kind"],
+      "body_required": [
+        "target",
+        "tool"
+      ],
+      "required_fields": [
+        "case_id",
+        "api",
+        "modeling_tol",
+        "target_kind",
+        "tool_kind"
+      ],
       "supported_body_builders": [
         "solid_cylinder",
         "solid_wedge",
@@ -477,7 +689,11 @@
         "pre_boolean_cylinder_wedge",
         "loaded_sgt"
       ],
-      "supported_oracles": ["slice_body_counts", "result_bodies", "topocheck"],
+      "supported_oracles": [
+        "slice_body_counts",
+        "result_bodies",
+        "topocheck"
+      ],
       "notes": [
         "boolean_type is optional and defaults to UNION.",
         "Slice results are wire-type bodies; prefer slice_result_bodies and slice_wire_bodies count bounds."
@@ -486,10 +702,25 @@
     "api_offset2d": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "required_fields": ["case_id", "api", "offset2d_path"],
-      "one_of_required_fields": [["offset2d_distance", "offset2d_distances"]],
-      "supported_segment_kinds": ["line", "arc"],
-      "supported_oracles": ["offset2d_status", "offset2d_result_paths"],
+      "required_fields": [
+        "case_id",
+        "api",
+        "offset2d_path"
+      ],
+      "one_of_required_fields": [
+        [
+          "offset2d_distance",
+          "offset2d_distances"
+        ]
+      ],
+      "supported_segment_kinds": [
+        "line",
+        "arc"
+      ],
+      "supported_oracles": [
+        "offset2d_status",
+        "offset2d_result_paths"
+      ],
       "notes": [
         "Use exactly one uniform offset2d_distance or one offset2d_distances value per path segment.",
         "Expected non-success statuses are valid test outcomes when expectations.offset2d_status matches the SDK result."
@@ -498,9 +729,23 @@
     "api_offset_body": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "source_kinds": ["solid_cylinder", "solid_sphere", "loaded_sgt"],
-      "required_fields": ["case_id", "api", "source_kind", "offset_distance", "modeling_tol"],
-      "supported_oracles": ["result_bodies", "properties", "topocheck"],
+      "source_kinds": [
+        "solid_cylinder",
+        "solid_sphere",
+        "loaded_sgt"
+      ],
+      "required_fields": [
+        "case_id",
+        "api",
+        "source_kind",
+        "offset_distance",
+        "modeling_tol"
+      ],
+      "supported_oracles": [
+        "result_bodies",
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use source_kind plus source_* fields for primitive inputs.",
         "For loaded_sgt, use source_file and source_body_index.",
@@ -510,8 +755,17 @@
     "api_topology_section": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["target", "tool"],
-      "required_fields": ["case_id", "api", "modeling_tol", "target_kind", "tool_kind"],
+      "body_required": [
+        "target",
+        "tool"
+      ],
+      "required_fields": [
+        "case_id",
+        "api",
+        "modeling_tol",
+        "target_kind",
+        "tool_kind"
+      ],
       "supported_body_builders": [
         "solid_cylinder",
         "solid_wedge",
@@ -528,7 +782,10 @@
         "pre_boolean_cylinder_wedge",
         "loaded_sgt"
       ],
-      "supported_oracles": ["topology_section_counts", "topocheck"],
+      "supported_oracles": [
+        "topology_section_counts",
+        "topocheck"
+      ],
       "notes": [
         "The initial adapter accepts body-producing target/tool builders while preserving edge and vertex results as separate topology artifacts.",
         "Use topology_section_edges, topology_section_vertices, and topology_section_total count bounds; do not treat these outputs as bodies."
@@ -537,8 +794,13 @@
     "check_sgt": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["source_file"],
-      "supported_oracles": ["topocheck", "properties"],
+      "body_required": [
+        "source_file"
+      ],
+      "supported_oracles": [
+        "topocheck",
+        "properties"
+      ],
       "notes": [
         "Use a flat recipe with api=check_sgt and a source_file.",
         "For non-body SGT topology assets, report topology counts rather than body property oracles."
@@ -547,8 +809,13 @@
     "step_import": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["source_file"],
-      "supported_oracles": ["properties", "topocheck"],
+      "body_required": [
+        "source_file"
+      ],
+      "supported_oracles": [
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use source_file pointing at .step or .stp.",
         "Follow import with corpus discovery or SGT recut when imported bodies should be attacked further."
@@ -557,8 +824,13 @@
     "iges_import": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["source_file"],
-      "supported_oracles": ["properties", "topocheck"],
+      "body_required": [
+        "source_file"
+      ],
+      "supported_oracles": [
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use source_file pointing at .iges or .igs.",
         "Follow import with corpus discovery or SGT recut when imported bodies should be attacked further."
@@ -567,8 +839,15 @@
     "step_roundtrip": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["source_file", "source_body_index"],
-      "supported_oracles": ["roundtrip_comparison", "properties", "topocheck"],
+      "body_required": [
+        "source_file",
+        "source_body_index"
+      ],
+      "supported_oracles": [
+        "roundtrip_comparison",
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use a source .sgt body, export to STEP, import back, then compare properties and bbox.",
         "Select AP203, AP214, or AP242 explicitly when source risk names an exchange protocol."
@@ -577,8 +856,15 @@
     "iges_roundtrip": {
       "preferred_format": "flat_recipe",
       "runner_recipe_api": true,
-      "body_required": ["source_file", "source_body_index"],
-      "supported_oracles": ["roundtrip_comparison", "properties", "topocheck"],
+      "body_required": [
+        "source_file",
+        "source_body_index"
+      ],
+      "supported_oracles": [
+        "roundtrip_comparison",
+        "properties",
+        "topocheck"
+      ],
       "notes": [
         "Use a source .sgt body, export to IGES, import back, then compare properties and bbox.",
         "Set face-only or SGK specified data flags only when the risk calls for them."
@@ -593,47 +879,136 @@
         "Return an extension request instead of pretending the runner supports the API.",
         "Include the minimal new recipe shape and one concrete smoke case."
       ]
+    },
+    "api_thicken_body": {
+      "body_required": [
+        "target"
+      ],
+      "notes": [
+        "Input must be a manifold sheet body; thickening interval must include 0 (the base surface) for the SDK to find lateral edges successfully.",
+        "The defaulted ThickenOpts parameter is omitted so the SDK default is used."
+      ],
+      "preferred_format": "flat_recipe",
+      "required_fields": [
+        "api",
+        "case_id"
+      ],
+      "runner_recipe_api": true,
+      "supported_body_builders": [
+        "plane_sheet",
+        "thicken_rect_sheet",
+        "extrude_rect",
+        "sweep_circle_line",
+        "revolve_line",
+        "revolve_rect"
+      ],
+      "supported_oracles": [
+        "properties",
+        "result_bodies",
+        "topocheck"
+      ]
     }
   },
   "body_builders": {
-    "solid_cylinder": {"family": "primitive", "recipe_body": true},
-    "solid_wedge": {"family": "primitive", "recipe_body": true},
-    "solid_sphere": {"family": "primitive", "recipe_body": true},
-    "solid_cone": {"family": "primitive", "recipe_body": true},
-    "solid_torus": {"family": "primitive", "recipe_body": true},
-    "plane_sheet": {"family": "plane_sheet", "recipe_body": true},
-    "extrude_rect": {"family": "generated_extrude", "recipe_body": true},
-    "thicken_rect_sheet": {"family": "generated_thicken", "recipe_body": true},
-    "sweep_circle_line": {"family": "generated_sweep", "recipe_body": true},
-    "support_sweep_bspline_surface": {"family": "support_sweep_bspline", "recipe_body": true},
-    "revolve_line": {"family": "generated_revolve", "recipe_body": true},
-    "revolve_rect": {"family": "generated_revolve", "recipe_body": true},
-    "pre_boolean_cylinder_wedge": {"family": "pre_boolean", "recipe_body": true},
-    "loaded_sgt": {"family": "loaded_sgt", "recipe_body": true}
+    "solid_cylinder": {
+      "family": "primitive",
+      "recipe_body": true
+    },
+    "solid_wedge": {
+      "family": "primitive",
+      "recipe_body": true
+    },
+    "solid_sphere": {
+      "family": "primitive",
+      "recipe_body": true
+    },
+    "solid_cone": {
+      "family": "primitive",
+      "recipe_body": true
+    },
+    "solid_torus": {
+      "family": "primitive",
+      "recipe_body": true
+    },
+    "plane_sheet": {
+      "family": "plane_sheet",
+      "recipe_body": true
+    },
+    "extrude_rect": {
+      "family": "generated_extrude",
+      "recipe_body": true
+    },
+    "thicken_rect_sheet": {
+      "family": "generated_thicken",
+      "recipe_body": true
+    },
+    "sweep_circle_line": {
+      "family": "generated_sweep",
+      "recipe_body": true
+    },
+    "support_sweep_bspline_surface": {
+      "family": "support_sweep_bspline",
+      "recipe_body": true
+    },
+    "revolve_line": {
+      "family": "generated_revolve",
+      "recipe_body": true
+    },
+    "revolve_rect": {
+      "family": "generated_revolve",
+      "recipe_body": true
+    },
+    "pre_boolean_cylinder_wedge": {
+      "family": "pre_boolean",
+      "recipe_body": true
+    },
+    "loaded_sgt": {
+      "family": "loaded_sgt",
+      "recipe_body": true
+    }
   },
   "oracles": {
     "result_bodies": {
-      "expectation_fields": ["result_bodies"],
+      "expectation_fields": [
+        "result_bodies"
+      ],
       "guidance": "Assert result_bodies min/max when non-empty or empty output is part of the truth."
     },
     "split_body_counts": {
-      "expectation_fields": ["split_outer_bodies", "split_inner_bodies", "split_wire_bodies", "split_total_bodies"],
+      "expectation_fields": [
+        "split_outer_bodies",
+        "split_inner_bodies",
+        "split_wire_bodies",
+        "split_total_bodies"
+      ],
       "guidance": "Assert classified split output counts with exact integers or min/max bounds."
     },
     "slice_body_counts": {
-      "expectation_fields": ["slice_result_bodies", "slice_wire_bodies"],
+      "expectation_fields": [
+        "slice_result_bodies",
+        "slice_wire_bodies"
+      ],
       "guidance": "Assert the number of wire-type bodies returned by api_boolean_slice."
     },
     "offset2d_status": {
-      "expectation_fields": ["offset2d_status"],
+      "expectation_fields": [
+        "offset2d_status"
+      ],
       "guidance": "Match the named Offset2DStatus, including an expected non-success diagnostic status."
     },
     "offset2d_result_paths": {
-      "expectation_fields": ["offset2d_result_path_count", "offset2d_result_paths"],
+      "expectation_fields": [
+        "offset2d_result_path_count",
+        "offset2d_result_paths"
+      ],
       "guidance": "Assert exact or bounded output-path counts for api_offset2d."
     },
     "topology_section_counts": {
-      "expectation_fields": ["topology_section_edges", "topology_section_vertices", "topology_section_total"],
+      "expectation_fields": [
+        "topology_section_edges",
+        "topology_section_vertices",
+        "topology_section_total"
+      ],
       "guidance": "Assert edge and standalone-vertex results separately because api_topology_section does not return bodies."
     },
     "properties": {
@@ -650,39 +1025,57 @@
       "guidance": "Assert finite length/area/volume and metric ranges when analytic bounds are known."
     },
     "boolean_volume_relation": {
-      "expectation_fields": ["boolean_volume_relation"],
+      "expectation_fields": [
+        "boolean_volume_relation"
+      ],
       "guidance": "Use sample_input_properties=true only for stable solid boolean inputs."
     },
     "boolean_bbox_relation": {
-      "expectation_fields": ["boolean_bbox_relation"],
+      "expectation_fields": [
+        "boolean_bbox_relation"
+      ],
       "guidance": "Use boolean_bbox_relation only for stable solid boolean inputs with predictable extents."
     },
     "point_relation": {
-      "expectation_fields": ["point_relations"],
+      "expectation_fields": [
+        "point_relations"
+      ],
       "guidance": "Use named key_points and point_ref for critical inside/outside/boundary probes."
     },
     "face_point_relation": {
-      "expectation_fields": ["face_point_relations"],
+      "expectation_fields": [
+        "face_point_relations"
+      ],
       "guidance": "Prefer uv_fraction or uv on selected faces unless an exact 3D face point is known."
     },
     "clash": {
-      "expectation_fields": ["clash_checks"],
+      "expectation_fields": [
+        "clash_checks"
+      ],
       "guidance": "Use role_a/role_b among target, tool, and result with NoClash, AnyClash, or exact ClashType."
     },
     "distance": {
-      "expectation_fields": ["distance_checks"],
+      "expectation_fields": [
+        "distance_checks"
+      ],
       "guidance": "Use minimum distance for clearance/tangency and set expected/min/max with explicit tolerances."
     },
     "plane_extreme": {
-      "expectation_fields": ["plane_extreme_checks"],
+      "expectation_fields": [
+        "plane_extreme_checks"
+      ],
       "guidance": "Use exact coordinate-plane distance probes for hard min/max coordinate oracles."
     },
     "roundtrip_comparison": {
-      "expectation_fields": ["roundtrip_comparison"],
+      "expectation_fields": [
+        "roundtrip_comparison"
+      ],
       "guidance": "Rely on roundtrip_comparison.json for STEP/IGES source/result drift."
     },
     "topocheck": {
-      "expectation_fields": ["runner_topocheck"],
+      "expectation_fields": [
+        "runner_topocheck"
+      ],
       "guidance": "TopoCheck is always part of runner pass/fail for supported body outputs."
     }
   }

@@ -5,15 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Any, Sequence
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 from test_harness.authoring_gateway.config import DEFAULT_PROFILE, PROFILE_SPECS, ConfigError
 
 from .runtime import MessageApiRuntime
 from .workflow import HarnessWorkflow, WorkflowError
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,6 +68,7 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
             jobs=int(os.environ.get("SGGK_HARNESS_JOBS", "1")),
             execution_timeout_seconds=float(os.environ.get("SGGK_HARNESS_TIMEOUT", "180")),
             campaign_dataset=os.environ.get("SGGK_CAMPAIGN_DATASET", ""),
+            sdk_dir=_sdk_dir_from_environment(),
         )
     else:
         runtime = _OfflineRuntime(profile)

@@ -301,6 +301,7 @@ class HarnessUiApplication:
             jobs=settings.jobs,
             execution_timeout_seconds=settings.execution_timeout_seconds,
             campaign_dataset=settings.campaign_dataset,
+            sdk_dir=settings.sdk_dir or None,
         )
         return HarnessWorkflow(
             runtime,

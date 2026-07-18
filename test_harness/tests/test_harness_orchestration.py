@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -373,6 +374,34 @@ def test_configured_abc_index_enables_fixed_step_import_campaign_without_leaking
     approval = json.loads((tmp_path / session["approval_path"]).read_text(encoding="utf-8"))
     assert approval["campaign_dataset_identity"] == session["campaign_dataset_identity"]
     assert approval["campaign_dataset_identity"]
+
+
+def test_checked_plugin_route_removes_extension_escape_hatch(tmp_path: Path) -> None:
+    capabilities = tmp_path / "test_harness" / "interface_capabilities.json"
+    capabilities.parent.mkdir(parents=True)
+    capabilities.write_bytes((REPO_ROOT / "test_harness/interface_capabilities.json").read_bytes())
+    shutil.copytree(
+        REPO_ROOT / "test_harness" / "api_plugins",
+        tmp_path / "test_harness" / "api_plugins",
+    )
+    (tmp_path / "artifacts").mkdir()
+    runtime = FakeRuntime(tmp_path)
+    workflow = HarnessWorkflow(runtime, repo_root=tmp_path, profile="siliconflow")
+
+    workflow.start("api_combine_bodies")
+
+    session_root = next((tmp_path / "artifacts/harness_sessions").glob("*_api_combine_bodies_*"))
+    task_manifest = json.loads(
+        (session_root / "rounds/0001/prompt/model_task_manifest.json").read_text(encoding="utf-8")
+    )
+    task = task_manifest["tasks"][0]
+    assert task["output_contract"]["allowed_kinds"] == ["flat_recipe"]
+    prompt = (session_root / "rounds/0001/prompt/authoring_prompt.md").read_text(encoding="utf-8")
+    assert "needs_harness_extension is not accepted" in prompt
+    assert "Checked-in Plugin Recipe Contract" in prompt
+    assert "require_finite_properties" in prompt
+    assert "plugin_combine_bodies_smoke" in prompt
+    assert str(REPO_ROOT) not in prompt
 
 
 def test_active_session_rejects_changed_abc_dataset_binding(tmp_path: Path) -> None:

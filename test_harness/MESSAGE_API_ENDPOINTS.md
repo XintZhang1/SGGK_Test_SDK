@@ -31,6 +31,20 @@ $env:SGGK_HARNESS_PROFILE = "siliconflow"
 其他 HTTPS host、代理 endpoint 或 model。普通用户通过
 `SGGK_Harness_UI.cmd` 保存 key；UI 只展示 `api_key_configured` 布尔值。
 
+## 咨询性视觉复核 profile（不参与任何结论）
+
+`siliconflow_vision` 是独立于授权生成的视觉复核 profile：锁定同一 base URL，模型锁定为
+`Qwen/Qwen3-VL-32B-Instruct`，与 `siliconflow` 共用 `SILICONFLOW_API_KEY`；
+`SILICONFLOW_VISION_BASE_URL` / `SILICONFLOW_VISION_MODEL` / `SILICONFLOW_VISION_CA_BUNDLE`
+若设置也必须分别精确等于锁定值（base URL 与上述一致）。默认不发送 `enable_thinking`，
+使用与授权链路相同的 SSE 流式接收与失败关闭语义。
+
+视觉复核只发送宿主渲染的几何预览图（重编码 PNG，长边 ≤1600px，单张 ≤2 MiB，合计
+≤12 MiB，每次任务 ≤8 张）与固定中文提示，输出 `visual_review_report` 仅为咨询性证据：
+不参与门禁、批准、执行或失败归因，不改变任何候选或状态机。请求端只持久化图片的
+SHA-256 与字节数，不持久化像素数据。`proprietary_source` 会话不发送任何图片；
+API key 缺失或 profile 未配置时视觉复核只记录提示并跳过。
+
 ## 请求与响应契约
 
 Harness 向以下地址发起 OpenAI-compatible SSE 流式请求：
