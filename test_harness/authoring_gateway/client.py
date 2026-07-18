@@ -171,6 +171,7 @@ class CompletionOptions:
     thinking_mode: str = "omit"
     stream: bool = False
     seed: int | None = None
+    request_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.response_mode not in {"auto", "json_schema", "json_object", "none"}:
@@ -181,6 +182,8 @@ class CompletionOptions:
             raise ValueError("max_tokens must be positive")
         if not isinstance(self.stream, bool):
             raise ValueError("stream must be a boolean")
+        if self.request_timeout_seconds is not None and self.request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be positive when set")
 
 
 @dataclass
@@ -864,6 +867,11 @@ class OpenAICompatibleMessageClient:
     ) -> CompletionResult:
         result = CompletionResult(ok=False)
         modes = self._modes(options)
+        timeout_seconds = (
+            options.request_timeout_seconds
+            if options.request_timeout_seconds is not None
+            else self.config.request_timeout_seconds
+        )
         for mode_index, mode in enumerate(modes):
             payload = self._payload(system_prompt, user_prompt, options, mode)
             payload_bytes = canonical_json_bytes(payload)
@@ -876,7 +884,7 @@ class OpenAICompatibleMessageClient:
                         url=self.config.endpoint_url,
                         headers=self._headers(stream=options.stream),
                         body=payload_bytes,
-                        timeout_seconds=self.config.request_timeout_seconds,
+                        timeout_seconds=timeout_seconds,
                         ca_bundle=self.config.ca_bundle,
                         response_bytes_limit=self.config.response_bytes_limit,
                         stream_bytes_limit=self.config.stream_bytes_limit,
@@ -905,7 +913,7 @@ class OpenAICompatibleMessageClient:
                     if exc.timed_out:
                         result.error_kind = "transport_timeout"
                         result.error = (
-                            f"Message API timed out after {self.config.request_timeout_seconds:g} seconds "
+                            f"Message API timed out after {timeout_seconds:g} seconds "
                             f"while waiting for {self.config.model} "
                             f"(thinking={options.thinking_mode}, max_tokens={options.max_tokens}); "
                             "the timeout was not retried to avoid another long wait"

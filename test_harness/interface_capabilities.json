@@ -54,7 +54,7 @@
   "output_kinds": {
     "attack_dsl": {
       "gate": "compile_attack_dsl.py --check",
-      "description": "Preferred contract for api_boolean and source-guided geometry attacks."
+      "description": "Preferred contract for api_boolean and source-guided geometry attacks. Supports parameter_clusters: named cluster_bases plus typed parameter clusters that fixed code expands deterministically (at most 50 cases per cluster) into 100k+ recipes for mass coverage."
     },
     "flat_recipe": {
       "gate": "validate_recipe.py",
@@ -426,7 +426,8 @@
       "notes": [
         "Use DSL target/tool builders or chains.",
         "Set stable id fields on chain steps that create, split, trim, or transform topology.",
-        "For tolerance risks, use sweeps or paired_sweeps around exact contact, geom_tol, and topo_tol."
+        "For tolerance risks, use sweeps or paired_sweeps around exact contact, geom_tol, and topo_tol.",
+        "For mass coverage (100k+ cases), use cluster_bases plus parameter_clusters with typed cluster types such as translate_axis, contact_band, size_dimension, angle_sweep, tolerance_sweep, large_coordinate_shift, boolean_type_cycle, option_toggle, mirror_sign, seeded_jitter, translate_line, scale_uniform, uv_domain, and enum_cycle; each cluster expands to at most 50 cases, so combine many bases, types, and grids instead of enumerating cases."
       ]
     },
     "api_boolean_split": {

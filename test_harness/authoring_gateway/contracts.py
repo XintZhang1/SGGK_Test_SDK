@@ -144,26 +144,28 @@ def _validate_attack_dsl(candidate: Mapping[str, Any], diagnostics: list[Contrac
         )
         return
     cases = dsl.get("cases")
-    if not isinstance(cases, list) or not cases:
+    clusters = dsl.get("parameter_clusters")
+    has_clusters = isinstance(clusters, list) and bool(clusters)
+    if (not isinstance(cases, list) or not cases) and not has_clusters:
         diagnostics.append(
             _error(
                 "ATTACK_DSL_CASES_MISSING",
                 "$.dsl.cases",
-                "attack_dsl requires a non-empty cases array.",
-                "Return at least one bounded case.",
+                "attack_dsl requires a non-empty cases array unless parameter_clusters is present.",
+                "Return at least one bounded case or a parameter_clusters array.",
             )
         )
         return
-    if len(cases) > 256:
+    if isinstance(cases, list) and len(cases) > 256:
         diagnostics.append(
             _error(
                 "ATTACK_DSL_CASE_LIMIT",
                 "$.dsl.cases",
                 "A single model response may contain at most 256 cases.",
-                "Use a cluster_seed or deterministic campaign profile for larger expansions.",
+                "Use parameter_clusters, a cluster_seed, or a deterministic campaign profile for larger expansions.",
             )
         )
-    for index, case in enumerate(cases):
+    for index, case in enumerate(cases if isinstance(cases, list) else []):
         if not isinstance(case, dict):
             diagnostics.append(
                 _error(
@@ -184,6 +186,81 @@ def _validate_attack_dsl(candidate: Mapping[str, Any], diagnostics: list[Contrac
             )
         else:
             _validate_case_id(case.get("case_id"), f"$.dsl.cases[{index}].case_id", diagnostics)
+    if clusters is None:
+        return
+    if not isinstance(clusters, list):
+        diagnostics.append(
+            _error(
+                "ATTACK_DSL_CLUSTERS_NOT_ARRAY",
+                "$.dsl.parameter_clusters",
+                "parameter_clusters must be an array when present.",
+                "Use an array of parameter cluster definitions or omit the field.",
+            )
+        )
+        return
+    if len(clusters) > 4096:
+        diagnostics.append(
+            _error(
+                "ATTACK_DSL_CLUSTER_LIMIT",
+                "$.dsl.parameter_clusters",
+                "A single model response may contain at most 4096 parameter cluster definitions.",
+                "Split the expansion across more bases per cluster instead of more definitions.",
+            )
+        )
+    bases = dsl.get("cluster_bases")
+    if clusters and not isinstance(bases, dict):
+        diagnostics.append(
+            _error(
+                "ATTACK_DSL_CLUSTER_BASES_MISSING",
+                "$.dsl.cluster_bases",
+                "parameter_clusters requires a cluster_bases object.",
+                "Add cluster_bases mapping base ids to target/tool base cases.",
+            )
+        )
+    elif isinstance(bases, dict) and len(bases) > 1024:
+        diagnostics.append(
+            _error(
+                "ATTACK_DSL_CLUSTER_BASE_LIMIT",
+                "$.dsl.cluster_bases",
+                "A single model response may contain at most 1024 cluster bases.",
+                "Reduce the number of named base geometries.",
+            )
+        )
+    for index, cluster in enumerate(clusters):
+        if not isinstance(cluster, dict):
+            diagnostics.append(
+                _error(
+                    "ATTACK_DSL_CLUSTER_NOT_OBJECT",
+                    f"$.dsl.parameter_clusters[{index}]",
+                    "Each parameter cluster must be an object.",
+                    "Replace the entry with a cluster definition object.",
+                )
+            )
+            continue
+        if not _nonempty_string(cluster.get("cluster_id")):
+            diagnostics.append(
+                _error(
+                    "ATTACK_DSL_CLUSTER_ID_MISSING",
+                    f"$.dsl.parameter_clusters[{index}].cluster_id",
+                    "Each parameter cluster requires a non-empty cluster_id.",
+                    "Add a stable filesystem-safe cluster_id.",
+                )
+            )
+        else:
+            _validate_case_id(
+                cluster.get("cluster_id"),
+                f"$.dsl.parameter_clusters[{index}].cluster_id",
+                diagnostics,
+            )
+        if not _nonempty_string(cluster.get("type")):
+            diagnostics.append(
+                _error(
+                    "ATTACK_DSL_CLUSTER_TYPE_MISSING",
+                    f"$.dsl.parameter_clusters[{index}].type",
+                    "Each parameter cluster requires a non-empty type.",
+                    "Set type to one of the registered parameter cluster types.",
+                )
+            )
 
 
 def _validate_flat_recipe(candidate: Mapping[str, Any], diagnostics: list[ContractDiagnostic]) -> None:
@@ -271,6 +348,27 @@ def _validate_extension(candidate: Mapping[str, Any], diagnostics: list[Contract
                     f"$.{key}",
                     f"needs_harness_extension requires {key} as {expected_type.__name__}.",
                     f"Return a concrete {key} value matching the output contract.",
+                )
+            )
+    # Structured interface-design fields (interface_dsl_design subagent output).
+    # They are optional at the transport layer; the fixed extension gate
+    # decides whether they are required for the task type and validates their
+    # semantics.
+    optional_design_types: tuple[tuple[str, type], ...] = (
+        ("interface_signature", dict),
+        ("builder_requirements", list),
+        ("archetype_match", dict),
+        ("parameter_cluster_plan", list),
+        ("complexity_plan", dict),
+    )
+    for key, expected_type in optional_design_types:
+        if key in candidate and not isinstance(candidate.get(key), expected_type):
+            diagnostics.append(
+                _error(
+                    f"EXTENSION_{key.upper()}_INVALID",
+                    f"$.{key}",
+                    f"needs_harness_extension design field {key} must be a {expected_type.__name__} when present.",
+                    f"Return {key} as a {expected_type.__name__} matching the interface design contract.",
                 )
             )
 

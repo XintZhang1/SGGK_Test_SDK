@@ -16,10 +16,27 @@ import time
 from typing import Any
 
 from harness_capabilities import load_capabilities, supported_apis
+from plugin_catalog import ALLOWED_ARCHETYPES
+from compile_attack_dsl import CLUSTER_TYPES
 
 
 CAPABILITIES = load_capabilities()
 SUPPORTED_APIS = set(supported_apis(CAPABILITIES))
+REGISTERED_ARCHETYPES = set(ALLOWED_ARCHETYPES)
+REGISTERED_CLUSTER_TYPES = set(CLUSTER_TYPES)
+ARCHETYPE_FITS = {"exact", "partial", "none"}
+SIGNATURE_ROLES = {"input", "output", "option"}
+RETURN_CHANNELS = {"curves", "points", "bodies", "status", "topology"}
+COMPLEXITY_DIMENSIONS = {
+    "multi_op_chain",
+    "generated_topology",
+    "tolerance_band",
+    "oracle_strength",
+    "large_coordinate",
+    "degenerate_or_negative",
+    "transform_usage",
+}
+MAX_CLUSTER_CASES = 50
 REQUIRED_PATCH_LAYERS = {
     "schema",
     "validator",
@@ -103,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("paths", nargs="+", help="Extension request JSON file(s) or directories")
     parser.add_argument("--report", default="", help="Optional validation report JSON path")
     parser.add_argument("--model-diagnostics", default="", help="Optional model-friendly diagnostics JSON path")
+    parser.add_argument(
+        "--require-design",
+        action="store_true",
+        help="Require the structured interface-design fields (interface_dsl_design task output)",
+    )
     return parser.parse_args()
 
 
@@ -598,6 +620,186 @@ def extension_request_text(value: Any) -> str:
     return " ".join(part for part in parts if part)
 
 
+def validate_interface_signature(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
+    signature = value.get("interface_signature")
+    label = f"{path}.interface_signature"
+    if not isinstance(signature, dict) or not signature:
+        validate_object_field(value, "interface_signature", diagnostics, path=path)
+        return
+    parameters = signature.get("parameters")
+    if not isinstance(parameters, list) or not parameters:
+        diagnostics.append(
+            diagnostic(
+                "error",
+                "INVALID_INTERFACE_SIGNATURE",
+                f"{label}.parameters",
+                "interface_signature.parameters must be a non-empty list.",
+                "List every SDK parameter with name, type, and role (input|output|option).",
+            )
+        )
+    else:
+        for index, parameter in enumerate(parameters):
+            if not isinstance(parameter, dict):
+                diagnostics.append(
+                    diagnostic("error", "INVALID_INTERFACE_SIGNATURE", f"{label}.parameters[{index}]", "parameter entries must be objects.", "Use {\"name\": \"...\", \"type\": \"...\", \"role\": \"input\"}.")
+                )
+                continue
+            for key in ("name", "type"):
+                if not isinstance(parameter.get(key), str) or not parameter[key].strip():
+                    diagnostics.append(
+                        diagnostic("error", "INVALID_INTERFACE_SIGNATURE", f"{label}.parameters[{index}].{key}", f"parameter {key} must be a non-empty string.", "Copy the parameter name and type from the SDK header declaration.")
+                    )
+            role = parameter.get("role")
+            if role not in SIGNATURE_ROLES:
+                diagnostics.append(
+                    diagnostic("error", "INVALID_INTERFACE_SIGNATURE", f"{label}.parameters[{index}].role", f"parameter role must be one of {sorted(SIGNATURE_ROLES)}.", "Classify the parameter as input, output, or option.")
+                )
+    if not isinstance(signature.get("return_type"), str) or not signature["return_type"].strip():
+        diagnostics.append(
+            diagnostic("error", "INVALID_INTERFACE_SIGNATURE", f"{label}.return_type", "return_type must be a non-empty string.", "Copy the return type from the SDK header declaration.")
+        )
+    channels = signature.get("return_channels")
+    if not isinstance(channels, list) or not channels or any(channel not in RETURN_CHANNELS for channel in channels):
+        diagnostics.append(
+            diagnostic("error", "INVALID_INTERFACE_SIGNATURE", f"{label}.return_channels", f"return_channels must be a non-empty list from {sorted(RETURN_CHANNELS)}.", "Name the channels the API returns evidence through.")
+        )
+
+
+def validate_builder_requirements(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
+    requirements = value.get("builder_requirements")
+    label = f"{path}.builder_requirements"
+    if not isinstance(requirements, list) or not requirements:
+        diagnostics.append(
+            diagnostic("error", "INVALID_BUILDER_REQUIREMENTS", label, "builder_requirements must be a non-empty list.", "List the geometry builders the runner needs for this interface.")
+        )
+        return
+    for index, requirement in enumerate(requirements):
+        if not isinstance(requirement, dict):
+            diagnostics.append(
+                diagnostic("error", "INVALID_BUILDER_REQUIREMENTS", f"{label}[{index}]", "builder requirement entries must be objects.", "Use {\"builder_id\": \"...\", \"geometry_kind\": \"...\", \"parameters\": {}, \"rationale\": \"...\"}.")
+            )
+            continue
+        for key in ("builder_id", "geometry_kind", "rationale"):
+            if not isinstance(requirement.get(key), str) or not requirement[key].strip():
+                diagnostics.append(
+                    diagnostic("error", "INVALID_BUILDER_REQUIREMENTS", f"{label}[{index}].{key}", f"builder requirement {key} must be a non-empty string.", "Name the builder, its geometry kind, and why the interface needs it.")
+                )
+        if not isinstance(requirement.get("parameters"), dict):
+            diagnostics.append(
+                diagnostic("warning", "INVALID_BUILDER_REQUIREMENTS", f"{label}[{index}].parameters", "builder requirement parameters should be an object.", "Describe each builder parameter name and type.")
+            )
+
+
+def validate_archetype_match(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
+    match = value.get("archetype_match")
+    label = f"{path}.archetype_match"
+    if not isinstance(match, dict) or not match:
+        validate_object_field(value, "archetype_match", diagnostics, path=path)
+        return
+    archetype = match.get("archetype")
+    if archetype not in REGISTERED_ARCHETYPES:
+        diagnostics.append(
+            diagnostic("error", "INVALID_ARCHETYPE_MATCH", f"{label}.archetype", f"archetype must be one of {sorted(REGISTERED_ARCHETYPES)}.", "Choose the registered fixed archetype family this interface belongs to.")
+        )
+    fit = match.get("fit")
+    if fit not in ARCHETYPE_FITS:
+        diagnostics.append(
+            diagnostic("error", "INVALID_ARCHETYPE_MATCH", f"{label}.fit", f"fit must be one of {sorted(ARCHETYPE_FITS)}.", "Use exact when the archetype covers the interface, partial with gaps listed, or none with the gap explained.")
+        )
+    if fit in {"partial", "none"}:
+        gaps = match.get("gaps")
+        if not isinstance(gaps, list) or not gaps or any(not isinstance(item, str) or not item.strip() for item in gaps):
+            diagnostics.append(
+                diagnostic("error", "INVALID_ARCHETYPE_MATCH", f"{label}.gaps", "fit=partial/none requires a non-empty gaps list.", "Explain concretely what the archetype cannot cover.")
+            )
+
+
+def validate_parameter_cluster_plan(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
+    plan = value.get("parameter_cluster_plan")
+    label = f"{path}.parameter_cluster_plan"
+    if not isinstance(plan, list) or not plan:
+        diagnostics.append(
+            diagnostic("error", "INVALID_CLUSTER_PLAN", label, "parameter_cluster_plan must be a non-empty list.", "Plan which registered parameter cluster types apply to this interface.")
+        )
+        return
+    for index, entry in enumerate(plan):
+        if not isinstance(entry, dict):
+            diagnostics.append(
+                diagnostic("error", "INVALID_CLUSTER_PLAN", f"{label}[{index}]", "cluster plan entries must be objects.", "Use {\"cluster_type\": \"...\", \"target_parameter\": \"...\", \"rationale\": \"...\", \"estimated_cases\": 50}.")
+            )
+            continue
+        cluster_type = entry.get("cluster_type")
+        if cluster_type not in REGISTERED_CLUSTER_TYPES:
+            diagnostics.append(
+                diagnostic("error", "INVALID_CLUSTER_PLAN", f"{label}[{index}].cluster_type", f"cluster_type must be one of {sorted(REGISTERED_CLUSTER_TYPES)}.", "Use only the registered parameter cluster types.")
+            )
+        if not isinstance(entry.get("target_parameter"), str) or not entry["target_parameter"].strip():
+            diagnostics.append(
+                diagnostic("error", "INVALID_CLUSTER_PLAN", f"{label}[{index}].target_parameter", "target_parameter must be a non-empty string.", "Name the recipe field or chain path this cluster varies.")
+            )
+        estimated = entry.get("estimated_cases")
+        if isinstance(estimated, bool) or not isinstance(estimated, int) or not (1 <= estimated <= MAX_CLUSTER_CASES):
+            diagnostics.append(
+                diagnostic("error", "INVALID_CLUSTER_PLAN", f"{label}[{index}].estimated_cases", f"estimated_cases must be an integer within 1..{MAX_CLUSTER_CASES}.", f"Each parameter cluster expands to at most {MAX_CLUSTER_CASES} cases.")
+            )
+
+
+def validate_complexity_plan(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
+    plan = value.get("complexity_plan")
+    label = f"{path}.complexity_plan"
+    if not isinstance(plan, dict) or not plan:
+        validate_object_field(value, "complexity_plan", diagnostics, path=path)
+        return
+    dimensions = plan.get("dimensions")
+    if not isinstance(dimensions, list) or not dimensions or any(dimension not in COMPLEXITY_DIMENSIONS for dimension in dimensions):
+        diagnostics.append(
+            diagnostic("error", "INVALID_COMPLEXITY_PLAN", f"{label}.dimensions", f"dimensions must be a non-empty list from {sorted(COMPLEXITY_DIMENSIONS)}.", "Name the fixed complexity dimensions that apply to this interface.")
+        )
+    for key in ("degenerate_inputs", "tolerance_boundaries"):
+        entries = plan.get(key)
+        if not isinstance(entries, list) or any(not isinstance(item, str) or not item.strip() for item in entries):
+            diagnostics.append(
+                diagnostic("warning", "INVALID_COMPLEXITY_PLAN", f"{label}.{key}", f"complexity_plan.{key} should be a list of strings.", "Describe concrete degenerate inputs and tolerance boundaries for this interface.")
+            )
+
+
+DESIGN_FIELDS = (
+    "interface_signature",
+    "builder_requirements",
+    "archetype_match",
+    "parameter_cluster_plan",
+    "complexity_plan",
+)
+
+
+def validate_design_fields(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str, require_design: bool) -> None:
+    present = [field for field in DESIGN_FIELDS if field in value]
+    if not require_design and not present:
+        return
+    if require_design:
+        for field in DESIGN_FIELDS:
+            if field not in value:
+                diagnostics.append(
+                    diagnostic(
+                        "error",
+                        "MISSING_DESIGN_FIELD",
+                        f"{path}.{field}",
+                        f"interface_dsl_design output requires {field}.",
+                        "Return the complete interface design contract with all structured design fields.",
+                    )
+                )
+    if "interface_signature" in value:
+        validate_interface_signature(value, diagnostics, path=path)
+    if "builder_requirements" in value:
+        validate_builder_requirements(value, diagnostics, path=path)
+    if "archetype_match" in value:
+        validate_archetype_match(value, diagnostics, path=path)
+    if "parameter_cluster_plan" in value:
+        validate_parameter_cluster_plan(value, diagnostics, path=path)
+    if "complexity_plan" in value:
+        validate_complexity_plan(value, diagnostics, path=path)
+
+
 def validate_not_asset_gap_as_extension(value: dict[str, Any], diagnostics: list[dict[str, Any]], *, path: str) -> None:
     text = extension_request_text(value).lower()
     missing_asset_terms = [
@@ -657,7 +859,7 @@ def validate_not_asset_gap_as_extension(value: dict[str, Any], diagnostics: list
         )
 
 
-def validate_extension_request(value: Any, path: str = "$") -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def validate_extension_request(value: Any, path: str = "$", *, require_design: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     diagnostics: list[dict[str, Any]] = []
     if not isinstance(value, dict):
         return {}, [
@@ -690,6 +892,7 @@ def validate_extension_request(value: Any, path: str = "$") -> tuple[dict[str, A
     validate_proposed_artifacts(normalized, diagnostics, path=path)
     validate_validation_oracle(normalized, diagnostics, path=path)
     validate_patch_plan(normalized, diagnostics, path=path)
+    validate_design_fields(normalized, diagnostics, path=path, require_design=require_design)
     api = normalized.get("api")
     if isinstance(api, str) and api in SUPPORTED_APIS:
         diagnostics.append(
@@ -705,7 +908,7 @@ def validate_extension_request(value: Any, path: str = "$") -> tuple[dict[str, A
     return normalized, diagnostics
 
 
-def validate_file(path: Path) -> dict[str, Any]:
+def validate_file(path: Path, *, require_design: bool = False) -> dict[str, Any]:
     if not path.exists():
         diagnostics = [
             diagnostic(
@@ -730,7 +933,7 @@ def validate_file(path: Path) -> dict[str, Any]:
             )
         ]
         return {"path": str(path), "ok": False, "normalized": {}, "diagnostics": diagnostics}
-    normalized, diagnostics = validate_extension_request(loaded, "$")
+    normalized, diagnostics = validate_extension_request(loaded, "$", require_design=require_design)
     ok = not any(item.get("severity") == "error" for item in diagnostics)
     return {"path": str(path), "ok": ok, "normalized": normalized, "diagnostics": diagnostics}
 
@@ -760,7 +963,7 @@ def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
-    records = [validate_file(path) for path in iter_json_files(args.paths)]
+    records = [validate_file(path, require_design=args.require_design) for path in iter_json_files(args.paths)]
     summary = build_summary(records)
     for record in records:
         path = record["path"]

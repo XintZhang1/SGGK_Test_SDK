@@ -20,6 +20,15 @@ from test_harness.tools.run_message_harness_pipeline import MessageHarnessPipeli
 
 from .workflow import WorkflowError, _safe_id, _write_json
 
+INTERFACE_DESIGN_TASK_TYPE = "interface_dsl_design"
+# The interface-design subagent designs support for one unknown API from SDK
+# header evidence.  It deliberately runs GLM-5.2 with thinking enabled and a
+# long generation budget: the design contract is large and the user accepts
+# long generation for this role (the default authoring lane keeps thinking
+# disabled because it did not finish in 20 minutes for full code generation).
+INTERFACE_DESIGN_MAX_TOKENS = 65_536
+INTERFACE_DESIGN_TIMEOUT_SECONDS = 3_600.0
+
 
 class MessageApiRuntime:
     """Use one configured OpenAI-compatible Message API for every model step."""
@@ -73,7 +82,16 @@ class MessageApiRuntime:
             client=self.client,
         )
 
-    def _authoring_options(self) -> CompletionOptions:
+    def _authoring_options(self, task_type: str = "") -> CompletionOptions:
+        if task_type == INTERFACE_DESIGN_TASK_TYPE:
+            return CompletionOptions(
+                response_mode="auto",
+                temperature=0.1,
+                max_tokens=INTERFACE_DESIGN_MAX_TOKENS,
+                thinking_mode="enabled",
+                stream=self.config.profile.default_stream,
+                request_timeout_seconds=INTERFACE_DESIGN_TIMEOUT_SECONDS,
+            )
         return CompletionOptions(
             response_mode="auto",
             temperature=0.2,
@@ -82,6 +100,16 @@ class MessageApiRuntime:
             stream=self.config.profile.default_stream,
         )
 
+    @staticmethod
+    def _manifest_task_type(manifest_path: Path) -> str:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        tasks = manifest.get("tasks") if isinstance(manifest, dict) else None
+        task = tasks[0] if isinstance(tasks, list) and tasks and isinstance(tasks[0], dict) else {}
+        return str(task.get("task_type") or "")
+
     def generate(
         self,
         *,
@@ -89,14 +117,16 @@ class MessageApiRuntime:
         run_id: str,
         staging_root: Path,
     ) -> Mapping[str, Any]:
+        task_type = self._manifest_task_type(manifest_path)
+        candidate_count = 1 if task_type == INTERFACE_DESIGN_TASK_TYPE else self.candidate_count
         result = self._pipeline(staging_root).run_manifest(
             manifest_path,
             run_id=run_id,
-            completion_options=self._authoring_options(),
+            completion_options=self._authoring_options(task_type),
             max_contract_repairs=1,
             max_gate_repairs=2,
-            candidate_count=self.candidate_count,
-            candidate_parallelism=self.candidate_parallelism,
+            candidate_count=candidate_count,
+            candidate_parallelism=min(self.candidate_parallelism, candidate_count),
             selection_goal="fixed_gate_only",
             overwrite=False,
             continue_on_error=False,

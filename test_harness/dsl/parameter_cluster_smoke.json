@@ -1,0 +1,157 @@
+{
+  "dsl_version": 1,
+  "constants": {
+    "topo_tol": 0.01,
+    "geom_tol": 0.00001,
+    "max_model_size": 500000.0,
+    "tau": "2 * pi"
+  },
+  "defaults": {
+    "api": "api_boolean",
+    "boolean_type": "SUBTRACTION",
+    "modeling_tol": "topo_tol",
+    "check_valid": true,
+    "topo_track": true,
+    "non_destructive": true
+  },
+  "cluster_bases": {
+    "box_cyl": {
+      "hypothesis": "Extruded box cut by a swept cylinder near the side face.",
+      "target": {
+        "chain": [
+          {"id": "target_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_place", "op": "transform", "translate_x": 170.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "expectations": {
+        "result_bodies": {"min": 1},
+        "require_finite_properties": true,
+        "require_nonnegative_volume": true
+      }
+    },
+    "revolve_wedge": {
+      "hypothesis": "Revolved open side face attacked by a wedge near exact contact.",
+      "target": {
+        "chain": [
+          {"id": "rev_profile", "op": "line_profile", "bottom_radius": 120.0, "top_radius": 90.0, "height": 200.0},
+          {"id": "rev_body", "op": "revolve", "angle": "tau"},
+          {"id": "rev_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "wedge_body", "op": "primitive", "kind": "solid_wedge", "length": 140.0, "width": 240.0, "height": 200.0},
+          {"id": "wedge_place", "op": "transform", "translate": [110.0, 0.0, 0.0]}
+        ]
+      },
+      "expectations": {
+        "result_bodies": {"min": 1},
+        "require_finite_properties": true
+      }
+    }
+  },
+  "parameter_clusters": [
+    {
+      "cluster_id": "side_contact_band",
+      "type": "contact_band",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_x", "center": 170.0, "bands": ["exact", "geom_tol", "topo_tol"], "steps_per_band": 4}
+    },
+    {
+      "cluster_id": "side_translate_x",
+      "type": "translate_axis",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_x"},
+      "grids": [
+        {"kind": "linspace", "min": 100.0, "max": 240.0, "count": 20},
+        {"kind": "geomspace", "min": 1.0, "max": 1000.0, "count": 12}
+      ]
+    },
+    {
+      "cluster_id": "wedge_translate_x",
+      "type": "translate_axis",
+      "bases": ["revolve_wedge"],
+      "vary": {"path": "tool.chain.1.translate_x"},
+      "grids": [{"kind": "linspace", "min": 60.0, "max": 160.0, "count": 20}]
+    },
+    {
+      "cluster_id": "tool_radius_growth",
+      "type": "size_dimension",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.0.radius"},
+      "grids": [{"kind": "linspace", "min": 5.0, "max": 120.0, "count": 24}]
+    },
+    {
+      "cluster_id": "revolve_angle_sweep",
+      "type": "angle_sweep",
+      "bases": ["revolve_wedge"],
+      "vary": {"path": "target.chain.1.angle"},
+      "grids": [{"kind": "linspace", "min": "0.25 * pi", "max": "tau", "count": 16}]
+    },
+    {
+      "cluster_id": "modeling_tol_band",
+      "type": "tolerance_sweep",
+      "bases": ["box_cyl"],
+      "vary": {"path": "options.modeling_tol"},
+      "grids": [{"kind": "geomspace", "min": "geom_tol", "max": "10 * topo_tol", "count": 10}]
+    },
+    {
+      "cluster_id": "far_shift",
+      "type": "large_coordinate_shift",
+      "bases": ["box_cyl"],
+      "vary": {"path": "target.chain.2.translate.0", "fractions": [0.5, 0.8, 0.95], "sign": "positive"}
+    },
+    {
+      "cluster_id": "boolean_cycle",
+      "type": "boolean_type_cycle",
+      "bases": ["box_cyl"],
+      "vary": {
+        "path": "options.boolean_type",
+        "values": [
+          {"value": "SUBTRACTION", "suffix": "sub", "set": {"expectations.result_bodies.min": 1}},
+          {"value": "INTERSECTION", "suffix": "int", "set": {"expectations.result_bodies.min": 1}},
+          {"value": "UNION", "suffix": "uni", "set": {"expectations.result_bodies.min": 1, "expectations.result_bodies.max": 1}}
+        ]
+      }
+    },
+    {
+      "cluster_id": "valid_toggle",
+      "type": "option_toggle",
+      "bases": ["revolve_wedge"],
+      "vary": {"path": "options.check_valid"}
+    },
+    {
+      "cluster_id": "mirror_y",
+      "type": "mirror_sign",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_y", "magnitudes": [30.0, 90.0]}
+    },
+    {
+      "cluster_id": "jitter_z",
+      "type": "seeded_jitter",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_z", "min": -60.0, "max": 10.0, "count": 16, "seed": 20260718}
+    },
+    {
+      "cluster_id": "line_diag",
+      "type": "translate_line",
+      "bases": ["revolve_wedge"],
+      "vary": {"path": "tool.chain.1.translate", "direction": [1.0, 1.0, 0.0], "center": [110.0, 0.0, 0.0]},
+      "grids": [{"kind": "linspace", "min": -40.0, "max": 40.0, "count": 18}]
+    },
+    {
+      "cluster_id": "protocol_cycle",
+      "type": "enum_cycle",
+      "bases": ["box_cyl"],
+      "vary": {"path": "options.boolean_type", "values": ["SUBTRACTION", "INTERSECTION"]}
+    }
+  ]
+}

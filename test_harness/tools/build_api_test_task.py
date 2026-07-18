@@ -26,6 +26,7 @@ from harness_capabilities import (
 )
 from campaign_profiles import CAMPAIGN_PROFILES, allowed_campaign_profiles
 from model_fixed_gate_contracts import fixed_gate_contract_for_api
+from plugin_catalog import ALLOWED_ARCHETYPES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAPABILITIES = load_capabilities()
@@ -38,6 +39,36 @@ RUN_PROFILES: dict[str, dict[str, Any]] = run_profiles(CAPABILITIES)
 FORM_SCHEMA_PATH = REPO_ROOT / "test_harness/forms/api_test_form.schema.json"
 FORM_SCHEMA = json.loads(FORM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
 FORM_VALIDATOR = Draft202012Validator(FORM_SCHEMA)
+
+INTERFACE_DESIGN_TASK_TYPE = "interface_dsl_design"
+
+# Fixed vocabulary for the interface-design subagent.  The cluster taxonomy
+# mirrors compile_attack_dsl.CLUSTER_TYPES; keep them aligned.
+INTERFACE_DESIGN_CLUSTER_TYPES = [
+    "translate_axis",
+    "translate_line",
+    "scale_uniform",
+    "size_dimension",
+    "contact_band",
+    "tolerance_sweep",
+    "angle_sweep",
+    "large_coordinate_shift",
+    "boolean_type_cycle",
+    "option_toggle",
+    "mirror_sign",
+    "seeded_jitter",
+    "uv_domain",
+    "enum_cycle",
+]
+INTERFACE_DESIGN_COMPLEXITY_DIMENSIONS = [
+    "multi_op_chain",
+    "generated_topology",
+    "tolerance_band",
+    "oracle_strength",
+    "large_coordinate",
+    "degenerate_or_negative",
+    "transform_usage",
+]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -557,6 +588,9 @@ If the requested API or body builder is unsupported, return:
 Hard rules:
 - Prefer attack DSL for api_boolean.
 - For 100k+ corpus campaigns, do not emit individual DSL cases; emit campaign_request only when Allowed campaign profiles lists a profile.
+- For mass coverage inside attack_dsl, do not enumerate cases: declare `cluster_bases` (named base geometries) plus `parameter_clusters` (typed clusters over one varying parameter each). Fixed code expands each cluster deterministically into at most 50 cases, so combine many bases, cluster types, and grids to reach 100k+ runnable recipes.
+- Parameter cluster types: translate_axis, translate_line, scale_uniform, size_dimension, contact_band, tolerance_sweep, angle_sweep, large_coordinate_shift, boolean_type_cycle, option_toggle, mirror_sign, seeded_jitter, uv_domain, enum_cycle. Every cluster vary path must resolve in its base; grids use {{"kind":"linspace"|"geomspace"|"values", ...}} with count <= 50.
+- Complexity is gated: the fixed complexity gate scores every case and rejects simple-only candidates. Cover at least 4 of these dimensions across the candidate: multi-op chains, generated topology builders, tolerance bands around exact contact/geom_tol/topo_tol, large coordinates within max_model_size, degenerate or empty-result inputs, non-trivial transforms, and at least two measurable oracle families per case. At least half of the cases must each combine 3+ dimensions, and at least one case must use a multi-op chain or generated topology builder. Simple primitive pairs are allowed only as a minority of smoke anchors.
 - Do not invent SDK calls outside the runner schema.
 - Never return command, commands, tool, executable, runner, dataset, out, cwd, env, or shell fields. For campaign_request, select only profile_id plus bounded args.
 - For flat_recipe source_file fields, use only a concrete path from Input asset availability when available. Do not copy example source_file paths unless they appear there as available.
@@ -597,6 +631,88 @@ Allowed campaign profiles for this task:
 {campaign_profiles_json}
 
 {example_section}
+
+Developer form:
+{form_json}
+"""
+
+
+def render_interface_design_prompt(form: dict[str, Any]) -> str:
+    """Prompt for the interface-design subagent (unknown API route).
+
+    The subagent designs complete harness support for one unsupported public
+    interface from SDK header evidence.  Its output is a structured
+    needs_harness_extension design that fixed gates validate and the human
+    reviews; the subagent never writes runner code, commands, or paths.
+    """
+
+    form_json = json.dumps(form, indent=2, ensure_ascii=False)
+    declarations = form.get("sdk_source_refs")
+    declarations_json = json.dumps(declarations if isinstance(declarations, list) else [], indent=2, ensure_ascii=False)
+    archetypes_json = json.dumps(sorted(ALLOWED_ARCHETYPES), indent=2, ensure_ascii=False)
+    cluster_types_json = json.dumps(INTERFACE_DESIGN_CLUSTER_TYPES, indent=2, ensure_ascii=False)
+    dimensions_json = json.dumps(INTERFACE_DESIGN_COMPLEXITY_DIMENSIONS, indent=2, ensure_ascii=False)
+    return f"""You are the SGGK interface-design subagent. One unsupported public interface was requested.
+Design complete harness test support for it. You produce a structured design, not code.
+
+Return exactly one JSON object with this shape:
+{{
+  "kind": "needs_harness_extension",
+  "api": "requested_api_name",
+  "why_needed": "why the current harness cannot express this test",
+  "extension_summary": "smallest runner/schema addition",
+  "interface_signature": {{
+    "parameters": [{{"name": "...", "type": "...", "role": "input|output|option"}}],
+    "return_type": "...",
+    "return_channels": ["curves|points|bodies|status|topology"]
+  }},
+  "builder_requirements": [
+    {{"builder_id": "...", "geometry_kind": "plane|cylinder_surface|bspline_curve|...", "parameters": {{"name": "type"}}, "rationale": "..."}}
+  ],
+  "archetype_match": {{"archetype": "one registered archetype id", "fit": "exact|partial|none", "gaps": ["..."]}},
+  "proposed_recipe_fields": {{"field_name": "type and meaning"}},
+  "proposed_artifacts": ["reports or debug outputs the extension should produce"],
+  "validation_oracle": {{"oracle_family": "how the smoke proves correctness beyond API status"}},
+  "parameter_cluster_plan": [
+    {{"cluster_type": "one registered cluster type", "target_parameter": "recipe field or chain path", "rationale": "...", "estimated_cases": 50}}
+  ],
+  "complexity_plan": {{
+    "dimensions": ["dimensions from the fixed list that apply to this interface"],
+    "degenerate_inputs": ["..."],
+    "tolerance_boundaries": ["..."]
+  }},
+  "minimum_smoke_case": {{"case_id": "requested_api_smoke_001", "api": "requested_api_name", "...": "concrete smoke values from proposed_recipe_fields"}},
+  "patch_plan": [
+    {{"layer": "schema", "change": "add recipe/form fields", "files": ["test_harness/..."]}},
+    {{"layer": "validator", "change": "reject missing or invalid fields", "files": ["test_harness/tools/..."]}},
+    {{"layer": "normalizer", "change": "normalize safe aliases only", "files": ["test_harness/tools/..."]}},
+    {{"layer": "runner", "change": "route recipe to fixed runner support", "files": ["test_harness/..."]}},
+    {{"layer": "tests", "change": "add positive and negative smoke coverage", "files": ["test_harness/..."]}}
+  ]
+}}
+
+Hard rules:
+- Read the SDK header declarations below carefully: parameters, options structs, return types, and overloads drive interface_signature and builder_requirements.
+- archetype_match.archetype must be one of the registered archetypes below; use fit=none only when no archetype family matches and explain the gap.
+- parameter_cluster_plan must use only the registered cluster types below; each cluster expands to at most 50 cases, so plan several cluster types per interface.
+- complexity_plan.dimensions must use only the fixed dimension list below.
+- validation_oracle must name measurable oracles (counts, properties, topology relations), never API status alone.
+- minimum_smoke_case must instantiate proposed_recipe_fields with small literal values.
+- Never return command, commands, tool, executable, runner, dataset, out, cwd, env, or shell fields.
+- Do not write C++, CMake, or patch content; patch_plan describes intent for the human-reviewed backlog only.
+- Emit valid JSON only.
+
+Registered adapter archetypes:
+{archetypes_json}
+
+Registered parameter cluster types:
+{cluster_types_json}
+
+Fixed complexity dimensions:
+{dimensions_json}
+
+SDK header declarations for the requested interface:
+{declarations_json}
 
 Developer form:
 {form_json}

@@ -50,6 +50,9 @@ def candidate(case_id: str) -> dict[str, Any]:
         )
     )
     recipe["case_id"] = case_id
+    # The fixed complexity gate rejects default-placed primitive-only recipes;
+    # give the mock candidate a non-default tolerance focus so it passes.
+    recipe["modeling_tol"] = 0.005
     return {"kind": "flat_recipe", "recipe": recipe, "notes": []}
 
 

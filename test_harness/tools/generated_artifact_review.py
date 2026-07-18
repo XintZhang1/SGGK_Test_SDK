@@ -224,11 +224,36 @@ def _case_record(case: Mapping[str, Any], index: int, *, default_api: str = "") 
 
 def _case_records(payload: Mapping[str, Any], kind: str) -> list[dict[str, Any]]:
     if kind == "attack_dsl":
-        return [
+        records = [
             _case_record(case, index)
             for index, case in enumerate(_as_list(payload.get("cases")), start=1)
             if isinstance(case, Mapping)
         ]
+        bases = _as_dict(payload.get("cluster_bases"))
+        for base_id, base in bases.items():
+            if not isinstance(base, Mapping):
+                continue
+            record = _case_record(base, len(records) + 1)
+            record["case_id"] = f"cluster_base:{base_id}"
+            records.append(record)
+        for index, cluster in enumerate(_as_list(payload.get("parameter_clusters")), start=1):
+            if not isinstance(cluster, Mapping):
+                continue
+            cluster_bases = "、".join(str(item) for item in _as_list(cluster.get("bases")))
+            records.append(
+                {
+                    "case_id": _text(cluster.get("cluster_id")) or f"cluster_{index:04d}",
+                    "api": "parameter_cluster",
+                    "input_summary_zh_cn": (
+                        f"参数簇类型={_text(cluster.get('type'))}；基几何={cluster_bases}；"
+                        "固定代码确定性展开，每簇最多 50 例。"
+                    ),
+                    "oracle_summary_zh_cn": "以展开后 recipe 的 Oracle 与固定门禁抽样校验为准。",
+                    "hypothesis": "",
+                    "source_ref": "",
+                }
+            )
+        return records
     if kind == "api_plugin_candidate":
         api = _text(payload.get("api"))
         records: list[dict[str, Any]] = []

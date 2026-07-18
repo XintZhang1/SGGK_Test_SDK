@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from test_harness.authoring_gateway.config import PROFILE_SPECS
+from test_harness.authoring_gateway.review_comment import defang_unsafe_outline_text
 from test_harness.orchestration.session_memory import gather_prior_review_memory
 from test_harness.orchestration.source_discovery import (
     SourceDiscoveryError,
@@ -468,6 +469,12 @@ def build_internal_form(
         "risk_summary": (
             "覆盖正常语义、非法输入、退化输入、容差两侧、生成拓扑、结果为空、"
             "大坐标与重复执行确定性；未知能力必须明确提出最小 Harness 扩展。"
+            "固定复杂度门禁会对每个用例打分并拒绝整体过于简单的候选："
+            "至少一半用例必须各自组合 3 个以上复杂度维度（多 op 链、生成拓扑、"
+            "容差带、大坐标、退化/空结果、非平凡变换、双 oracle 族），"
+            "且至少一个用例必须使用多 op 链或生成拓扑 builder。"
+            "大规模覆盖必须使用 cluster_bases + parameter_clusters（每簇最多 50 例），"
+            "不得逐一枚举用例。"
         ),
         "geometry": geometry,
         "tolerance_focus": _tolerance_focus(target_api),
@@ -504,17 +511,23 @@ def _sanitize_outline(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, str):
         if re.fullmatch(r"[0-9A-Fa-f]{64}", value):
             return "<host-bound-hash>"
-        if re.search(r"(?i)\b(?:https?|ftp|ssh)://", value):
+        if re.search(r"(?i)\b(?:https?|ftp|ssh|file)://", value):
             return "<host-managed-location>"
         if re.search(r"(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/])", value):
             return "<host-managed-location>"
         if re.search(r"(?:[A-Za-z0-9_.-]+[\\/])+(?:[A-Za-z0-9_.-]+)", value):
+            return "<host-managed-location>"
+        if re.search(r"(?:^|[\s'\"`])(?:~[\\/]|/[A-Za-z0-9._-])", value):
             return "<host-managed-location>"
         if re.search(
             r"(?i)(?:^|[\s`'\"])(?:powershell|pwsh|cmd(?:\.exe)?|bash|sh\s+-c|curl|wget|git|python(?:\.exe)?|node|npm|cmake|ninja)(?:\s|$)",
             value,
         ):
             return "<host-managed-instruction>"
+        # Controlled harness vocabulary (patch_plan layers such as "runner",
+        # bare harness filenames, geometry option wording) must survive in a
+        # reviewable but validator-safe form; see review_comment.py.
+        value = defang_unsafe_outline_text(value)
         if len(value) > 4000:
             return value[:4000] + "<truncated>"
         return value
@@ -1623,10 +1636,25 @@ class HarnessWorkflow:
             raise WorkflowError("host-generated internal form is invalid: " + "; ".join(errors))
         task = build_task(form_path, form, warnings)
         expected_output = round_root / "candidate" / "candidate.json"
-        prompt = interface_prompt(task, form, _repo_relative(self.repo_root, expected_output))
+        is_extension_backlog = str(resolution.get("route") or "") == "extension_backlog"
+        if is_extension_backlog:
+            from test_harness.tools.build_api_test_task import render_interface_design_prompt
+
+            prompt = render_interface_design_prompt(form)
+        else:
+            prompt = interface_prompt(task, form, _repo_relative(self.repo_root, expected_output))
         preferred = (task.get("api_guidance") or {}).get("preferred_format")
         output_contract = contract_for(preferred)
         task_type = "interface_form"
+        if is_extension_backlog:
+            # The interface-design subagent designs support for the unknown API;
+            # its only allowed output is the structured extension design.
+            task_type = "interface_dsl_design"
+            output_contract = {
+                "type": "json_object",
+                "kind_field": "kind",
+                "allowed_kinds": ["needs_harness_extension"],
+            }
         source_metadata: dict[str, Any] = {
             "provider_profile": self.profile,
             "provider_profile_category": self.profile_category,
@@ -1645,7 +1673,8 @@ class HarnessWorkflow:
             )
         occurrences = resolution.get("source_occurrences")
         if (
-            self.source_root is not None
+            not is_extension_backlog
+            and self.source_root is not None
             and isinstance(occurrences, list)
             and occurrences
         ):

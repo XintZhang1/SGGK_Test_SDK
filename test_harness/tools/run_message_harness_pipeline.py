@@ -621,7 +621,7 @@ class FixedGateRunner:
         elif kind == "cluster_seed":
             self._gate_cluster_seed(result, normalized_path, gate_root)
         elif kind == "needs_harness_extension":
-            self._gate_extension(result, normalized_path, gate_root)
+            self._gate_extension(result, normalized_path, gate_root, task)
         elif kind == "api_plugin_candidate":
             self._gate_plugin_candidate(result, normalized_path, task, gate_root)
         elif kind == "campaign_request":
@@ -758,6 +758,42 @@ class FixedGateRunner:
                     "Repair the DSL using the compiler's structured constraints.",
                 )
             )
+        self._gate_complexity(result, normalized_path, gate_root)
+
+    def _gate_complexity(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
+        report_path = gate_root / "complexity_report.json"
+        diagnostics_path = gate_root / "complexity_diagnostics.json"
+        command = self._run(
+            "score_case_complexity",
+            [
+                self.python_executable,
+                self._tool("score_case_complexity.py"),
+                str(normalized_path),
+                "--report",
+                str(report_path),
+                "--model-diagnostics",
+                str(diagnostics_path),
+            ],
+        )
+        result.commands.append(command)
+        result.artifacts.update(
+            {
+                "complexity_report": _relative(self.repo_root, report_path),
+                "complexity_diagnostics": _relative(self.repo_root, diagnostics_path),
+            }
+        )
+        result.diagnostics.extend(_load_diagnostics(diagnostics_path))
+        result.ok = result.ok and command.ok
+        if not command.ok and not _load_diagnostics(diagnostics_path):
+            result.diagnostics.append(
+                _diagnostic(
+                    "COMPLEXITY_GATE_FAILED",
+                    str(normalized_path),
+                    command.stderr_tail or command.stdout_tail or "complexity scoring failed",
+                    "Combine more complexity dimensions: generated topology chains, tolerance "
+                    "bands, large coordinates, degenerate inputs, and measurable oracles.",
+                )
+            )
 
     def _gate_recipe(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
         diagnostics_path = gate_root / "recipe_diagnostics.json"
@@ -786,6 +822,7 @@ class FixedGateRunner:
                     "Repair the recipe using only supported API fields and available input assets.",
                 )
             )
+        self._gate_complexity(result, normalized_path, gate_root)
 
     def _gate_cluster_seed(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
         expanded_path = gate_root / "expanded_cluster_dsl.json"
@@ -814,20 +851,23 @@ class FixedGateRunner:
             return
         self._gate_dsl(result, expanded_path, gate_root)
 
-    def _gate_extension(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
+    def _gate_extension(self, result: FixedGateResult, normalized_path: Path, gate_root: Path, task: TaskSpec | None = None) -> None:
         report_path = gate_root / "extension_report.json"
         diagnostics_path = gate_root / "extension_diagnostics.json"
+        argv = [
+            self.python_executable,
+            self._tool("validate_harness_extension.py"),
+            str(normalized_path),
+            "--report",
+            str(report_path),
+            "--model-diagnostics",
+            str(diagnostics_path),
+        ]
+        if task is not None and str(task.task_type) == "interface_dsl_design":
+            argv.append("--require-design")
         command = self._run(
             "validate_harness_extension",
-            [
-                self.python_executable,
-                self._tool("validate_harness_extension.py"),
-                str(normalized_path),
-                "--report",
-                str(report_path),
-                "--model-diagnostics",
-                str(diagnostics_path),
-            ],
+            argv,
         )
         result.commands.append(command)
         result.artifacts.update(

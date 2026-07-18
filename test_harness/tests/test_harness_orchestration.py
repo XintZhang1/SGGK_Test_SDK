@@ -561,6 +561,239 @@ def test_review_comment_receives_safe_semantic_subject_outline(tmp_path: Path) -
     assert context.as_dict()["subject_outline"]["candidate"]["dsl"]["cases"][1]["case_id"]
 
 
+def test_extension_candidate_with_patch_plan_survives_outline_sanitization(tmp_path: Path) -> None:
+    """A needs_harness_extension candidate uses required patch layer names such
+    as ``runner`` and mentions harness files; the host digest must defang that
+    controlled vocabulary instead of making the round unreviewable."""
+
+    from test_harness.orchestration.workflow import _bounded_subject_outline, _sanitize_outline
+
+    candidate = {
+        "kind": "needs_harness_extension",
+        "api": "api_srf_srf_int",
+        "why_needed": "GeomInt::SrfSrfInt is not a runner recipe api",
+        "extension_summary": "add surface pair intersection recipe support",
+        "proposed_recipe_fields": {"target_surface": "surface spec"},
+        "proposed_artifacts": ["intersection_result.json"],
+        "validation_oracle": {"oracle_family": "intersection curve topology properties"},
+        "minimum_smoke_case": {"case_id": "srf_srf_int_smoke_001", "api": "api_srf_srf_int"},
+        "patch_plan": [
+            {"layer": "schema", "change": "add recipe fields", "files": ["test_harness/interface_capabilities.json"]},
+            {"layer": "validator", "change": "make validate_recipe.py reject missing fields", "files": ["test_harness/tools/validate_recipe.py"]},
+            {"layer": "normalizer", "change": "normalize safe aliases only", "files": ["test_harness/tools/normalize_model_output.py"]},
+            {"layer": "runner", "change": "route recipe to fixed runner support in sggk_case_runner.cpp; disable the overlap check option", "files": ["test_harness/src/sggk_case_runner.cpp"]},
+            {"layer": "tests", "change": "add positive and negative smoke coverage", "files": ["test_harness/suites/api_smoke_suite.txt"]},
+        ],
+    }
+    outline = _bounded_subject_outline(
+        _sanitize_outline(
+            {
+                "target": "GeomInt::SrfSrfInt",
+                "resolved_api": "api_srf_srf_int",
+                "route": "extension_backlog",
+                "candidate": candidate,
+            }
+        )
+    )
+
+    context = ReviewCommentContext(
+        task_id="task_extension_001",
+        run_id="run_extension_001",
+        round_number=1,
+        subject_sha256="b" * 64,
+        subject_outline=outline,
+        target="GeomInt_SrfSrfInt",
+    )
+
+    plan = context.as_dict()["subject_outline"]["candidate"]["patch_plan"]
+    assert plan[3]["layer"] == "r·unner"
+    assert "sggk_case_runner[.]cpp" in plan[3]["change"]
+    assert plan[3]["files"] == ["<host-managed-location>"]
+
+
+def test_unknown_api_routes_to_interface_design_subagent(tmp_path: Path) -> None:
+    sdk = tmp_path / "sdk"
+    header = sdk / "include/GeomInt/GeomInt.h"
+    header.parent.mkdir(parents=True)
+    header.write_text(
+        "namespace sggk {\n"
+        "class GeomInt {\n"
+        "public:\n"
+        "    static IntSrfSrfRet SrfSrfInt(const Surface& srf1, const Surface& srf2, const SrfSrfIntOpts& options);\n"
+        "};\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    workflow, runtime = make_workflow(tmp_path)
+    workflow.sdk_dir = sdk.resolve()
+
+    started = workflow.start("GeomInt::SrfSrfInt")
+
+    assert started["state"] == "awaiting_comment"
+    session_root = next((tmp_path / "artifacts/harness_sessions").glob("*_GeomInt__SrfSrfInt_*"))
+    task_manifest = json.loads(
+        (session_root / "rounds/0001/prompt/model_task_manifest.json").read_text(encoding="utf-8")
+    )
+    task = task_manifest["tasks"][0]
+    assert task["task_type"] == "interface_dsl_design"
+    assert task["output_contract"]["allowed_kinds"] == ["needs_harness_extension"]
+    prompt = (session_root / "rounds/0001/prompt/authoring_prompt.md").read_text(encoding="utf-8")
+    assert "interface-design subagent" in prompt
+    assert "binary_geometry_intersection" in prompt
+    assert "parameter_cluster_plan" in prompt
+    assert "SrfSrfInt" in prompt
+
+
+def test_interface_design_runtime_options_enable_thinking_and_long_budget(tmp_path: Path) -> None:
+    from test_harness.orchestration.runtime import (
+        INTERFACE_DESIGN_MAX_TOKENS,
+        INTERFACE_DESIGN_TIMEOUT_SECONDS,
+        MessageApiRuntime,
+    )
+
+    config = GatewayConfig(
+        profile=PROFILE_SPECS["intranet"],
+        base_url="https://message-api.invalid/v1",
+        model="zai-org/GLM-5.2",
+        api_key="test-key",
+        max_retries=0,
+    )
+    runtime = MessageApiRuntime(
+        repo_root=tmp_path,
+        profile="intranet",
+        config=config,
+        candidate_count=3,
+        candidate_parallelism=3,
+    )
+
+    design_options = runtime._authoring_options("interface_dsl_design")
+    assert design_options.thinking_mode == "enabled"
+    assert design_options.max_tokens == INTERFACE_DESIGN_MAX_TOKENS
+    assert design_options.request_timeout_seconds == INTERFACE_DESIGN_TIMEOUT_SECONDS
+
+    default_options = runtime._authoring_options("interface_form")
+    assert default_options.thinking_mode != "enabled"
+    assert default_options.request_timeout_seconds is None
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"tasks": [{"task_type": "interface_dsl_design"}]}),
+        encoding="utf-8",
+    )
+    assert runtime._manifest_task_type(manifest) == "interface_dsl_design"
+    assert runtime._manifest_task_type(tmp_path / "missing.json") == ""
+
+
+class _DesignFakeRuntime(FakeRuntime):
+    """Fake runtime whose candidate is a needs_harness_extension design with a
+    fully compliant patch_plan (runner layer, harness file names)."""
+
+    def generate(
+        self,
+        *,
+        manifest_path: Path,
+        run_id: str,
+        staging_root: Path,
+    ) -> dict[str, Any]:
+        self.generate_calls += 1
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        task = manifest["tasks"][0]
+        self.generation_prompts.append(
+            (self.repo_root / task["prompt_path"]).read_text(encoding="utf-8")
+        )
+        output = self.repo_root / task["expected_output_path"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        candidate = {
+            "kind": "needs_harness_extension",
+            "api": "api_srf_srf_int",
+            "why_needed": "GeomInt::SrfSrfInt is not a runner recipe api",
+            "extension_summary": "add surface pair intersection recipe support",
+            "proposed_recipe_fields": {"target_surface": "surface spec", "tool_surface": "surface spec"},
+            "proposed_artifacts": ["intersection_result.json"],
+            "validation_oracle": {"oracle_family": "intersection curve topology properties"},
+            "minimum_smoke_case": {"case_id": "srf_srf_int_smoke_001", "api": "api_srf_srf_int"},
+            "patch_plan": [
+                {"layer": "schema", "change": "add recipe fields", "files": ["test_harness/interface_capabilities.json"]},
+                {"layer": "validator", "change": "make validate_recipe.py reject missing fields", "files": ["test_harness/tools/validate_recipe.py"]},
+                {"layer": "normalizer", "change": "normalize safe aliases only", "files": ["test_harness/tools/normalize_model_output.py"]},
+                {"layer": "runner", "change": "route recipe to fixed runner support in sggk_case_runner.cpp; disable the overlap check option", "files": ["test_harness/src/sggk_case_runner.cpp"]},
+                {"layer": "tests", "change": "add positive and negative smoke coverage", "files": ["test_harness/suites/api_smoke_suite.txt"]},
+            ],
+            "notes": ["GLM-5.2 interface design candidate"],
+        }
+        output.write_text(json.dumps(candidate, ensure_ascii=False), encoding="utf-8")
+        provenance = output.with_name(f"{output.stem}.provenance.json")
+        provenance.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
+        review_root = staging_root / run_id / task["task_id"] / "review"
+        review_root.mkdir(parents=True, exist_ok=True)
+        packet = review_root / "review_packet.json"
+        report = review_root / "review_report.zh-CN.md"
+        packet.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
+        report.write_text("# 固定审查报告\n", encoding="utf-8")
+
+        def rel(path: Path) -> str:
+            return path.relative_to(self.repo_root).as_posix()
+
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "results": [
+                {
+                    "task_id": task["task_id"],
+                    "run_id": run_id,
+                    "authoring_accepted": True,
+                    "selection_policy": "fixed_gate_only",
+                    "candidate_count": 1,
+                    "review_packet_path": rel(packet),
+                    "review_report_path": rel(report),
+                }
+            ],
+        }
+
+    def interpret_comment(
+        self,
+        *,
+        comment: str,
+        session: dict[str, Any],
+        round_record: dict[str, Any],
+        subject_outline: dict[str, Any],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        self.interpret_calls += 1
+        self.interpret_subjects.append(json.loads(json.dumps(subject_outline)))
+        decision = {
+            "decision": "question",
+            "summary_zh_cn": "当前设计覆盖 schema、validator、normalizer、runner 与 tests 层。",
+            "requested_changes": [],
+            "constraints": [],
+        }
+        return {"schema_version": 1, "decision": decision}
+
+
+def test_extension_design_candidate_survives_full_comment_flow(tmp_path: Path) -> None:
+    """Reproduces the original GeomInt::SrfSrfInt review failure: a compliant
+    needs_harness_extension patch_plan must not make the round unreviewable."""
+
+    capabilities = tmp_path / "test_harness" / "interface_capabilities.json"
+    capabilities.parent.mkdir(parents=True)
+    capabilities.write_bytes((REPO_ROOT / "test_harness/interface_capabilities.json").read_bytes())
+    (tmp_path / "artifacts").mkdir()
+    runtime = _DesignFakeRuntime(tmp_path)
+    workflow = HarnessWorkflow(runtime, repo_root=tmp_path, profile="intranet")
+
+    started = workflow.start("GeomInt::SrfSrfInt")
+    assert started["state"] == "awaiting_comment"
+
+    answered = workflow.comment("这个设计的 patch_plan 覆盖是否完整？")
+
+    assert answered["state"] == "awaiting_comment"
+    assert runtime.interpret_calls == 1
+    outline = runtime.interpret_subjects[-1]
+    plan = outline["candidate"]["patch_plan"]
+    assert plan[3]["layer"] == "r·unner"
+    assert "sggk_case_runner[.]cpp" in plan[3]["change"]
+
+
 def test_resolver_distinguishes_plugin_extension_and_header_overloads(tmp_path: Path) -> None:
     sdk = tmp_path / "sdk"
     header = sdk / "include/sggk/modeling/public_api.h"

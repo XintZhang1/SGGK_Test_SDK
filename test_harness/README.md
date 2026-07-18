@@ -299,6 +299,20 @@ uses the raw Message pipeline internally for normalization, fixed gates,
 selection, and provenance, and withholds real SDK execution until the latest
 immutable review round is approved.
 
+When the requested public function is not a supported runner API, the session
+routes to the interface-design subagent (`interface_dsl_design` task type): a
+dedicated GLM-5.2 role that runs with thinking enabled and a long generation
+budget (65,536 max tokens, 3,600-second request timeout, single candidate) to
+design complete harness support from SDK header evidence. Its output is a
+structured `needs_harness_extension` design — `interface_signature`,
+`builder_requirements`, `archetype_match`, `parameter_cluster_plan`,
+`complexity_plan`, plus the usual recipe fields, oracle, smoke case, and patch
+plan — validated by the fixed extension gate (`validate_harness_extension.py
+--require-design`) and reviewed like any other candidate. The design lands as a
+machine-checkable extension backlog; it never writes runner code. Registered
+adapter archetype vocabulary lives in `test_harness/tools/plugin_catalog.py`
+(including `binary_geometry_intersection` for the GeomInt intersection family).
+
 ## Advanced Internal Appendix: API Forms and Raw Message Pipeline
 
 This section is for Harness maintainers and fixed-gate diagnostics. It is not a
@@ -631,6 +645,33 @@ python .\test_harness\tools\compile_attack_dsl.py `
 ```
 
 The cluster wrapper emits exact contact, `+/- geom_tol`, `+/- topo_tol`, source-literal bands when present, a generated-topology sibling, and an optional large-coordinate sibling. Keep randomized and broad coverage lanes in the same campaign through `generate_boolean_matrix.py`, `generate_corpus_recut_matrix.py`, `run_campaign.py`, or `plan_large_campaign.py`.
+
+For model-authored mass coverage, the attack DSL also supports `cluster_bases`
+plus `parameter_clusters`: each parameter cluster transforms one base geometry
+over one varying parameter and fixed code expands it deterministically into at
+most 50 cases, so a compact DSL describes 100k+ runnable recipes. Fourteen
+cluster types are registered (`translate_axis`, `translate_line`,
+`scale_uniform`, `size_dimension`, `contact_band`, `tolerance_sweep`,
+`angle_sweep`, `large_coordinate_shift`, `boolean_type_cycle`, `option_toggle`,
+`mirror_sign`, `seeded_jitter`, `uv_domain`, `enum_cycle`); see
+`test_harness/skills/sggk-source-attack/references/attack-dsl.md` and the
+checked-in fixture `test_harness/dsl/parameter_cluster_smoke.json`. `--check`
+validates cluster definitions and compiles a deterministic sample per cluster
+while reporting the theoretical expansion total; `--out` materializes the full
+expansion:
+
+```powershell
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\test_harness\dsl\parameter_cluster_smoke.json `
+  --check `
+  --report .\artifacts\parameter_cluster_check.json
+```
+
+Model candidates are additionally scored by the fixed complexity gate
+(`test_harness/tools/score_case_complexity.py`): attack_dsl and flat_recipe
+candidates that stay simple (default-placed primitive pairs, no tolerance
+bands, no generated topology, status-only oracles) are rejected with repair
+diagnostics before review.
 
 ## Generated Recipe Lanes
 

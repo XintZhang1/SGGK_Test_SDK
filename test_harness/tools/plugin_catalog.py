@@ -48,6 +48,10 @@ ALLOWED_ARCHETYPES = {
     "binary_body_to_bodies",
     "binary_topology_to_topologies",
     "topology_query",
+    # Geometry pair in, intersection curves/points out.  Covers the GeomInt
+    # family (SrfSrfInt, CrvCrvInt, CrvSrfInt) and future intersection APIs;
+    # registered as the fixed vocabulary for interface-design archetype_match.
+    "binary_geometry_intersection",
 }
 ALLOWED_SDK_MODULES = {
     "Foundation",
