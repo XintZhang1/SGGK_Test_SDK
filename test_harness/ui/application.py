@@ -309,10 +309,12 @@ class HarnessUiApplication:
             sdk_dir=settings.sdk_dir,
             source_root=settings.source_root or None,
             runner_path=settings.runner_path or None,
+            use_memory=settings.use_memory,
+            nx_root=settings.nx_root_dir or None,
         )
 
-    def start(self, public_function: str) -> dict[str, Any]:
-        return self.workflow().start(public_function)
+    def start(self, public_function: str, *, use_memory: bool | None = None) -> dict[str, Any]:
+        return self.workflow().start(public_function, use_memory=use_memory)
 
     def comment(self, value: str) -> dict[str, Any]:
         return self.workflow().comment(value)

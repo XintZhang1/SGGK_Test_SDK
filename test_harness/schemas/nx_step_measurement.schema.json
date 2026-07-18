@@ -127,7 +127,11 @@
         "measurement_ok": { "type": "boolean" },
         "area": { "type": "number", "minimum": 0 },
         "abs_volume": { "type": "number", "minimum": 0 },
-        "error": { "type": "string" }
+        "error": { "type": "string" },
+        "is_solid": { "type": "boolean" },
+        "edge_count": { "type": "integer", "minimum": 0 },
+        "free_edge_count": { "type": "integer", "minimum": 0 },
+        "closed": { "type": "boolean" }
       },
       "additionalProperties": false
     },

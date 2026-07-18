@@ -633,7 +633,10 @@ $("startForm").addEventListener("submit", (event) => {
   event.preventDefault();
   action(
     "/api/start",
-    { public_function: $("publicFunction").value.trim() },
+    {
+      public_function: $("publicFunction").value.trim(),
+      use_memory: !$("startNoMemory").checked,
+    },
     "已开始生成，页面会自动更新",
     "start",
   );

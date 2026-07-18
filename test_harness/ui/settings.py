@@ -161,6 +161,18 @@ def default_secret_store() -> SecretStore:
     return MemorySecretStore()
 
 
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return default
+
+
 @dataclass(frozen=True)
 class UiSettings:
     schema_version: int = CONFIG_SCHEMA_VERSION
@@ -179,6 +191,7 @@ class UiSettings:
     jobs: int = 1
     execution_timeout_seconds: float = 180.0
     thinking_mode: str = "disabled"
+    use_memory: bool = True
 
     def public_dict(self, *, api_key_configured: bool) -> dict[str, Any]:
         return {**asdict(self), "api_key_configured": api_key_configured}
@@ -316,6 +329,7 @@ class UiSettingsStore:
             jobs=int(settings.jobs),
             execution_timeout_seconds=float(settings.execution_timeout_seconds),
             thinking_mode=settings.thinking_mode,
+            use_memory=_as_bool(settings.use_memory, default=True),
         )
 
     @staticmethod

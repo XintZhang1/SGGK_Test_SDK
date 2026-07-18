@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from test_harness.authoring_gateway.config import PROFILE_SPECS
+from test_harness.orchestration.session_memory import gather_prior_review_memory
 from test_harness.orchestration.source_discovery import (
     SourceDiscoveryError,
     discover_function_definitions,
@@ -938,9 +941,13 @@ class HarnessWorkflow:
         sdk_dir: str | Path | None = None,
         source_root: str | Path | None = None,
         runner_path: str | Path | None = None,
+        use_memory: bool = True,
+        nx_root: str | Path | None = None,
     ) -> None:
         self.runtime = runtime
         self.repo_root = Path(repo_root).resolve()
+        self.use_memory = bool(use_memory)
+        self.nx_root = Path(nx_root).expanduser().resolve() if nx_root else None
         self.capabilities_path = _repo_path(
             self.repo_root, str(capabilities_path), label="capabilities_path"
         )
@@ -1248,6 +1255,104 @@ class HarnessWorkflow:
         session["event_sequence"] = sequence
         session["event_head_sha256"] = event_hash
 
+    def _detect_nx_root(self) -> Path | None:
+        """Statically detect one usable Siemens NX installation for the comparison."""
+
+        try:
+            from test_harness.nx import detect_nx_environment
+        except Exception:  # noqa: BLE001 - NX support module is optional
+            return None
+        try:
+            report = detect_nx_environment()
+        except Exception:  # noqa: BLE001 - static detection must never break a session
+            return None
+        installations = report.get("installations") if isinstance(report, Mapping) else []
+        for installation in installations if isinstance(installations, list) else []:
+            if not isinstance(installation, Mapping):
+                continue
+            paths = installation.get("paths") if isinstance(installation.get("paths"), Mapping) else {}
+            run_journal = paths.get("run_journal")
+            root = installation.get("root")
+            if root and run_journal and Path(str(run_journal)).is_file():
+                return Path(str(root)).expanduser().resolve()
+        return None
+
+    def _run_parasolid_comparison(
+        self,
+        execution_root: Path,
+        execution_artifacts: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Run the mandatory Parasolid comparison on executed boolean cases.
+
+        Never raises: a comparison failure is reported as a note so it cannot
+        break the session state machine.  Cases agreeing with Parasolid
+        (``both_correct``) need no action; every other verdict is surfaced.
+        """
+
+        if self.runner_path is None:
+            return {"ran": False, "note": "未配置 runner，跳过 Parasolid 强制对比"}
+        nx_root = self.nx_root or self._detect_nx_root()
+        if nx_root is None:
+            return {"ran": False, "note": "未检测到可用的 Siemens NX 安装，跳过 Parasolid 强制对比"}
+        cases_ref = str(execution_artifacts.get("cases") or "")
+        if not cases_ref:
+            return {"ran": False, "note": "无布尔执行 cases，跳过 Parasolid 强制对比"}
+        try:
+            cases_root = _repo_path(self.repo_root, cases_ref, label="execution cases")
+            cases_root.resolve().relative_to(execution_root.resolve())
+        except (OSError, ValueError, WorkflowError):
+            return {"ran": False, "note": "执行 cases 路径无效"}
+        if not cases_root.is_dir():
+            return {"ran": False, "note": "执行 cases 目录不存在"}
+        out_root = execution_root / "parasolid_compare"
+        tool = self.repo_root / "test_harness" / "tools" / "run_nx_sggk_boolean_compare.py"
+        command = [
+            sys.executable,
+            str(tool),
+            "--cases-root",
+            str(cases_root),
+            "--runner",
+            str(self.runner_path),
+            "--nx-root",
+            str(nx_root),
+            "--out",
+            str(out_root),
+            "--resume",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=7200,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ran": True, "ok": False, "note": f"Parasolid 对比执行失败：{exc}"}
+        summary_path = out_root / "batch_summary.json"
+        if not summary_path.is_file():
+            return {
+                "ran": True,
+                "ok": False,
+                "note": f"Parasolid 对比未产出摘要（rc={completed.returncode}）：{completed.stderr[-200:]}",
+            }
+        summary = _read_json(summary_path)
+        cases = summary.get("cases") if isinstance(summary.get("cases"), list) else []
+        consistent = sum(1 for case in cases if case.get("verdict") == "both_correct")
+        attention = len(cases) - consistent
+        report_path = out_root / "parasolid_comparison.zh-CN.md"
+        return {
+            "ran": True,
+            "ok": True,
+            "total": summary.get("total_cases"),
+            "consistent": consistent,
+            "attention": attention,
+            "verdict_counts": summary.get("verdict_counts"),
+            "report_path": _repo_relative(self.repo_root, report_path) if report_path.is_file() else "",
+            "batch_summary_path": _repo_relative(self.repo_root, summary_path),
+        }
+
     def _build_execution_feedback(
         self,
         result: Mapping[str, Any],
@@ -1420,7 +1525,7 @@ class HarnessWorkflow:
         self._save_session(session, paths)
         return session, paths
 
-    def start(self, public_function: str) -> dict[str, Any]:
+    def start(self, public_function: str, *, use_memory: bool | None = None) -> dict[str, Any]:
         """Resolve an API and generate the first immutable review round."""
 
         with _WorkspaceLock(self.lock_path):
@@ -1434,6 +1539,7 @@ class HarnessWorkflow:
                 expose_declarations=self.profile == "intranet",
             )
             session, paths = self._new_session(value)
+            session["use_memory"] = self.use_memory if use_memory is None else bool(use_memory)
             resolution_path = paths.session_root / "resolution" / "round_0001.json"
             _write_json(resolution_path, resolution)
             session["state"] = "generating"
@@ -1486,6 +1592,19 @@ class HarnessWorkflow:
             self.capabilities,
             request_id=task_id,
         )
+        if number == 1 and bool(session.get("use_memory", self.use_memory)):
+            memory = gather_prior_review_memory(
+                self.sessions_root,
+                str(session.get("public_function") or ""),
+                exclude_session_id=str(session.get("session_id") or ""),
+            )
+            if memory.get("enabled"):
+                form["prior_review_memory"] = memory
+                form["memory_note"] = (
+                    "prior_review_memory 记录了本接口以往测试会话中用户提出并被解释的修改建议；"
+                    "设计本轮用例时必须参考这些历史建议，避免重复已指出的问题，"
+                    "除非本轮用户评论明确要求不同方向。"
+                )
         if form.get("target_api") == "step_import" and self.campaign_dataset is not None:
             form["campaign_profile"] = "abc_step_import"
             form["run_profile"] = "corpus"
@@ -2573,6 +2692,9 @@ class HarnessWorkflow:
             or execution.get("error")
             or "execution did not reach a passing SDK result"
         )
+        execution_artifacts = execution.get("artifacts") if isinstance(execution.get("artifacts"), Mapping) else {}
+        parasolid = self._run_parasolid_comparison(execution_root, execution_artifacts)
+        session["parasolid_comparison"] = parasolid
         report = execution_root / "final_report.zh-CN.md"
         self._write_final_report(
             report,
@@ -2581,6 +2703,7 @@ class HarnessWorkflow:
             result=result,
             task_result=task_result if isinstance(task_result, Mapping) else {},
             passed=passed,
+            parasolid=parasolid,
         )
         session["final_report_path"] = _repo_relative(self.repo_root, report)
         completion_event: dict[str, Any] = {
@@ -2617,6 +2740,7 @@ class HarnessWorkflow:
         result: Mapping[str, Any],
         task_result: Mapping[str, Any],
         passed: bool,
+        parasolid: Mapping[str, Any] | None = None,
     ) -> None:
         execution = task_result.get("execution") if isinstance(task_result.get("execution"), Mapping) else {}
         lines = [
@@ -2630,19 +2754,40 @@ class HarnessWorkflow:
             f"- SDK 执行已请求：`{execution.get('requested', False)}`",
             f"- SDK 执行通过：`{execution.get('ok', False)}`",
             "",
-            "## 失败或诊断摘要",
-            "",
-            f"- Pipeline：{task_result.get('error') or result.get('errors') or '无'}",
-            f"- Execution：{execution.get('error') or '无'}",
-            "",
-            "## 可复核证据",
-            "",
-            f"- 本轮审查报告：`{round_record.get('user_review_report_path', '')}`",
-            f"- 审查包：`{round_record.get('review_packet_path', '')}`",
-            f"- 正式候选：`{round_record.get('candidate_path', '')}`",
-            f"- 执行 staging：`{result.get('staging_path', '')}`",
-            "",
         ]
+        if parasolid:
+            lines.append("## Parasolid 强制对比")
+            lines.append("")
+            if parasolid.get("ran") and parasolid.get("ok"):
+                lines.append(f"- 对比用例数：`{parasolid.get('total', '')}`")
+                lines.append(f"- **与 Parasolid 一致（不用管）：`{parasolid.get('consistent', 0)}`**")
+                lines.append(f"- **需关注：`{parasolid.get('attention', 0)}`**")
+                verdict_counts = parasolid.get("verdict_counts")
+                if isinstance(verdict_counts, Mapping):
+                    for verdict, count in verdict_counts.items():
+                        if count:
+                            lines.append(f"  - `{verdict}`：{count}")
+                if parasolid.get("report_path"):
+                    lines.append(f"- 详细报告：`{parasolid['report_path']}`")
+            else:
+                lines.append(f"- {parasolid.get('note', '未运行')}")
+            lines.append("")
+        lines.extend(
+            [
+                "## 失败或诊断摘要",
+                "",
+                f"- Pipeline：{task_result.get('error') or result.get('errors') or '无'}",
+                f"- Execution：{execution.get('error') or '无'}",
+                "",
+                "## 可复核证据",
+                "",
+                f"- 本轮审查报告：`{round_record.get('user_review_report_path', '')}`",
+                f"- 审查包：`{round_record.get('review_packet_path', '')}`",
+                f"- 正式候选：`{round_record.get('candidate_path', '')}`",
+                f"- 执行 staging：`{result.get('staging_path', '')}`",
+                "",
+            ]
+        )
         _write_text(path, "\n".join(lines))
 
     def retry(self) -> dict[str, Any]:

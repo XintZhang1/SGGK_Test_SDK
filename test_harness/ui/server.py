@@ -24,6 +24,18 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return None
+
+
 class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -224,7 +236,13 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "job": self.server.jobs.snapshot()}, HTTPStatus.ACCEPTED)
                 return
             operations: dict[str, tuple[str, Callable[[], Any]]] = {
-                "/api/start": ("start", lambda: self.server.app.start(str(payload.get("public_function") or ""))),
+                "/api/start": (
+                    "start",
+                    lambda: self.server.app.start(
+                        str(payload.get("public_function") or ""),
+                        use_memory=_optional_bool(payload.get("use_memory")),
+                    ),
+                ),
                 "/api/comment": ("comment", lambda: self.server.app.comment(str(payload.get("comment") or ""))),
                 "/api/approve": ("approve", self.server.app.approve),
                 "/api/retry": ("retry", self.server.app.retry),

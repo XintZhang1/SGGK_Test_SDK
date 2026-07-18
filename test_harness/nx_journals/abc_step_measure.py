@@ -174,6 +174,26 @@ def _tag_value(body: Any) -> int:
         return 0
 
 
+def _free_edge_count(body: Any) -> tuple[int, int]:
+    """Return (edge_count, free_edge_count); free edges have fewer than two faces."""
+
+    edge_count = 0
+    free_edges = 0
+    try:
+        edges = list(body.GetEdges())
+    except Exception:
+        return 0, 0
+    for edge in edges:
+        edge_count += 1
+        try:
+            face_count = len(list(edge.GetFaces()))
+        except Exception:
+            face_count = 0
+        if face_count < 2:
+            free_edges += 1
+    return edge_count, free_edges
+
+
 def _part_key(part: Any) -> tuple[str, Any]:
     """Return a stable key for caching loads, never for occurrence de-duplication."""
 
@@ -286,6 +306,9 @@ def _collect_body_occurrences(
 
 
 def _measure_body(part: Any, body: Any, index: int, units: list[Any]) -> tuple[dict[str, Any], str]:
+    edge_count, free_edges = _free_edge_count(body)
+    solid_probe = _body_solid_flag(body)
+    closed = bool(solid_probe) and free_edges == 0
     mass_measure = None
     try:
         mass_measure = _new_mass_properties(part, units, body)
@@ -297,13 +320,17 @@ def _measure_body(part: Any, body: Any, index: int, units: list[Any]) -> tuple[d
             "index": index,
             "tag": _tag_value(body),
             "body_type": "solid",
+            "is_solid": bool(solid_probe),
+            "edge_count": edge_count,
+            "free_edge_count": free_edges,
+            "closed": closed,
             "measurement_ok": True,
             "area": area,
             "abs_volume": volume,
             "error": "",
         }, ""
     except Exception as mass_error:
-        solid_flag = _body_solid_flag(body)
+        solid_flag = solid_probe
         if solid_flag is not False:
             body_type = "solid" if solid_flag else "unknown"
             message = f"mass properties failed for {body_type} body: {mass_error}"
@@ -311,6 +338,10 @@ def _measure_body(part: Any, body: Any, index: int, units: list[Any]) -> tuple[d
                 "index": index,
                 "tag": _tag_value(body),
                 "body_type": body_type,
+                "is_solid": bool(solid_flag),
+                "edge_count": edge_count,
+                "free_edge_count": free_edges,
+                "closed": False,
                 "measurement_ok": False,
                 "area": 0.0,
                 "abs_volume": 0.0,
@@ -335,6 +366,10 @@ def _measure_body(part: Any, body: Any, index: int, units: list[Any]) -> tuple[d
                 "index": index,
                 "tag": _tag_value(body),
                 "body_type": "sheet",
+                "is_solid": False,
+                "edge_count": edge_count,
+                "free_edge_count": free_edges,
+                "closed": False,
                 "measurement_ok": True,
                 "area": area,
                 "abs_volume": 0.0,
@@ -346,6 +381,10 @@ def _measure_body(part: Any, body: Any, index: int, units: list[Any]) -> tuple[d
                 "index": index,
                 "tag": _tag_value(body),
                 "body_type": "sheet",
+                "is_solid": False,
+                "edge_count": edge_count,
+                "free_edge_count": free_edges,
+                "closed": False,
                 "measurement_ok": False,
                 "area": 0.0,
                 "abs_volume": 0.0,

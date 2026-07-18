@@ -116,6 +116,8 @@ button.danger { color: #ffd7d7; border-color: #6e3439; background: #3a1f23; }
 button.ghost { min-height: 34px; padding: 6px 10px; background: transparent; }
 .input-row { align-items: stretch; }
 .input-row input { flex: 1; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; cursor: pointer; }
+.checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
 .section-head { justify-content: space-between; margin-bottom: 14px; }
 .top-gap { margin-top: 14px; }
 .divider { height: 1px; margin: 18px 0; background: var(--line); }

@@ -42,6 +42,24 @@ def build_parser() -> argparse.ArgumentParser:
     measure_step.add_argument("--measurement-out", required=True, help="NX measurement JSON output")
     measure_step.add_argument("--timeout", type=float, default=300.0)
 
+    boolean_measure = subparsers.add_parser(
+        "boolean-measure",
+        help="Run the fixed Parasolid boolean measurement journal",
+    )
+    boolean_measure.add_argument("--nx-root", action="append", default=[])
+    boolean_measure.add_argument("--target", required=True, help="Existing target .step/.stp input")
+    boolean_measure.add_argument("--tool", required=True, help="Existing tool .step/.stp input")
+    boolean_measure.add_argument(
+        "--operation",
+        dest="boolean_operation",
+        required=True,
+        choices=["unite", "subtract", "intersect"],
+        help="Parasolid boolean operation",
+    )
+    boolean_measure.add_argument("--measurement-out", required=True, help="NX boolean measurement JSON output")
+    boolean_measure.add_argument("--result-step", default="", help="Optional result .step export path")
+    boolean_measure.add_argument("--timeout", type=float, default=300.0)
+
     run = subparsers.add_parser("run", help="Run an allow-listed Python journal")
     run.add_argument("--nx-root", action="append", default=[])
     run.add_argument("--journal", required=True)
@@ -68,6 +86,29 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             journal,
             allowed_roots=[journal.parent],
             arguments=[str(step_path), str(measurement_out)],
+            explicit_roots=args.nx_root,
+            timeout_seconds=args.timeout,
+        )
+    if args.operation == "boolean-measure":
+        target_path = Path(args.target).expanduser().resolve()
+        tool_path = Path(args.tool).expanduser().resolve()
+        measurement_out = Path(args.measurement_out).expanduser().resolve()
+        for label, path in (("target", target_path), ("tool", tool_path)):
+            if not path.is_file() or path.suffix.casefold() not in {".step", ".stp"}:
+                raise ValueError(f"--{label} must name an existing .step or .stp file")
+        if measurement_out.suffix.casefold() != ".json":
+            raise ValueError("--measurement-out must use the .json extension")
+        journal = REPO_ROOT / "test_harness" / "nx_journals" / "boolean_measure.py"
+        arguments = [str(target_path), str(tool_path), args.boolean_operation, str(measurement_out)]
+        if args.result_step:
+            result_step = Path(args.result_step).expanduser().resolve()
+            if result_step.suffix.casefold() not in {".step", ".stp"}:
+                raise ValueError("--result-step must use the .step or .stp extension")
+            arguments.append(str(result_step))
+        return execute_nx_journal(
+            journal,
+            allowed_roots=[journal.parent],
+            arguments=arguments,
             explicit_roots=args.nx_root,
             timeout_seconds=args.timeout,
         )

@@ -146,6 +146,15 @@
     "notes": {
       "type": "string",
       "default": ""
+    },
+    "prior_review_memory": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Bounded host-collected review feedback from past sessions for the same public function. Injected only at round 1 when memory is enabled."
+    },
+    "memory_note": {
+      "type": "string",
+      "default": ""
     }
   }
 }

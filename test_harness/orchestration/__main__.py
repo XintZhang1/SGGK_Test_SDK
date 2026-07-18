@@ -55,6 +55,7 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
     profile = os.environ.get("SGGK_HARNESS_PROFILE", DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
     profile_spec = PROFILE_SPECS.get(profile)
     default_thinking_mode = profile_spec.default_thinking_mode if profile_spec else "omit"
+    use_memory = os.environ.get("SGGK_HARNESS_NO_MEMORY", "").strip().lower() not in {"1", "true", "yes", "on"}
     runtime: Any
     if require_runtime:
         runtime = MessageApiRuntime(
@@ -77,6 +78,10 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
         sdk_dir=_sdk_dir_from_environment(),
         source_root=_source_root_from_environment(),
         runner_path=_runner_from_environment(),
+        use_memory=use_memory,
+        nx_root=(lambda raw: Path(raw).expanduser().resolve() if raw else None)(
+            os.environ.get("SGGK_NX_ROOT", "").strip()
+        ),
     )
 
 
@@ -87,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start", help="输入一个 public function 并生成第 1 轮审查")
     start.add_argument("public_function")
+    start.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="初始不使用历史修改建议记忆（默认使用）",
+    )
     comment = commands.add_parser("comment", help="提交一条自然语言审查意见")
     comment.add_argument("text")
     commands.add_parser("status", help="查看当前会话状态")
@@ -125,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         workflow = _workflow(require_runtime=args.command not in {"status", "show"})
         if args.command == "start":
-            payload = workflow.start(args.public_function)
+            payload = workflow.start(args.public_function, use_memory=False if args.no_memory else None)
         elif args.command == "comment":
             payload = workflow.comment(args.text)
         elif args.command == "status":
