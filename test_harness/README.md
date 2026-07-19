@@ -54,7 +54,7 @@ The Harness UI detects the installed C++ workload and matching CMake generator
 automatically, so it does not require one fixed Visual Studio version.
 
 The build copies runtime DLLs and `sggk.lic` next to `sggk_case_runner.exe`.
-It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index.
+It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index, and `sggk_mesh_dump.exe` (`--out <dir> --body <name=path.sgt>...`), which tessellates every face of the given `.sgt` bodies into one bounded `mesh.json` (≤ 30k triangles, deterministic stride decimation) for the failure-showcase real-geometry renderings.
 
 ## Advanced Runner Maintenance: Direct Case Run
 
@@ -1069,15 +1069,34 @@ For each failed case (triage reasons or nonzero runner return code) the tool
 writes `<case>/pre_analysis.json` plus an annotated `<case>_analysis.png`
 overlay (the standard preview with markers for the failing oracle's geometric
 focus; it degrades to the plain preview when no coordinates exist), and a
-`pre_analysis_summary.json` with counts by `fault_domain`. The deterministic
-rules assign one of `test_expectation_suspect` (point relation outside every
-bbox, distance expectation incompatible with the bbox gap, disjoint-input
-union expecting fewer bodies), `transport_suspect` (Parasolid
+`pre_analysis_summary.json` with counts by `fault_domain` and `fault_module`.
+The deterministic rules assign one of `test_expectation_suspect` (point relation
+outside every bbox, distance expectation incompatible with the bbox gap,
+disjoint-input union expecting fewer bodies), `transport_suspect` (Parasolid
 `transport_export_suspect` cause or SGGK self-reported vs NX-measured drift
 beyond the comparison tolerance), `oracle_tooling_suspect` (contradictory,
 non-finite, or unit-inconsistent oracle actuals), `geometry_result_suspect`
 (topo-check or remaining oracle failures), or `inconclusive` (including
-corrupt inputs, which never crash the tool). `--with-visual` additionally
+corrupt inputs, which never crash the tool). On top of that, every case gets a
+module-level attribution `fault_module`
+(`distance_oracle`/`point_relation_oracle`/`clash_oracle`/
+`plane_extreme_oracle`/`step_import`/`step_export`/`api_under_test`/
+`test_authoring`/`unclassified`): when NX is available and the case's
+`parasolid_compare/<case>/export/` STEPs are locatable, the allowlisted
+journal `nx_journals/oracle_recheck.py` re-measures each failed oracle check
+inside Parasolid (distance via `MeasureManager.NewDistance`, point-vs-body via
+surface distance + probe-sphere Intersect containment, clash via Intersect
+volume, plane extreme via `NewRectangularExtreme`, import integrity via the
+seam-aware free-edge counter), and the three-way rule attributes the case —
+SGGK oracle ≈ Parasolid ≠ expectation → `test_authoring`; SGGK oracle ≠
+Parasolid → the oracle's own module; transport evidence → `step_import`
+(NX-side input-STEP limits, e.g. coordinates beyond 1e5) or `step_export`
+(result STEP unusable/drift); geometry invariants violated with everything
+else cleared → `api_under_test`; cross-kernel divergence with self-consistent
+Parasolid evidence → `unclassified` (never brute-attributed to boolean). When
+NX or STEPs are unavailable the recheck is skipped with a note and the
+deterministic evidence alone decides (`--skip-recheck` forces this).
+`--with-visual` additionally
 asks the advisory vision model for a per-case `fault_hint`
 (`test_expectation|geometry|transport|tooling|unclear`) on the overlay
 images; the hint is merged as `visual_fault_hint`/`visual_notes` and never
@@ -1086,9 +1105,25 @@ overrides the deterministic `fault_domain` — disagreement is reported as
 verdict. The session workflow hook copies each failed case's capsule (`.sgt`
 inputs/outputs, reports, comparison evidence; never STEP) to
 `artifacts/<api>/round_<NNNN>_<sessionts>/<case_id>/` with a fixed-content
-`reproduce.ps1` and a Chinese `analysis.md`, and appends bounded records to
+`reproduce.ps1`, a generated google-test repro TU `<case>_repro.cpp`
+(`tools/export_failure_gtest.py`: 输入构造/被测接口调用/EXPECT 校验 sections
+mirroring the runner's Make* builders and the recipe's exact parameters; when
+`fault_module` is a tooling/transport module and geometry invariants passed,
+the 裁剪版 comments the construction chain out and loads the copied `.sgt`
+instead), a real shaded mesh rendering `<case>_mesh.png`
+(`src/sggk_mesh_dump.exe` tessellates the `.sgt` bodies into a bounded mesh
+JSON — ≤ 30k triangles per invocation — and `tools/render_mesh_views.py`
+draws painter's-algorithm ISO/XY/XZ/YZ panels with Chinese role labels; the
+mesh image becomes the card's primary `<case>_analysis.png`, with the bbox
+overlay as fallback) and an optional red-tinted `<case>_suspect_mesh.png`
+when debug-geometry evidence exists, plus a Chinese `analysis.md`, and
+appends bounded records (including `fault_module`) to
 the durable failure database `artifacts/failure_analysis_db.json` (atomic,
 capped at 500 records); the local UI shows them under the 失败分析 tab.
+All Chinese token maps (triage reasons, signature kinds/phases, oracle
+failure strings, value glosses, module labels) live in
+`tools/oracle_text_zh.py` and are projected by `ui/state.py`; raw tokens stay
+available in a muted 原始标记 line for grepability.
 
 For a lighter GUI-oriented handoff, build debug SGT packs directly from a registry or triage summary:
 

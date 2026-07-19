@@ -450,6 +450,131 @@ def _write_showcase_reproduce(showcase_case_dir: Path, runner: Path, recipe: Pat
     return "reproduce.ps1"
 
 
+SHOWCASE_MESH_DUMP_TIMEOUT = 180
+SHOWCASE_SUSPECT_MAX_BODIES = 8
+
+
+def _showcase_mesh_dump_exe(runner: Path | None) -> Path | None:
+    if runner is None:
+        return None
+    candidate = Path(runner).parent / "sggk_mesh_dump.exe"
+    return candidate if candidate.is_file() else None
+
+
+def _showcase_mesh_views(
+    case_dir: Path,
+    dest: Path,
+    safe: str,
+    mesh_dump: Path | None,
+    notes: list[str],
+) -> tuple[str, str]:
+    """Render real shaded mesh views of the case's .sgt geometry.
+
+    Produces ``<safe>_mesh.png`` (inputs/outputs grid) and, when debug-geometry
+    evidence exists in the original capsule, ``<safe>_suspect_mesh.png``
+    (suspect topology alone, red tint).  Best-effort: any failure degrades to
+    ('', '') so the bbox overlay stays as the fallback image.
+    """
+
+    if mesh_dump is None:
+        return "", ""
+    try:
+        import render_mesh_views
+    except Exception:  # noqa: BLE001 - mesh rendering is best-effort evidence
+        return "", ""
+    work = dest / "_mesh_work"
+    mesh_name = ""
+    try:
+        bodies: list[tuple[str, Path]] = []
+        for sub in ("input", "output"):
+            folder = dest / sub
+            if folder.is_dir():
+                for sgt in sorted(folder.glob("*.sgt"), key=lambda item: item.name):
+                    bodies.append((sgt.stem, sgt))
+        if not bodies:
+            notes.append(f"用例 {safe} 无 .sgt 可供网格渲染，退回包围盒示意图")
+        else:
+            command = [str(mesh_dump), "--out", str(work)]
+            for name, path in bodies:
+                command.extend(["--body", f"{name}={path}"])
+            completed = subprocess.run(command, capture_output=True, timeout=SHOWCASE_MESH_DUMP_TIMEOUT, check=False)
+            mesh_json = work / "mesh.json"
+            if completed.returncode == 0 and mesh_json.is_file():
+                out_png = dest / f"{safe}_mesh.png"
+                render_mesh_views.render_mesh_views(render_mesh_views.load_mesh(mesh_json), out_png)
+                if out_png.is_file() and out_png.stat().st_size > 0:
+                    mesh_name = out_png.name
+            if not mesh_name:
+                notes.append(
+                    f"用例 {safe} 网格提取失败（sggk_mesh_dump 返回码 {completed.returncode}），退回包围盒示意图"
+                )
+    except Exception as exc:  # noqa: BLE001 - mesh rendering must never break the showcase
+        notes.append(f"用例 {safe} 网格渲染失败：{exc}（退回包围盒示意图）"[:240])
+        mesh_name = ""
+
+    suspect_name = ""
+    try:
+        index_path = dest / "report" / "debug_geometry_index.json"
+        index_doc: dict[str, Any] = {}
+        if index_path.is_file():
+            try:
+                index_doc = _read_json(index_path)
+            except (OSError, json.JSONDecodeError, WorkflowError):
+                index_doc = {}
+        suspect_sgts: list[Path] = []
+        assets = index_doc.get("assets") if isinstance(index_doc.get("assets"), list) else []
+        for asset in assets:
+            if not isinstance(asset, Mapping):
+                continue
+            rel = str(asset.get("path") or "")
+            if not rel.endswith(".sgt"):
+                continue
+            candidate = case_dir / rel
+            try:
+                candidate.resolve().relative_to(case_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            if candidate.is_file():
+                suspect_sgts.append(candidate)
+        if suspect_sgts:
+            suspect_work = work / "suspect"
+            command = [str(mesh_dump), "--out", str(suspect_work)]
+            for index, path in enumerate(suspect_sgts[:SHOWCASE_SUSPECT_MAX_BODIES]):
+                command.extend(["--body", f"suspect_{index}={path}"])
+            completed = subprocess.run(command, capture_output=True, timeout=SHOWCASE_MESH_DUMP_TIMEOUT, check=False)
+            mesh_json = suspect_work / "mesh.json"
+            if completed.returncode == 0 and mesh_json.is_file():
+                out_png = dest / f"{safe}_suspect_mesh.png"
+                render_mesh_views.render_suspect_views(render_mesh_views.load_mesh(mesh_json), out_png)
+                if out_png.is_file() and out_png.stat().st_size > 0:
+                    suspect_name = out_png.name
+    except Exception:  # noqa: BLE001 - suspect rendering is optional evidence
+        suspect_name = ""
+    shutil.rmtree(work, ignore_errors=True)
+    return mesh_name, suspect_name
+
+
+def _showcase_export_repro(
+    dest: Path,
+    analysis: Mapping[str, Any],
+    source_label: str,
+    notes: list[str],
+) -> str:
+    """Write <case_id>_repro.cpp next to reproduce.ps1; returns the file name or ''."""
+
+    try:
+        import export_failure_gtest
+
+        return export_failure_gtest.export_case_repro(
+            dest,
+            source_label=source_label,
+            pre_analysis=dict(analysis),
+        )
+    except Exception as exc:  # noqa: BLE001 - repro export must never break the showcase
+        notes.append(f"用例 {dest.name} 复现源文件生成失败：{exc}"[:240])
+        return ""
+
+
 def _render_showcase_analysis_md(
     *,
     case_id: str,
@@ -464,37 +589,69 @@ def _render_showcase_analysis_md(
     analysis: Mapping[str, Any],
     domain_labels: Mapping[str, str],
     visual_case: Mapping[str, Any],
+    repro_cpp: str = "",
 ) -> str:
+    import oracle_text_zh
+
     fault_domain = str(analysis.get("fault_domain") or "inconclusive")
+    fault_module = str(analysis.get("fault_module") or "")
+    module_label = oracle_text_zh.FAULT_MODULE_LABEL_ZH.get(fault_module, fault_module) if fault_module else ""
     lines = [
         f"# 失败用例分析：`{case_id}`",
         "",
         "> 本文件全部内容均为诊断性证据，不构成 SDK 缺陷定论；视觉模型结论仅为咨询性参考，"
         "不参与门禁、批准、执行或失败归因。",
         "",
-        f"- 会话：`{session_id}` · 第 `{round_number}` 轮 · API `{api}`",
+        f"- 会话：`{session_id}` · 第 `{round_number}` 轮 · 接口 `{api}`",
         f"- 用例结果：`{outcome}`",
     ]
     kind = str(signature.get("kind") or "")
     phase = str(signature.get("phase") or "")
     sdk_error_code = signature.get("sdk_error_code")
     if kind or phase or sdk_error_code is not None:
-        lines.append(f"- 失败签名：kind=`{kind}` phase=`{phase}` sdk_error_code=`{sdk_error_code}`")
+        kind_text = oracle_text_zh.signature_kind_label(kind) if kind else "—"
+        phase_text = oracle_text_zh.phase_label(phase) if phase else "—"
+        lines.append(
+            f"- 失败签名：类型 {kind_text}（`{kind or '—'}`）· 阶段 {phase_text}（`{phase or '—'}`）"
+            f"· SDK 错误码 `{sdk_error_code}`"
+        )
     if reasons:
-        lines.append(f"- Triage 原因：{'、'.join(f'`{reason}`' for reason in reasons)}")
+        translated = oracle_text_zh.translate_reasons(reasons)
+        raw = "、".join(f"`{reason}`" for reason in reasons)
+        lines.append(f"- 失败原因：{'、'.join(translated)}（原始标记：{raw}）")
     if validation_failures:
-        lines.append("- 主要 Oracle 失败：")
+        lines.append("- 主要校验失败：")
         for failure in validation_failures:
-            lines.append(f"  - `{failure}`")
+            lines.append(f"  - {oracle_text_zh.translate_oracle_failure(failure)}")
+        lines.append(f"  - 原始标记：{'；'.join(f'`{failure}`' for failure in validation_failures)}")
     verdict = str(parasolid.get("verdict") or "")
     cause_class = str(parasolid.get("cause_class") or "")
     if verdict or cause_class:
         lines.append(f"- Parasolid 对比（诊断线索）：verdict=`{verdict}` cause_class=`{cause_class}`")
     label = str(domain_labels.get(fault_domain) or fault_domain)
     lines.append(f"- 确定性预分析：**{label}**（`{fault_domain}`，置信度 `{analysis.get('confidence')}`）")
+    if fault_module:
+        lines.append(f"- 归因模块（诊断性）：**{module_label}**（`{fault_module}`）")
     evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
     for item in evidence[:4]:
         lines.append(f"  - `{item}`")
+    recheck = analysis.get("recheck") if isinstance(analysis.get("recheck"), Mapping) else {}
+    if recheck:
+        if recheck.get("ran"):
+            lines.append("- Parasolid 复核（NX 重测，诊断性）：")
+            for item in recheck.get("checks") if isinstance(recheck.get("checks"), list) else []:
+                if not isinstance(item, Mapping):
+                    continue
+                relation = str(item.get("relation") or "")
+                relation_text = {"agree": "与 SGGK 测量一致", "disagree": "与 SGGK 测量不一致"}.get(
+                    relation, relation or "未测"
+                )
+                lines.append(
+                    f"  - `{item.get('kind')}` `{item.get('id')}`：SGGK=`{item.get('oracle_actual')}` "
+                    f"NX=`{item.get('nx_actual')}` → {relation_text}"
+                )
+        elif recheck.get("note"):
+            lines.append(f"- Parasolid 复核：{recheck.get('note')}")
     hint = str(analysis.get("visual_fault_hint") or "")
     if hint:
         lines.append(f"- 视觉模型责任域提示（咨询性）：`{hint}`；{analysis.get('visual_notes') or ''}")
@@ -504,8 +661,15 @@ def _render_showcase_analysis_md(
         plausibility = str(visual_case.get("plausibility") or "")
         flags = "、".join(str(flag) for flag in visual_case.get("flags") or [])
         lines.append(f"- 视觉复核结论（咨询性）：plausibility=`{plausibility}` flags=`{flags or '无'}`")
+    lines.append("- 复现：")
+    if repro_cpp:
+        lines.append(
+            f"  - 开发定位（推荐）：`{repro_cpp}` 是自动生成的 google-test 复现源文件，"
+            "可整体拷入 SGGK 测试树编译运行；文件内按「输入构造 / 被测接口调用 / EXPECT 校验」"
+            "分段，每条 EXPECT 都标注了对应的校验项编号。"
+        )
     lines.append(
-        "- 复现：运行本目录 `reproduce.ps1`（固定内容：会话同一 runner + 复制的 recipe，"
+        "  - 原样重跑：运行本目录 `reproduce.ps1`（固定内容：会话同一 runner + 复制的 recipe，"
         "`--out` 为脚本旁 `repro/`）。"
     )
     return "\n".join(lines) + "\n"
@@ -1895,7 +2059,17 @@ class HarnessWorkflow:
                 reproduce = _write_showcase_reproduce(dest, runner, recipe)
             analysis = analyze_failure_cases.analyze_case(case_dir)
             overlay_name = f"{safe}_analysis.png"
-            overlay = analyze_failure_cases.render_overlay(case_dir, dest / overlay_name)
+            mesh_dump = _showcase_mesh_dump_exe(runner)
+            mesh_name, suspect_name = _showcase_mesh_views(case_dir, dest, safe, mesh_dump, notes)
+            overlay = ""
+            if mesh_name:
+                # 主图使用真实网格渲染；文件名保持 <safe>_analysis.png（UI 路径不变）。
+                shutil.copy2(dest / mesh_name, dest / overlay_name)
+                overlay = str(dest / overlay_name)
+            else:
+                if mesh_dump is None and not any("sggk_mesh_dump" in note for note in notes):
+                    notes.append("未找到 sggk_mesh_dump（应与 runner 同目录发布），失败用例图退回包围盒示意图")
+                overlay = analyze_failure_cases.render_overlay(case_dir, dest / overlay_name)
             mirror_png_rel = ""
             if overlay:
                 mirror_png = mirror_root / overlay_name
@@ -1937,6 +2111,12 @@ class HarnessWorkflow:
             analysis["oracle_failures"] = entry["validation_failures"]
             analysis["parasolid"] = entry["parasolid"]
             dest = item["dest"]
+            repro_cpp = _showcase_export_repro(
+                dest,
+                analysis,
+                f"会话 {session_id} 第 {round_number} 轮 · 证据目录 {_repo_relative(self.repo_root, dest)}",
+                notes,
+            )
             mirror_pre = mirror_root / f"{item['safe']}_pre_analysis.json"
             _write_json(dest / "pre_analysis.json", analysis)
             _write_json(mirror_pre, analysis)
@@ -1953,16 +2133,19 @@ class HarnessWorkflow:
                 analysis=analysis,
                 domain_labels=analyze_failure_cases.DOMAIN_LABEL_ZH,
                 visual_case=visual_rows.get(case_id, {}),
+                repro_cpp=repro_cpp,
             )
             _write_text(dest / "analysis.md", markdown)
             reproduce_rel = (
                 _repo_relative(self.repo_root, dest / item["reproduce"]) if item["reproduce"] else ""
             )
+            repro_cpp_rel = _repo_relative(self.repo_root, dest / repro_cpp) if repro_cpp else ""
             case_rows.append(
                 {
                     "case_id": case_id,
                     "dir": _repo_relative(self.repo_root, dest),
                     "reproduce": reproduce_rel,
+                    "repro_cpp": repro_cpp_rel,
                     "analysis": _repo_relative(self.repo_root, dest / "analysis.md"),
                     "pre_analysis": _repo_relative(self.repo_root, mirror_pre),
                     "analysis_png": item["mirror_png_rel"],
@@ -1988,10 +2171,12 @@ class HarnessWorkflow:
                         "cause_class": str(entry["parasolid"].get("cause_class") or ""),
                     },
                     "fault_domain": str(analysis.get("fault_domain") or ""),
+                    "fault_module": str(analysis.get("fault_module") or ""),
                     "confidence": analysis.get("confidence"),
                     "visual_fault_hint": str(analysis.get("visual_fault_hint") or ""),
                     "showcase_dir": _repo_relative(self.repo_root, dest),
                     "reproduce": reproduce_rel,
+                    "repro_cpp": repro_cpp_rel,
                 }
             )
         db_rel = self._append_failure_analysis_db(db_records)

@@ -52,6 +52,10 @@ add_executable(sggk_topology_extract
     src/sggk_topology_extract.cpp
 )
 
+add_executable(sggk_mesh_dump
+    src/sggk_mesh_dump.cpp
+)
+
 target_include_directories(sggk_case_runner PRIVATE
     "${SGGK_SDK_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -59,6 +63,10 @@ target_include_directories(sggk_case_runner PRIVATE
 )
 
 target_include_directories(sggk_topology_extract PRIVATE
+    "${SGGK_SDK_DIR}/include"
+)
+
+target_include_directories(sggk_mesh_dump PRIVATE
     "${SGGK_SDK_DIR}/include"
 )
 
@@ -70,11 +78,19 @@ target_compile_options(sggk_topology_extract PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 
+target_compile_options(sggk_mesh_dump PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+)
+
 target_link_directories(sggk_case_runner PRIVATE
     "$<IF:$<CONFIG:Debug>,${SGGK_SDK_DIR}/x64-win/libd,$<IF:$<CONFIG:Release>,${SGGK_SDK_DIR}/x64-win/lib,${SGGK_SDK_DIR}/x64-win/libw>>"
 )
 
 target_link_directories(sggk_topology_extract PRIVATE
+    "$<IF:$<CONFIG:Debug>,${SGGK_SDK_DIR}/x64-win/libd,$<IF:$<CONFIG:Release>,${SGGK_SDK_DIR}/x64-win/lib,${SGGK_SDK_DIR}/x64-win/libw>>"
+)
+
+target_link_directories(sggk_mesh_dump PRIVATE
     "$<IF:$<CONFIG:Debug>,${SGGK_SDK_DIR}/x64-win/libd,$<IF:$<CONFIG:Release>,${SGGK_SDK_DIR}/x64-win/lib,${SGGK_SDK_DIR}/x64-win/libw>>"
 )
 
@@ -108,6 +124,14 @@ target_link_libraries(sggk_topology_extract PRIVATE
     SGGK_Topology
 )
 
+target_link_libraries(sggk_mesh_dump PRIVATE
+    SGGK_Foundation
+    SGGK_Math
+    SGGK_GeomBase
+    SGGK_Geometry
+    SGGK_Topology
+)
+
 add_custom_command(TARGET sggk_case_runner POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "$<IF:$<CONFIG:Debug>,${SGGK_SDK_DIR}/x64-win/bind,$<IF:$<CONFIG:Release>,${SGGK_SDK_DIR}/x64-win/bin,${SGGK_SDK_DIR}/x64-win/binw>>"
@@ -124,4 +148,13 @@ add_custom_command(TARGET sggk_topology_extract POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${SGGK_SDK_DIR}/sggk.lic"
         "$<TARGET_FILE_DIR:sggk_topology_extract>/sggk.lic"
+)
+
+add_custom_command(TARGET sggk_mesh_dump POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "$<IF:$<CONFIG:Debug>,${SGGK_SDK_DIR}/x64-win/bind,$<IF:$<CONFIG:Release>,${SGGK_SDK_DIR}/x64-win/bin,${SGGK_SDK_DIR}/x64-win/binw>>"
+        "$<TARGET_FILE_DIR:sggk_mesh_dump>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SGGK_SDK_DIR}/sggk.lic"
+        "$<TARGET_FILE_DIR:sggk_mesh_dump>/sggk.lic"
 )

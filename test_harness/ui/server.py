@@ -96,7 +96,9 @@ class JobManager:
 
 class HarnessUiServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Bind exclusively: on Windows SO_REUSEADDR lets a second UI process share
+    # the port silently, splitting requests across different code versions.
+    allow_reuse_address = False
 
     def __init__(self, address: tuple[str, int], repo_root: Path) -> None:
         self.app = HarnessUiApplication(repo_root)

@@ -31,7 +31,9 @@ The repository has two halves:
 - **C++17 case runner** (`test_harness/src/`, CMake): `sggk_case_runner.exe`
   executes one flat JSON recipe per process against the SGGK SDK and writes an
   artifact capsule per case; `sggk_topology_extract.exe` is a GUI-handoff
-  helper that re-exports selected topology from `.sgt` files.
+  helper that re-exports selected topology from `.sgt` files;
+  `sggk_mesh_dump.exe` tessellates `.sgt` bodies into a bounded mesh JSON
+  for the failure-showcase real-geometry renderings.
 
 **Windows x64 only.** The end-user entry point is a local web UI
 (`SGGK_Harness_UI.cmd`, `http://127.0.0.1:8765`); normal users never touch
@@ -186,8 +188,12 @@ change add new findings.
   `artifacts/<api>/round_<NNNN>_<sessionts>/<case_id>/` (input recipe+`.sgt`,
   output `.sgt`, report JSON, run_state/manifest, comparison evidence; files
   > 32 MiB skipped, **STEP is never copied** — it is NX-only transport) plus
-  a fixed-content `reproduce.ps1`, a Chinese `analysis.md`, a deterministic
-  `pre_analysis.json`, and an annotated `<case>_analysis.png` overlay.
+  a fixed-content `reproduce.ps1`, a generated google-test repro TU
+  (`<case>_repro.cpp`, full or 裁剪版 depending on `fault_module`), a Chinese
+  `analysis.md`, a deterministic `pre_analysis.json` (`fault_domain` +
+  `fault_module` + optional Parasolid recheck evidence), and a real shaded
+  mesh render as `<case>_mesh.png`/`<case>_analysis.png` (the bbox overlay
+  stays as fallback when `sggk_mesh_dump.exe` is unavailable).
   Showcased cases are appended (atomic, capped at 500 records) to the durable
   失败用例数据库 `artifacts/failure_analysis_db.json`. All of this is
   diagnostic evidence only and never confirms an SDK defect.
@@ -215,9 +221,11 @@ change add new findings.
   (per-case pass/fail, failure groups, Parasolid attention cases, advisory
   visual-review summary), and `failure_analysis` (失败分析 tab: per failed
   case signature chips, triage reasons, oracle failures, Parasolid
-  verdict/cause, deterministic `fault_domain` + confidence, advisory
-  `visual_fault_hint` with a disagreement badge, the annotated analysis PNG,
-  and the showcase/reproduce paths). `/api/artifact` additionally serves
+  verdict/cause, deterministic `fault_domain` + `fault_module` with Chinese
+  labels, advisory `visual_fault_hint` with a disagreement badge, the mesh
+  analysis PNG, and the showcase/repro paths). Raw tokens stay visible in a
+  muted 原始标记 line; all Chinese token maps live in
+  `tools/oracle_text_zh.py`. `/api/artifact` additionally serves
   session-scoped PNGs (≤ 4 MiB) as base64 image payloads; CSP stays
   `default-src 'self'` with only `img-src 'self' data:` for those previews.
 - `test_harness/nx/` — optional Siemens NX Python API integration (static
@@ -225,7 +233,11 @@ change add new findings.
   conventions: boolean operation is api-aware (`api_combine_bodies`→unite;
   manifest default `boolean_type` only counts for boolean-family APIs), and
   the free-edge closedness probe is seam-aware (isolated single-face loops on
-  periodic surfaces are not boundary edges).
+  periodic surfaces are not boundary edges). `nx_journals/oracle_recheck.py`
+  re-measures failed oracle checks (distance, point-vs-body containment via a
+  probe-sphere intersect, clash via Intersect volume, plane extreme via
+  rectangular-extreme, import integrity) and feeds the deterministic
+  three-way `fault_module` attribution.
 - `test_harness/tools/` — ~80 maintainer CLI tools: pipeline
   (`run_message_harness_pipeline.py`), gates/normalization
   (`normalize_model_output.py`, `model_fixed_gate_contracts.py`,
@@ -234,8 +246,13 @@ change add new findings.
   `plan_large_campaign.py`), failure pipeline (`triage_artifacts.py`,
   `qualify_failures.py`, `replay_regression_seeds.py`,
   `reduce_failure_recipe.py`, `export_failure_bundles.py`,
-  `analyze_failure_cases.py` — deterministic per-case fault-domain
-  pre-analysis + annotated overlay + advisory VL fault hints), Parasolid
+  `analyze_failure_cases.py` — deterministic per-case fault-domain +
+  fault-module pre-analysis (Parasolid oracle recheck when NX is available)
+  + annotated overlay + advisory VL fault hints), failure handoff
+  (`export_failure_gtest.py` — google-test repro TU generator;
+  `render_mesh_views.py` — Pillow-only shaded mesh views;
+  `oracle_text_zh.py` — shared Chinese token maps/failure-string
+  translator), Parasolid
   divergence analysis (`classify_parasolid_divergence.py`; verdicts flow into
   triage/bundles/investigation/final report), bug registries
   (`record_bug_cases.py`, `check_bug_registry_regression.py`), plugin pipeline
@@ -246,7 +263,10 @@ change add new findings.
   `generate_corpus_recut_matrix.py` with persistent exact-bbox probe cache and
   host-lane complexity report/gate), and more.
   `test_harness/README.md` documents each.
-- `test_harness/src/` — C++ sources of the two executables.
+- `test_harness/src/` — C++ sources of the three executables
+  (`sggk_case_runner`, `sggk_topology_extract`, `sggk_mesh_dump` — the latter
+  tessellates `.sgt` bodies into the bounded mesh JSON consumed by
+  `render_mesh_views.py`).
 - `test_harness/api_plugins/` — checked-in compile-time API plugins (current
   real pilot: `api_combine_bodies`; generatable archetypes:
   `body_list_to_body`, `unary_body_to_bodies`; others remain manual).

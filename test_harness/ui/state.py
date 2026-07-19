@@ -8,6 +8,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from test_harness.tools.oracle_text_zh import (
+    FAULT_MODULE_LABEL_ZH,
+    phase_label,
+    signature_kind_label,
+    translate_oracle_failure,
+    translate_reasons,
+)
+
 TEXT_SUFFIXES = {
     ".c",
     ".cc",
@@ -774,6 +782,7 @@ def _execution_case_row(
         validation_failures = _bounded_strings(
             validation.get("failures"), EXECUTION_OVERVIEW_MAX_VALIDATION_FAILURES
         )
+    case_reasons = list(triage_reasons.get(case_id, []))
     return {
         "case_id": case_id,
         "outcome": _case_outcome(result),
@@ -782,9 +791,12 @@ def _execution_case_row(
         "skipped": skipped,
         "elapsed_seconds": _elapsed_seconds(result.get("elapsed_seconds")),
         "phase": phase,
+        "phase_label": phase_label(phase) if phase else "",
         "error_message": error_message,
         "validation_failures": validation_failures,
-        "triage_reasons": list(triage_reasons.get(case_id, [])),
+        "validation_failures_zh": [translate_oracle_failure(failure) for failure in validation_failures],
+        "triage_reasons": case_reasons,
+        "triage_reasons_zh": translate_reasons(case_reasons),
         "artifact_path": artifact_rel,
     }
 
@@ -799,11 +811,13 @@ def _failure_group_rows(triage: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue
         signature = group.get("representative_failure_signature")
         signature = signature if isinstance(signature, Mapping) else {}
+        reasons = _bounded_strings(group.get("reasons"), EXECUTION_OVERVIEW_MAX_REASONS)
         rows.append(
             {
                 "count": _nonneg_int(group.get("count")),
                 "apis": _bounded_strings(group.get("apis"), EXECUTION_OVERVIEW_MAX_REASONS),
-                "reasons": _bounded_strings(group.get("reasons"), EXECUTION_OVERVIEW_MAX_REASONS),
+                "reasons": reasons,
+                "reasons_zh": translate_reasons(reasons),
                 "representative_case_id": str(group.get("representative_case_id") or ""),
                 "signature": {
                     "kind": str(signature.get("kind") or ""),
@@ -1015,6 +1029,7 @@ def failure_analysis(
         pre: dict[str, Any] = {}
         pre_rel = str(case.get("pre_analysis") or "")
         if pre_rel:
+            pre_rel = _relative_artifact_path(repo_root, session_root, pre_rel) or pre_rel
             try:
                 pre_path = _inside(session_root, pre_rel)
             except ValueError:
@@ -1023,6 +1038,7 @@ def failure_analysis(
                 pre = _read_json_quiet(pre_path)
         analysis_png = str(case.get("analysis_png") or "")
         if analysis_png:
+            analysis_png = _relative_artifact_path(repo_root, session_root, analysis_png) or analysis_png
             try:
                 png_path = _inside(session_root, analysis_png)
                 if not png_path.is_file() or png_path.stat().st_size > MAX_PREVIEW_BYTES:
@@ -1033,13 +1049,19 @@ def failure_analysis(
         parasolid = pre.get("parasolid") if isinstance(pre.get("parasolid"), Mapping) else {}
         confidence = pre.get("confidence")
         reproduce = str(case.get("reproduce") or "")
+        repro_cpp = str(case.get("repro_cpp") or "")
+        triage_reasons = _bounded_strings(pre.get("triage_reasons"), FAILURE_ANALYSIS_MAX_REASONS)
+        oracle_failures = _bounded_strings(pre.get("oracle_failures"), FAILURE_ANALYSIS_MAX_ORACLE_FAILURES)
+        fault_module = str(pre.get("fault_module") or "")
+        signature_kind = str(signature.get("kind") or "")
+        signature_phase = str(signature.get("phase") or "")
         result["cases"].append(
             {
                 "case_id": str(case.get("case_id") or pre.get("case_id") or ""),
                 "outcome": str(pre.get("outcome") or ""),
                 "signature": {
-                    "kind": str(signature.get("kind") or ""),
-                    "phase": str(signature.get("phase") or ""),
+                    "kind": signature_kind,
+                    "phase": signature_phase,
                     "sdk_error_code": (
                         signature.get("sdk_error_code")
                         if isinstance(signature.get("sdk_error_code"), int)
@@ -1047,15 +1069,19 @@ def failure_analysis(
                         else None
                     ),
                 },
-                "triage_reasons": _bounded_strings(pre.get("triage_reasons"), FAILURE_ANALYSIS_MAX_REASONS),
-                "oracle_failures": _bounded_strings(
-                    pre.get("oracle_failures"), FAILURE_ANALYSIS_MAX_ORACLE_FAILURES
-                ),
+                "signature_kind_label": signature_kind_label(signature_kind) if signature_kind else "",
+                "signature_phase_label": phase_label(signature_phase) if signature_phase else "",
+                "triage_reasons": triage_reasons,
+                "triage_reasons_zh": translate_reasons(triage_reasons),
+                "oracle_failures": oracle_failures,
+                "oracle_failures_zh": [translate_oracle_failure(failure) for failure in oracle_failures],
                 "parasolid": {
                     "verdict": str(parasolid.get("verdict") or ""),
                     "cause_class": str(parasolid.get("cause_class") or ""),
                 },
                 "fault_domain": str(pre.get("fault_domain") or ""),
+                "fault_module": fault_module,
+                "fault_module_label": FAULT_MODULE_LABEL_ZH.get(fault_module, fault_module),
                 "confidence": (
                     confidence
                     if isinstance(confidence, int | float) and not isinstance(confidence, bool)
@@ -1068,11 +1094,17 @@ def failure_analysis(
                 "analysis_png": analysis_png,
                 "showcase_dir": str(case.get("dir") or ""),
                 "reproduce": reproduce,
+                "repro_cpp": repro_cpp,
                 "analysis_md": str(case.get("analysis") or ""),
                 "reproduction_note": (
-                    "在 showcase 目录运行 reproduce.ps1 即可复现（固定内容：会话同一 runner 与复制的 recipe）。"
-                    if reproduce
-                    else ""
+                    "证据目录里有自动生成的 google-test 复现源文件（*_repro.cpp），"
+                    "可直接拷入 SGGK 测试树编译定位问题；也可用 reproduce.ps1 原样重跑该用例。"
+                    if repro_cpp
+                    else (
+                        "在证据目录运行 reproduce.ps1 即可原样重跑该用例（固定内容：会话同一 runner 与复制的 recipe）。"
+                        if reproduce
+                        else ""
+                    )
                 ),
             }
         )

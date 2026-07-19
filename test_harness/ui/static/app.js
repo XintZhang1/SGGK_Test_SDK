@@ -9,6 +9,7 @@ let lastJobError = "";
 let abcInspection = null;
 let toastTimer = null;
 let artifactRequestSerial = 0;
+let lastFailureAnalysisKey = "";
 const artifactGroupState = new Map();
 const $ = (id) => document.getElementById(id);
 
@@ -393,8 +394,9 @@ function renderExecutionOverview(overview) {
         text("strong", `${title} × ${group.count || 0}`, "execution-group-title"),
         text("span", `代表用例 ${group.representative_case_id || "—"}`, "execution-group-detail"),
       );
-      if ((group.reasons || []).length) {
-        card.append(text("span", `原因：${group.reasons.join("、")}`, "execution-group-detail"));
+      const groupReasons = (group.reasons_zh && group.reasons_zh.length) ? group.reasons_zh : (group.reasons || []);
+      if (groupReasons.length) {
+        card.append(text("span", `原因：${groupReasons.join("、")}`, "execution-group-detail"));
       }
       if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
         card.append(text("span", `SDK 错误码 ${signature.sdk_error_code}`, "execution-group-detail"));
@@ -415,7 +417,7 @@ function renderExecutionOverview(overview) {
     const table = document.createElement("table");
     table.className = "execution-table";
     const headRow = document.createElement("tr");
-    ["用例", "状态", "阶段", "耗时", "失败原因 / Oracle 失败", "产物路径"].forEach((label) => {
+    ["用例", "状态", "阶段", "耗时", "失败原因 / 校验失败", "产物路径"].forEach((label) => {
       headRow.append(text("th", label));
     });
     const thead = document.createElement("thead");
@@ -425,7 +427,9 @@ function renderExecutionOverview(overview) {
     cases.forEach((row) => {
       const outcome = EXECUTION_OUTCOME_LABELS[row.outcome] ? row.outcome : "pass";
       const reason = row.error_message
+        || (row.validation_failures_zh || []).join("；")
         || (row.validation_failures || []).join("；")
+        || (row.triage_reasons_zh || []).join("、")
         || (row.triage_reasons || []).join("、");
       const tr = document.createElement("tr");
       tr.className = `exec-row-${outcome}`;
@@ -434,7 +438,7 @@ function renderExecutionOverview(overview) {
       tr.append(
         text("td", row.case_id || "—", "execution-case-id"),
         statusCell,
-        text("td", row.phase || "—"),
+        text("td", row.phase_label || row.phase || "—"),
         text("td", `${Number(row.elapsed_seconds || 0).toFixed(2)} s`),
         text("td", reason || "—", "execution-reason"),
         text("td", row.artifact_path || "—", "execution-path"),
@@ -515,8 +519,32 @@ async function loadFailureImage(path, container) {
   }
 }
 
+function failureAnalysisKey(data, sessionId) {
+  const value = data && typeof data === "object" ? data : {};
+  const cases = Array.isArray(value.cases) ? value.cases : [];
+  return JSON.stringify([
+    sessionId,
+    Boolean(value.available),
+    value.note || "",
+    value.root || "",
+    cases.map((item) => [
+      item && item.case_id,
+      item && item.outcome,
+      item && item.fault_domain,
+      item && item.visual_fault_hint,
+      item && item.analysis_png,
+    ]),
+  ]);
+}
+
 function renderFailureAnalysis(value) {
   const data = value || {};
+  // The 2s poll carries an identical payload most of the time; rebuilding the
+  // cards (and re-fetching every analysis PNG) on each poll makes the tab
+  // flicker, so only re-render when the projected data actually changed.
+  const key = failureAnalysisKey(data, (state && state.session && state.session.session_id) || "");
+  if (key === lastFailureAnalysisKey) return;
+  lastFailureAnalysisKey = key;
   const root = $("failureAnalysisCases");
   root.replaceChildren();
   const badge = $("failureCountBadge");
@@ -532,8 +560,8 @@ function renderFailureAnalysis(value) {
     return;
   }
   head.textContent = [
-    data.root ? `showcase 目录：${data.root}` : "",
-    data.db ? `全局失败用例数据库：${data.db}` : "",
+    data.root ? `证据目录：${data.root}` : "",
+    data.db ? `失败用例数据库：${data.db}` : "",
   ].filter(Boolean).join(" · ") || "失败用例分析产物已生成。";
   if (!cases.length) {
     root.append(text("p", "本次执行没有失败用例。", "muted-text"));
@@ -552,26 +580,40 @@ function renderFailureAnalysis(value) {
     };
     const signature = item.signature || {};
     if (item.outcome) addChip(item.outcome === "timeout" ? "超时" : "失败", "round-chip exec-chip-fail");
-    if (signature.kind) addChip(`kind ${signature.kind}`);
-    if (signature.phase) addChip(`阶段 ${signature.phase}`);
+    if (signature.kind) addChip(`类型 ${item.signature_kind_label || signature.kind}`);
+    if (signature.phase) addChip(`阶段 ${item.signature_phase_label || signature.phase}`);
     if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
       addChip(`SDK 错误码 ${signature.sdk_error_code}`);
     }
     if (chips.childNodes.length) head2.append(chips);
     card.append(head2);
 
-    const reasons = item.triage_reasons || [];
+    const reasons = item.triage_reasons_zh && item.triage_reasons_zh.length
+      ? item.triage_reasons_zh
+      : (item.triage_reasons || []);
     if (reasons.length) {
-      card.append(text("div", `Triage 原因：${reasons.join("、")}`, "failure-case-line"));
+      card.append(text("div", `失败原因：${reasons.join("、")}`, "failure-case-line"));
+      const rawReasons = (item.triage_reasons || []).join("、");
+      if (rawReasons && rawReasons !== reasons.join("、")) {
+        card.append(text("div", `原始标记：${rawReasons}`, "failure-case-raw"));
+      }
     }
-    const oracleFailures = item.oracle_failures || [];
+    const oracleFailures = item.oracle_failures_zh && item.oracle_failures_zh.length
+      ? item.oracle_failures_zh
+      : (item.oracle_failures || []);
     if (oracleFailures.length) {
       const list = document.createElement("div");
       list.className = "failure-case-oracles";
-      list.append(text("div", "主要 Oracle 失败", "failure-case-label"));
+      list.append(text("div", "主要校验失败", "failure-case-label"));
       oracleFailures.slice(0, 4).forEach((failure) => {
         list.append(text("div", failure, "failure-case-oracle"));
       });
+      const rawFailures = (item.oracle_failures || []).filter(
+        (failure, index) => failure && failure !== oracleFailures[index],
+      );
+      if (rawFailures.length) {
+        list.append(text("div", `原始标记：${rawFailures.slice(0, 4).join("；")}`, "failure-case-raw"));
+      }
       card.append(list);
     }
     const parasolid = item.parasolid || {};
@@ -594,6 +636,13 @@ function renderFailureAnalysis(value) {
       `确定性预分析：${FAULT_DOMAIN_LABELS[domain] || domain}（${domain}，置信度 ${confidence}）`,
       "failure-domain-chip",
     ));
+    if (item.fault_module) {
+      domainRow.append(text(
+        "span",
+        `归因模块：${item.fault_module_label || item.fault_module}`,
+        "failure-module-chip",
+      ));
+    }
     if (item.visual_fault_hint) {
       domainRow.append(text(
         "span",
@@ -618,7 +667,7 @@ function renderFailureAnalysis(value) {
       loadFailureImage(item.analysis_png, imageWrap);
     }
     if (item.showcase_dir) {
-      card.append(text("div", `showcase：${item.showcase_dir}`, "failure-case-path"));
+      card.append(text("div", `证据目录：${item.showcase_dir}`, "failure-case-path"));
     }
     if (item.reproduction_note) {
       card.append(text("div", item.reproduction_note, "failure-case-note"));
