@@ -352,6 +352,15 @@ progress { width: 100%; height: 12px; margin: 11px 0 7px; accent-color: var(--ac
 .failure-case-path { color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; word-break: break-all; }
 .failure-case-image-wrap { min-height: 40px; color: var(--muted); font-size: 11px; }
 .failure-case-image { display: block; max-width: 720px; width: 100%; border: 1px solid var(--line); border-radius: 8px; cursor: zoom-in; }
+.failure-banner { margin: 10px 0 4px; padding: 10px 14px; border: 1px solid #2a3a4a; border-radius: 10px; background: #101820; }
+.failure-banner-text { color: #bcd6ea; font-size: 13px; }
+.failure-module { display: grid; gap: 10px; margin-top: 16px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.failure-module-title { margin: 0; color: #e8d9b8; font-size: 14px; }
+.failure-module-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.failure-module-low { opacity: 0.82; }
+.failure-module-low .failure-module-title { color: #b9c7ae; }
+.failure-case-low { border-color: #2c3328; background: #131511; }
+.failure-priority-low { color: #b9c7ae; background: #22301f; }
 .artifact-image-preview { display: block; max-width: 100%; max-height: 100%; margin: auto; cursor: zoom-in; }
 
 .lightbox { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 24px; background: #000c; cursor: zoom-out; }

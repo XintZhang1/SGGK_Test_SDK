@@ -112,34 +112,6 @@ CLASH_MODE_ENUM = {
     "ClashClassifySubEntities": "sggk::ClashMode::ClashClassifySubEntities",
 }
 
-INCLUDE_BLOCK = """\
-#include <gtest/gtest.h>
-
-// SGGK SDK 头文件（与 test_harness/src/sggk_case_runner.cpp 的口径一致；可按需删减）
-#include <Boolean/API.h>
-#include <GeomBase/BndBox.h>
-#include <GeomBase/BndBox2D.h>
-#include <GeomBase/Matrix4.h>
-#include <GeomBase/Point2D.h>
-#include <Geometry/3D/Curve/BoundedCurve3D.h>
-#include <Geometry/3D/Curve/Circle3D.h>
-#include <Geometry/3D/Surface/BSplineSurface.h>
-#include <Geometry/3D/Surface/Surface.h>
-#include <ModelAnalysis/API.h>
-#include <ModelingBase/API.h>
-#include <ModelingPrim/API.h>
-#include <Offset/API.h>
-#include <Topology/Brep/Body.h>
-#include <Topology/Serialize/RapidTopoJsonDeserializer.h>
-#include <Topology/Tools/PtBodyRelation.h>
-#include <Topology/Tools/TopoBuilder.h>
-#include <Foundation/init.h>
-
-#include <memory>
-#include <string>
-#include <vector>"""
-
-
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -860,31 +832,12 @@ def generate_repro_cpp(
         f"// 归因模块（诊断性）：{module_label}（{fault_module}）",
         "// 声明：本文件为诊断性证据，不构成 SDK 缺陷定论；所有数值均取自失败用例的",
         "// recipe 与校验记录，自动生成过程不参考任何模型输出。",
-        "// 使用：将本文件放入 SGGK 源码树的 google-test 测试目录（如 tests/），保证",
-        "// 头文件搜索路径指向 SGK 的 include/ 根，链接与被测工程一致的 SGGK 库即可。",
-        "// 输入 .sgt 的相对路径（input/、output/）与本文件在证据目录中的布局一致；",
-        "// 拷出时请连同 input/、output/ 目录一起复制。",
+        "// 使用：只含一个 TEST 用例，放入 SGGK 源码树任意 google-test 翻译单元即可；",
+        "// 所需头文件与进程级 init 由宿主测试工程提供。输入 .sgt 的相对路径",
+        "//（input/、output/）与证据目录布局一致，拷出时请连同目录一起复制。",
         "// ======================================================================",
-        INCLUDE_BLOCK,
-        "",
-        "",
-        "// SDK 进程级初始化（幂等；若宿主工程已有全局初始化可删除此 guard）",
-        "struct SggkReproSessionGuard",
-        "{",
-        "    SggkReproSessionGuard() { sggk::init(nullptr, 16); }",
-        "    ~SggkReproSessionGuard() { sggk::fini(); }",
-        "};",
-        "",
-        "static SggkReproSessionGuard& ReproSessionGuard()",
-        "{",
-        "    static SggkReproSessionGuard guard;",
-        "    return guard;",
-        "}",
-        "",
         f"TEST(SggkFailureRepro, {_safe_test_name(case_id)})",
         "{",
-        "    (void)ReproSessionGuard();",
-        "",
     ]
 
     construction: list[str] = []

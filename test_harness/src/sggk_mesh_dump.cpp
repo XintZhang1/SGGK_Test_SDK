@@ -31,7 +31,7 @@ namespace
 {
 // Hard cap on triangles across all bodies in one invocation; excess faces are
 // decimated with a deterministic stride so the JSON stays bounded.
-const size_t kMaxTriangles = 30000;
+const size_t kMaxTriangles = 120000;
 
 struct Options
 {
@@ -183,7 +183,10 @@ FaceMesh TessellateFace(const sggk::FacePtr& face, double modelSize)
     {
         return mesh;
     }
-    const sggk::SrfMeshOpt opts(sggk::SrfLevel::MediumFine, modelSize);
+    // Fine level plus a tighter absolute deflection: the default MediumFine
+    // grid produced visibly planar artifacts on curved surfaces.
+    sggk::SrfMeshOpt opts(sggk::SrfLevel::Fine, modelSize);
+    opts.deflection = modelSize * 0.0002;
     auto surfaceMesh = sggk::SurfaceMeshUtil::Tessellate(*surface, face->CalcUVBound(), opts);
     mesh.verts.reserve(surfaceMesh.points.size() * 3);
     for (const auto& point : surfaceMesh.points)

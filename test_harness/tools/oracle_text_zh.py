@@ -51,6 +51,47 @@ FAULT_MODULE_LABEL_ZH = {
     "unclassified": "未分类",
 }
 
+# Section notes for the 失败分析 tab, one per attribution module (diagnostic,
+# never a defect verdict).
+FAULT_MODULE_NOTE_ZH = {
+    "distance_oracle": (
+        "以下用例的距离测量结果与 Parasolid 复核不一致，疑似距离测量工具环节问题，"
+        "建议测量工具负责人复核。"
+    ),
+    "point_relation_oracle": (
+        "以下用例的点-体关系判定与 Parasolid 复核不一致，疑似点关系测量工具环节问题，"
+        "建议测量工具负责人复核。"
+    ),
+    "clash_oracle": (
+        "以下用例的干涉检查结果与 Parasolid 复核不一致，疑似干涉检查工具环节问题，"
+        "建议测量工具负责人复核。"
+    ),
+    "plane_extreme_oracle": (
+        "以下用例的平面极值测量与 Parasolid 复核不一致，疑似平面极值测量工具环节问题，"
+        "建议测量工具负责人复核。"
+    ),
+    "step_import": (
+        "以下用例的输入 STEP 在 Parasolid 侧导入受限或异常，疑似 STEP 导入环节问题"
+        "（含坐标范围限制），建议数据交换组复核。"
+    ),
+    "step_export": (
+        "以下用例的 SGGK 结果经 Parasolid 测量出现无法导入或属性漂移，疑似 STEP 导出环节问题，"
+        "建议数据交换组复核。"
+    ),
+    "api_under_test": (
+        "已排除预期编写与工具环节因素，以下用例的几何结果本身违反不变量，"
+        "疑似被测接口实现问题，请内核组优先排查。"
+    ),
+    "test_authoring": (
+        "以下用例可能是 GLM-5.2 的测试编写问题（预期写错）：其 SGGK 结果与 Parasolid 比对一致，"
+        "并以视觉模型粗略复核为几何正常，不是内核缺陷，已按低优先级处理，仅在核对测试方案时参考。"
+    ),
+    "unclassified": (
+        "以下用例跨内核结果存在分歧，但 Parasolid 内部证据自洽，暂无法归因到具体环节，"
+        "列为未分类观察项。"
+    ),
+}
+
 # Chinese glosses for oracle enum values, embedded in translated sentences as
 # ``Inside（内部）`` so the raw token stays visible next to its meaning.
 POINT_RELATION_GLOSS_ZH = {

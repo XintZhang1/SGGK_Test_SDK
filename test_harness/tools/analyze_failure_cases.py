@@ -937,6 +937,9 @@ def _attach_fault_module(
                 if isinstance(item, dict)
             ],
         }
+    priority, priority_reason = compute_priority(result)
+    result["priority"] = priority
+    result["priority_reason_zh"] = priority_reason
     return result
 
 
@@ -977,6 +980,30 @@ def _analyze(case_dir: Path, *, recheck_runner: Any = None, skip_recheck: bool =
     return _attach_fault_module(result, data, domain, evidence, recheck)
 
 
+def compute_priority(analysis: dict[str, Any]) -> tuple[str, str]:
+    """Rate how urgently a failed case needs kernel attention.
+
+    Per the review requirement: when the SGGK result agrees with Parasolid at
+    topology/geometry level AND the vision review does not question the
+    geometry, the likelihood of a kernel defect is low and the case is
+    explicitly de-prioritized so the list is not misread as "half broken".
+    """
+
+    module = str(analysis.get("fault_module") or "unclassified")
+    parasolid = analysis.get("parasolid") if isinstance(analysis.get("parasolid"), dict) else {}
+    verdict = str(parasolid.get("verdict") or "")
+    parasolid_consistent = verdict in {"both_correct", "sggk_correct"}
+    hint = str(analysis.get("visual_fault_hint") or "")
+    visual_consistent = hint not in {"geometry"}
+    if parasolid_consistent and visual_consistent and module in {"test_authoring", "unclassified"}:
+        return (
+            "low",
+            "SGGK 结果与 Parasolid 在拓扑几何层面比对一致，视觉复核未质疑几何结果；"
+            "按低优先级处理（疑似非内核缺陷，仅供复核）。",
+        )
+    return "high", "存在未排除的分歧证据，需要进一步分析。"
+
+
 def merge_visual_hint(analysis: dict[str, Any], hint: str, notes: str) -> dict[str, Any]:
     """Attach an advisory vision fault hint; the deterministic domain never changes."""
 
@@ -985,6 +1012,9 @@ def merge_visual_hint(analysis: dict[str, Any], hint: str, notes: str) -> dict[s
     merged["visual_notes"] = " ".join(str(notes).split())[:500]
     expected = HINT_TO_DOMAIN.get(hint)
     merged["visual_disagrees"] = bool(expected and expected != analysis.get("fault_domain"))
+    priority, priority_reason = compute_priority(merged)
+    merged["priority"] = priority
+    merged["priority_reason_zh"] = priority_reason
     return merged
 
 
@@ -1095,11 +1125,14 @@ def analyze_cases_root(
 
     counts: dict[str, int] = {}
     module_counts: dict[str, int] = {}
+    priority_counts: dict[str, int] = {}
     for analysis in analyses:
         domain = str(analysis.get("fault_domain") or "inconclusive")
         counts[domain] = counts.get(domain, 0) + 1
         module = str(analysis.get("fault_module") or "unclassified")
         module_counts[module] = module_counts.get(module, 0) + 1
+        priority = str(analysis.get("priority") or "high")
+        priority_counts[priority] = priority_counts.get(priority, 0) + 1
     summary = {
         "schema_version": SCHEMA_VERSION,
         "kind": "failure_pre_analysis_summary",
@@ -1108,6 +1141,7 @@ def analyze_cases_root(
         "total_cases": len(analyses),
         "fault_domain_counts": counts,
         "fault_module_counts": module_counts,
+        "priority_counts": priority_counts,
         "visual": {"requested": with_visual, "note": visual_note},
         "cases": [
             {
@@ -1115,6 +1149,7 @@ def analyze_cases_root(
                 "fault_domain": str(item.get("fault_domain") or ""),
                 "fault_module": str(item.get("fault_module") or ""),
                 "confidence": item.get("confidence"),
+                "priority": str(item.get("priority") or "high"),
                 "visual_fault_hint": str(item.get("visual_fault_hint") or ""),
                 "visual_disagrees": bool(item.get("visual_disagrees")),
             }

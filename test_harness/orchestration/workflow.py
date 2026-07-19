@@ -1984,6 +1984,25 @@ class HarnessWorkflow:
         passed: bool,
     ) -> dict[str, Any]:
         notes: list[str] = []
+        # Parasolid verdicts for this attempt (the showcase runs after the
+        # comparison, while triage ran before it, so triage entries usually
+        # carry no verdict of their own).
+        compare_verdicts: dict[str, dict[str, str]] = {}
+        parasolid_session = session.get("parasolid_comparison")
+        if isinstance(parasolid_session, Mapping):
+            analysis_ref = str(parasolid_session.get("analysis_path") or "")
+            if analysis_ref:
+                try:
+                    analysis_path = _repo_path(self.repo_root, analysis_ref, label="parasolid analysis")
+                    payload = _read_json(analysis_path) if analysis_path.is_file() else {}
+                    for case in payload.get("cases") or []:
+                        if isinstance(case, Mapping) and str(case.get("case_id") or ""):
+                            compare_verdicts[str(case.get("case_id"))] = {
+                                "verdict": str(case.get("verdict") or ""),
+                                "cause_class": str(case.get("cause_class") or ""),
+                            }
+                except (OSError, ValueError, WorkflowError):
+                    notes.append("Parasolid 差异分析不可读，按无对比证据处理")
         cases_root: Path | None = None
         triage_root: Path | None = None
         for key, label in (("cases", "执行 cases"), ("triage", "triage")):
@@ -2012,7 +2031,7 @@ class HarnessWorkflow:
                 "note": "无执行 cases/triage 产物，跳过失败用例分析",
             }
 
-        entries = self._showcase_failed_entries(cases_root, triage_root, notes)
+        entries = self._showcase_failed_entries(cases_root, triage_root, notes, compare_verdicts)
         if not entries:
             return {"ran": True, "ok": True, "root": "", "cases": [], "note": "本次执行没有失败用例"}
 
@@ -2110,6 +2129,11 @@ class HarnessWorkflow:
             analysis["triage_reasons"] = entry["reasons"]
             analysis["oracle_failures"] = entry["validation_failures"]
             analysis["parasolid"] = entry["parasolid"]
+            # Priority depends on the Parasolid verdict, which is only bound
+            # here, so rate after all evidence fields are attached.
+            priority, priority_reason = analyze_failure_cases.compute_priority(analysis)
+            analysis["priority"] = priority
+            analysis["priority_reason_zh"] = priority_reason
             dest = item["dest"]
             repro_cpp = _showcase_export_repro(
                 dest,
@@ -2173,6 +2197,8 @@ class HarnessWorkflow:
                     "fault_domain": str(analysis.get("fault_domain") or ""),
                     "fault_module": str(analysis.get("fault_module") or ""),
                     "confidence": analysis.get("confidence"),
+                    "priority": str(analysis.get("priority") or "high"),
+                    "priority_reason_zh": str(analysis.get("priority_reason_zh") or ""),
                     "visual_fault_hint": str(analysis.get("visual_fault_hint") or ""),
                     "showcase_dir": _repo_relative(self.repo_root, dest),
                     "reproduce": reproduce_rel,
@@ -2209,6 +2235,7 @@ class HarnessWorkflow:
         cases_root: Path | None,
         triage_root: Path | None,
         notes: list[str],
+        compare_verdicts: Mapping[str, Mapping[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect failed-case entries from triage_summary.json (recipe_summary fallback)."""
 
@@ -2271,6 +2298,8 @@ class HarnessWorkflow:
                         "verdict": str(parasolid.get("verdict") or ""),
                         "cause_class": str(parasolid.get("cause_class") or ""),
                     }
+                if not entry["parasolid"].get("verdict") and compare_verdicts and compare_verdicts.get(case_id):
+                    entry["parasolid"] = dict(compare_verdicts[case_id])
 
         if cases_root is not None:
             try:

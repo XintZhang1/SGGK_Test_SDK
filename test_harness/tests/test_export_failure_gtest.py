@@ -351,6 +351,7 @@ def test_export_writes_file(tmp_path: Path) -> None:
     assert out.is_file()
     text = out.read_text(encoding="utf-8")
     assert "测试来源" in text
-    # 生成的文件本身就是 google-test 翻译单元：包含 gtest 头与 TEST 宏。
-    assert "#include <gtest/gtest.h>" in text
+    # 生成的文件只含一个 TEST 用例：头文件与 init 由宿主测试工程提供。
+    assert "#include" not in text
+    assert "ReproSessionGuard" not in text
     assert text.count("TEST(SggkFailureRepro,") == 1

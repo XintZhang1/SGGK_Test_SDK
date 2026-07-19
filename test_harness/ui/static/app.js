@@ -530,11 +530,59 @@ function failureAnalysisKey(data, sessionId) {
     cases.map((item) => [
       item && item.case_id,
       item && item.outcome,
-      item && item.fault_domain,
+      item && item.fault_module,
+      item && item.priority,
       item && item.visual_fault_hint,
       item && item.analysis_png,
     ]),
   ]);
+}
+
+function renderFailureCaseCard(item) {
+  const card = document.createElement("div");
+  card.className = "failure-case" + (item.priority === "low" ? " failure-case-low" : "");
+  const head = document.createElement("div");
+  head.className = "failure-case-head";
+  head.append(text("strong", item.case_id || "未命名用例", "failure-case-id"));
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label, className) => {
+    if (label) chips.append(text("span", label, className || "round-chip"));
+  };
+  if (item.outcome) addChip(item.outcome === "timeout" ? "超时" : "失败", "round-chip exec-chip-fail");
+  if (item.priority === "low") addChip("低优先级", "round-chip failure-priority-low");
+  if (chips.childNodes.length) head.append(chips);
+  card.append(head);
+
+  const oracleFailures = (item.oracle_failures_zh && item.oracle_failures_zh.length)
+    ? item.oracle_failures_zh
+    : (item.oracle_failures || []);
+  if (oracleFailures.length) {
+    const list = document.createElement("div");
+    list.className = "failure-case-oracles";
+    list.append(text("div", "主要校验失败", "failure-case-label"));
+    oracleFailures.slice(0, 4).forEach((failure) => {
+      list.append(text("div", failure, "failure-case-oracle"));
+    });
+    card.append(list);
+  }
+  if (item.priority_reason_zh) {
+    card.append(text("div", item.priority_reason_zh, "failure-case-note"));
+  }
+  if (item.analysis_png) {
+    const imageWrap = document.createElement("div");
+    imageWrap.className = "failure-case-image-wrap";
+    imageWrap.textContent = "分析图加载中…";
+    card.append(imageWrap);
+    loadFailureImage(item.analysis_png, imageWrap);
+  }
+  if (item.showcase_dir) {
+    card.append(text("div", `证据目录：${item.showcase_dir}`, "failure-case-path"));
+  }
+  if (item.reproduction_note) {
+    card.append(text("div", item.reproduction_note, "failure-case-note"));
+  }
+  return card;
 }
 
 function renderFailureAnalysis(value) {
@@ -559,6 +607,7 @@ function renderFailureAnalysis(value) {
     head.textContent = "当前会话还没有失败用例分析产物；执行真实 SDK 测试后，失败用例会自动出现在这里。";
     return;
   }
+  const summary = data.summary || {};
   head.textContent = [
     data.root ? `证据目录：${data.root}` : "",
     data.db ? `失败用例数据库：${data.db}` : "",
@@ -567,112 +616,36 @@ function renderFailureAnalysis(value) {
     root.append(text("p", "本次执行没有失败用例。", "muted-text"));
     return;
   }
-  cases.forEach((item) => {
-    const card = document.createElement("div");
-    card.className = "failure-case";
-    const head2 = document.createElement("div");
-    head2.className = "failure-case-head";
-    head2.append(text("strong", item.case_id || "未命名用例", "failure-case-id"));
-    const chips = document.createElement("div");
-    chips.className = "round-overview-chips";
-    const addChip = (label, className) => {
-      if (label) chips.append(text("span", label, className || "round-chip"));
-    };
-    const signature = item.signature || {};
-    if (item.outcome) addChip(item.outcome === "timeout" ? "超时" : "失败", "round-chip exec-chip-fail");
-    if (signature.kind) addChip(`类型 ${item.signature_kind_label || signature.kind}`);
-    if (signature.phase) addChip(`阶段 ${item.signature_phase_label || signature.phase}`);
-    if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
-      addChip(`SDK 错误码 ${signature.sdk_error_code}`);
+  const banner = document.createElement("div");
+  banner.className = "failure-banner";
+  banner.append(text(
+    "span",
+    `本批 ${summary.total ?? cases.length} 例失败：${summary.high ?? "—"} 例需进一步分析，`
+    + `${summary.low ?? "—"} 例低优先级（与 Parasolid/视觉复核一致，疑似非内核缺陷）`,
+    "failure-banner-text",
+  ));
+  root.append(banner);
+  const groups = Array.isArray(data.groups) && data.groups.length
+    ? data.groups
+    : [{ module: "", label: "失败用例", note: "", count: cases.length, high_count: 0, low_count: 0 }];
+  groups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "failure-module" + (group.module === "test_authoring" ? " failure-module-low" : "");
+    const title = document.createElement("h3");
+    title.className = "failure-module-title";
+    const priorityBits = [];
+    if (group.high_count) priorityBits.push(`${group.high_count} 例需分析`);
+    if (group.low_count) priorityBits.push(`${group.low_count} 例低优先级`);
+    title.textContent = `归因模块：${group.label || "其他"}（${group.count} 例${priorityBits.length ? `：${priorityBits.join("，")}` : ""}）`;
+    section.append(title);
+    if (group.note) {
+      section.append(text("p", group.note, "failure-module-note"));
     }
-    if (chips.childNodes.length) head2.append(chips);
-    card.append(head2);
-
-    const reasons = item.triage_reasons_zh && item.triage_reasons_zh.length
-      ? item.triage_reasons_zh
-      : (item.triage_reasons || []);
-    if (reasons.length) {
-      card.append(text("div", `失败原因：${reasons.join("、")}`, "failure-case-line"));
-      const rawReasons = (item.triage_reasons || []).join("、");
-      if (rawReasons && rawReasons !== reasons.join("、")) {
-        card.append(text("div", `原始标记：${rawReasons}`, "failure-case-raw"));
-      }
-    }
-    const oracleFailures = item.oracle_failures_zh && item.oracle_failures_zh.length
-      ? item.oracle_failures_zh
-      : (item.oracle_failures || []);
-    if (oracleFailures.length) {
-      const list = document.createElement("div");
-      list.className = "failure-case-oracles";
-      list.append(text("div", "主要校验失败", "failure-case-label"));
-      oracleFailures.slice(0, 4).forEach((failure) => {
-        list.append(text("div", failure, "failure-case-oracle"));
-      });
-      const rawFailures = (item.oracle_failures || []).filter(
-        (failure, index) => failure && failure !== oracleFailures[index],
-      );
-      if (rawFailures.length) {
-        list.append(text("div", `原始标记：${rawFailures.slice(0, 4).join("；")}`, "failure-case-raw"));
-      }
-      card.append(list);
-    }
-    const parasolid = item.parasolid || {};
-    if (parasolid.verdict || parasolid.cause_class) {
-      card.append(text(
-        "div",
-        `Parasolid 对比（诊断线索）：verdict=${parasolid.verdict || "—"} · cause_class=${parasolid.cause_class || "—"}`,
-        "failure-case-line",
-      ));
-    }
-
-    const domain = item.fault_domain || "inconclusive";
-    const domainRow = document.createElement("div");
-    domainRow.className = "failure-case-domain";
-    const confidence = item.confidence === null || item.confidence === undefined
-      ? "—"
-      : Number(item.confidence).toFixed(2);
-    domainRow.append(text(
-      "span",
-      `确定性预分析：${FAULT_DOMAIN_LABELS[domain] || domain}（${domain}，置信度 ${confidence}）`,
-      "failure-domain-chip",
-    ));
-    if (item.fault_module) {
-      domainRow.append(text(
-        "span",
-        `归因模块：${item.fault_module_label || item.fault_module}`,
-        "failure-module-chip",
-      ));
-    }
-    if (item.visual_fault_hint) {
-      domainRow.append(text(
-        "span",
-        `视觉提示：${VISUAL_HINT_LABELS[item.visual_fault_hint] || item.visual_fault_hint}（咨询性）`,
-        "failure-visual-chip",
-      ));
-      if (item.visual_disagrees) {
-        domainRow.append(text("span", "与确定性结论不一致", "failure-disagree-chip"));
-      }
-    }
-    card.append(domainRow);
-    (item.evidence || []).slice(0, 4).forEach((line) => {
-      card.append(text("div", line, "failure-case-evidence"));
-    });
-    if (item.notes) card.append(text("div", item.notes, "failure-case-note"));
-
-    if (item.analysis_png) {
-      const imageWrap = document.createElement("div");
-      imageWrap.className = "failure-case-image-wrap";
-      imageWrap.textContent = "分析图加载中…";
-      card.append(imageWrap);
-      loadFailureImage(item.analysis_png, imageWrap);
-    }
-    if (item.showcase_dir) {
-      card.append(text("div", `证据目录：${item.showcase_dir}`, "failure-case-path"));
-    }
-    if (item.reproduction_note) {
-      card.append(text("div", item.reproduction_note, "failure-case-note"));
-    }
-    root.append(card);
+    const moduleCases = group.module
+      ? cases.filter((item) => (item.fault_module || "unclassified") === group.module)
+      : cases;
+    moduleCases.forEach((item) => section.append(renderFailureCaseCard(item)));
+    root.append(section);
   });
 }
 

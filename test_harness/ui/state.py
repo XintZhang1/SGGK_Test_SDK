@@ -10,6 +10,7 @@ from typing import Any
 
 from test_harness.tools.oracle_text_zh import (
     FAULT_MODULE_LABEL_ZH,
+    FAULT_MODULE_NOTE_ZH,
     phase_label,
     signature_kind_label,
     translate_oracle_failure,
@@ -1087,6 +1088,8 @@ def failure_analysis(
                     if isinstance(confidence, int | float) and not isinstance(confidence, bool)
                     else None
                 ),
+                "priority": str(pre.get("priority") or "high"),
+                "priority_reason_zh": _truncate_text(pre.get("priority_reason_zh") or "", 240),
                 "visual_fault_hint": str(pre.get("visual_fault_hint") or ""),
                 "visual_disagrees": bool(pre.get("visual_disagrees")),
                 "evidence": _bounded_strings(pre.get("evidence"), FAILURE_ANALYSIS_MAX_EVIDENCE),
@@ -1108,6 +1111,45 @@ def failure_analysis(
                 ),
             }
         )
+    module_order = {
+        "api_under_test": 0,
+        "distance_oracle": 10,
+        "point_relation_oracle": 11,
+        "clash_oracle": 12,
+        "plane_extreme_oracle": 13,
+        "step_export": 20,
+        "step_import": 21,
+        "unclassified": 30,
+        "test_authoring": 40,
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in result["cases"]:
+        module = str(item.get("fault_module") or "unclassified")
+        group = grouped.setdefault(
+            module,
+            {
+                "module": module,
+                "label": FAULT_MODULE_LABEL_ZH.get(module, module),
+                "note": FAULT_MODULE_NOTE_ZH.get(module, ""),
+                "count": 0,
+                "high_count": 0,
+                "low_count": 0,
+            },
+        )
+        group["count"] += 1
+        if item.get("priority") == "low":
+            group["low_count"] += 1
+        else:
+            group["high_count"] += 1
+    result["groups"] = sorted(
+        grouped.values(),
+        key=lambda group: (module_order.get(str(group["module"]), 25), str(group["module"])),
+    )
+    result["summary"] = {
+        "total": len(result["cases"]),
+        "high": sum(1 for item in result["cases"] if item.get("priority") != "low"),
+        "low": sum(1 for item in result["cases"] if item.get("priority") == "low"),
+    }
     return result
 
 
