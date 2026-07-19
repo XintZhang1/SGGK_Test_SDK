@@ -91,7 +91,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     lines = [
         f"# Candidate Bug Investigation: {report.get('representative_case_id', '')}",
         "",
-        "> This is a Qwen-assisted candidate analysis, not a confirmed SDK bug or confirmed root cause.",
+        "> This is a model-assisted candidate analysis, not a confirmed SDK bug or confirmed root cause.",
         "",
         f"- Failure ID: `{report.get('failure_id', '')}`",
         f"- Investigators: `{report.get('successful_investigators', 0)}/{report.get('investigator_count', 0)}` successful",
@@ -203,7 +203,8 @@ def run_bundle_investigation(
             response_mode="auto",
             temperature=0.2,
             max_tokens=16_384,
-            thinking_mode="enabled",
+            thinking_mode=config.profile.default_thinking_mode,
+            stream=config.profile.default_stream,
         )
         if options.seed is not None:
             options = replace(options, seed=options.seed + index)

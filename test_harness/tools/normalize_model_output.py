@@ -360,18 +360,22 @@ def normalize_dsl(dsl: dict[str, Any], diagnostics: list[dict[str, Any]]) -> dic
         )
 
     cases = normalized.get("cases")
-    if not isinstance(cases, list) or not cases:
+    clusters = normalized.get("parameter_clusters")
+    if (not isinstance(cases, list) or not cases) and not (isinstance(clusters, list) and clusters):
         diagnostics.append(
             diagnostic(
                 "error",
                 "MISSING_CASES",
                 "$.dsl.cases",
-                "DSL must contain a non-empty cases array.",
-                "Return attack_dsl with dsl.cases containing runnable case objects.",
+                "DSL must contain a non-empty cases array unless parameter_clusters is present.",
+                "Return attack_dsl with dsl.cases containing runnable case objects, or "
+                "dsl.cluster_bases plus dsl.parameter_clusters for mass expansion.",
                 {"cases": [{"case_id": "...", "target": {}, "tool": {}}]},
             )
         )
         return normalized
+    if not isinstance(cases, list):
+        cases = []
 
     has_global_chains = isinstance(normalized.get("chains"), list)
     for index, raw_case in enumerate(cases):
@@ -420,7 +424,7 @@ def infer_kind(loaded: Any) -> str:
     kind = loaded.get("kind")
     if isinstance(kind, str):
         return kind
-    if "dsl_version" in loaded or "cases" in loaded:
+    if "dsl_version" in loaded or "cases" in loaded or "parameter_clusters" in loaded:
         return "attack_dsl"
     if "api" in loaded and ("case_id" in loaded or "source_file" in loaded):
         return "flat_recipe"

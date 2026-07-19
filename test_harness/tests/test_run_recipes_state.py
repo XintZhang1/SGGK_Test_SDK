@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import run_recipes
+
+
+def test_windows_extended_path_supports_drive_unc_and_existing_namespaces() -> None:
+    drive = r"C:\deep\recipe.json"
+    unc = r"\\server\share\deep\recipe.json"
+    extended = r"\\?\C:\deep\recipe.json"
+    device = r"\\.\pipe\sggk"
+
+    assert run_recipes._windows_extended_path(drive) == r"\\?\C:\deep\recipe.json"
+    assert run_recipes._windows_extended_path(unc) == r"\\?\UNC\server\share\deep\recipe.json"
+    assert run_recipes._windows_extended_path(extended) == extended
+    assert run_recipes._windows_extended_path(device) == device
+    assert run_recipes._windows_extended_path("relative/recipe.json") == "relative/recipe.json"
+    assert run_recipes.display_path(r"\\?\C:\deep\recipe.json") == drive
+    assert run_recipes.display_path(r"\\?\UNC\server\share\deep\recipe.json") == unc
 
 
 def write_recipe(path: Path, case_id: str) -> None:
@@ -46,6 +62,13 @@ def test_launcher_freezes_recipe_and_writes_run_state_before_process(
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert state["phase"] == "launching"
         assert (out / "state_case" / "input" / "recipe.json").is_file()
+        expected_recipe = run_recipes.native_path_argument(recipe)
+        expected_out = run_recipes.native_path_argument(out)
+        assert command[command.index("--recipe") + 1] == expected_recipe
+        assert command[command.index("--out") + 1] == expected_out
+        if os.name == "nt":
+            assert expected_recipe.startswith("\\\\?\\")
+            assert expected_out.startswith("\\\\?\\")
         return SimpleNamespace(returncode=0, stdout="case_id=state_case\n", stderr="")
 
     monkeypatch.setattr(run_recipes.subprocess, "run", fake_run)

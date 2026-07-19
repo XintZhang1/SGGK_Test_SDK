@@ -9,13 +9,12 @@ gate before they can become catalog entries.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PLUGIN_ROOT = REPO_ROOT / "test_harness" / "api_plugins"
@@ -48,6 +47,10 @@ ALLOWED_ARCHETYPES = {
     "binary_body_to_bodies",
     "binary_topology_to_topologies",
     "topology_query",
+    # Geometry pair in, intersection curves/points out.  Covers the GeomInt
+    # family (SrfSrfInt, CrvCrvInt, CrvSrfInt) and future intersection APIs;
+    # registered as the fixed vocabulary for interface-design archetype_match.
+    "binary_geometry_intersection",
 }
 ALLOWED_SDK_MODULES = {
     "Foundation",
@@ -321,9 +324,12 @@ def merge_capabilities(
     if not isinstance(apis, dict) or not isinstance(families, dict):
         raise PluginCatalogError("base capabilities must contain apis and interface_families objects")
     for record in discover_plugins(plugin_root):
-        if record.api in apis:
-            raise PluginCatalogError(f"plugin api conflicts with base capability: {record.api}")
         capability = _validate_capability(record.api, record.manifest["capability"])
+        existing = apis.get(record.api)
+        if existing is not None and existing != capability:
+            raise PluginCatalogError(f"plugin api conflicts with base capability: {record.api}")
+        # An identical base entry is the registered result of a completed
+        # promotion; enrich it like any other plugin instead of conflicting.
         capability["plugin"] = record.as_dict()
         apis[record.api] = capability
         family_id = f"plugin_{record.api}"

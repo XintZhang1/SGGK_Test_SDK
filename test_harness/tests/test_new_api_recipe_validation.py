@@ -77,7 +77,7 @@ def test_new_api_negative_fixtures_are_rejected(
         ("test_harness/recipes/topology_section_spheres_smoke.json", "topology_section_expectationss"),
     ],
 )
-def test_api_specific_allowlists_reject_qwen_field_typos(relative_path: str, typo_field: str) -> None:
+def test_api_specific_allowlists_reject_model_field_typos(relative_path: str, typo_field: str) -> None:
     recipe = json.loads((REPO_ROOT / relative_path).read_text(encoding="utf-8-sig"))
     recipe[typo_field] = True
 
@@ -92,7 +92,7 @@ def test_common_provenance_fields_remain_allowed() -> None:
     )
     recipe.update(
         {
-            "dsl_source": "staged/qwen-message.json",
+            "dsl_source": "staged/model-message.json",
             "dsl_case_id": "topology_section_spheres_smoke",
             "dsl_variant": "nominal",
             "hypothesis": "Two overlapping spheres return one circular section edge.",

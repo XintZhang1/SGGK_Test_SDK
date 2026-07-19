@@ -213,6 +213,102 @@ Example:
 
 Unsupported chain patterns should be emitted as `needs_harness_extension`, not forced into an approximate recipe.
 
+## Parameter Clusters
+
+Use `cluster_bases` plus `parameter_clusters` for mass coverage. A parameter
+cluster transforms one base geometry over **one** varying parameter; fixed host
+code expands each concrete cluster (one base × one grid) deterministically into
+**at most 50 cases**. Combining many bases, cluster types, and grids lets a
+compact input JSON describe 100k+ runnable recipes without enumerating cases.
+Do not hand-enumerate large case arrays.
+
+```json
+{
+  "dsl_version": 1,
+  "constants": {"topo_tol": 0.01, "geom_tol": 0.00001, "max_model_size": 500000.0},
+  "defaults": {"api": "api_boolean", "boolean_type": "SUBTRACTION", "modeling_tol": "topo_tol"},
+  "cluster_bases": {
+    "box_cyl": {
+      "hypothesis": "Extruded box cut by a swept cylinder near the side face.",
+      "target": {"chain": [
+        {"id": "target_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+        {"id": "target_extrude", "op": "extrude", "height": 220.0},
+        {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+      ]},
+      "tool": {"chain": [
+        {"id": "tool_profile", "op": "circle_profile", "radius": 40.0},
+        {"id": "tool_sweep", "op": "sweep_line", "height": 260.0},
+        {"id": "tool_place", "op": "transform", "translate_x": 170.0, "translate_z": -20.0}
+      ]},
+      "expectations": {"result_bodies": {"min": 1}, "require_finite_properties": true}
+    }
+  },
+  "parameter_clusters": [
+    {
+      "cluster_id": "side_contact_band",
+      "type": "contact_band",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_x", "center": 170.0, "bands": ["exact", "geom_tol", "topo_tol"], "steps_per_band": 4}
+    },
+    {
+      "cluster_id": "side_translate_x",
+      "type": "translate_axis",
+      "bases": ["box_cyl"],
+      "vary": {"path": "tool.chain.2.translate_x"},
+      "grids": [
+        {"kind": "linspace", "min": 100.0, "max": 240.0, "count": 20},
+        {"kind": "geomspace", "min": 1.0, "max": 1000.0, "count": 12}
+      ]
+    }
+  ]
+}
+```
+
+Rules:
+
+- `cluster_bases` maps base ids to case-shaped objects (`target`/`tool`/
+  `options`/`expectations`/`key_points` plus provenance). Bases must not carry
+  `variants`, `sweeps`, or `paired_sweeps`; the cluster is the only variation
+  source so the per-cluster cap stays accountable.
+- Every cluster `vary` path must resolve in its base: intermediate segments
+  must exist and vector leaves must stay in bounds. A mistyped path fails the
+  compile instead of silently emitting identical recipes.
+- Expansion is `bases × grids` concrete clusters per definition, each capped at
+  50 cases. `grids` entries are `{"kind":"linspace","min","max","count"}`,
+  `{"kind":"geomspace","min","max","count"}` (min > 0), or
+  `{"kind":"values","values":[...]}`; count/values length must stay ≤ 50.
+- `cases` and `parameter_clusters` may coexist; `cases` may be omitted entirely
+  when clusters are present. The 256-case response limit applies to `cases`
+  only; cluster expansion is bounded by the host (2,000,000 recipes per DSL).
+- `compile_attack_dsl.py --check` validates cluster definitions and compiles a
+  deterministic first/two/middle/last sample per cluster, reporting the
+  theoretical expansion total; `--out` materializes the full expansion.
+- Compiled cluster recipes carry `dsl_cluster_id`, `dsl_cluster_type`, and
+  `dsl_cluster_base` provenance alongside `dsl_source`/`dsl_case_id`.
+
+Cluster types:
+
+| type | varies | key vary fields |
+|------|--------|-----------------|
+| `translate_axis` | one translate component over a grid | `path` |
+| `translate_line` | a translate vector along a direction | `path` (vector prefix), `direction`, `center` |
+| `scale_uniform` | uniform scale over a grid | `path` |
+| `size_dimension` | a builder dimension (radius/height/length/width/...) | `path` |
+| `contact_band` | a contact parameter across tolerance bands | `path`, `center`, `bands` (`exact`/`geom_tol`/`topo_tol`), `steps_per_band`, `direction` (`below`/`above`/`both`) |
+| `tolerance_sweep` | modeling/operation tolerance over a grid | `path` (for example `options.modeling_tol`) |
+| `angle_sweep` | an angle field over a grid | `path` |
+| `large_coordinate_shift` | a translate component toward max_model_size | `path`, `fractions` within (0, 1), `sign` (`positive`/`negative`/`both`) |
+| `boolean_type_cycle` | boolean type with aligned expectation overrides | `path`, `values` (`{"value","suffix","set"}` entries) |
+| `option_toggle` | a boolean option over `[false, true]` | `path` |
+| `mirror_sign` | a numeric parameter over ± magnitudes | `path`, `magnitude` or `magnitudes` |
+| `seeded_jitter` | a numeric parameter via deterministic LCG jitter | `path`, `min`, `max`, `count`, `seed` |
+| `uv_domain` | paired surface parameter fractions | `paths` (two paths), grid values within [0, 1] |
+| `enum_cycle` | any categorical parameter over explicit values | `path`, `values` |
+
+A checked-in smoke fixture lives at
+`test_harness/dsl/parameter_cluster_smoke.json` and exercises every cluster
+type.
+
 ## Provenance Artifacts
 
 Native DSL runs and compiled flat recipe lanes preserve modeling provenance in:

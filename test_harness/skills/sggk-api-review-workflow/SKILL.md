@@ -21,9 +21,9 @@ belong to the fixed host.
 1. Run `harness.ps1 start <public-function>`.
 2. Read the current `第N轮测试方案审查.zh-CN.md` report.
 3. Submit feedback with `harness.ps1 comment "..."`.
-4. When feedback requests any change, let Qwen produce a complete replacement
+4. When feedback requests any change, let the configured model produce a complete replacement
    candidate in a new immutable round and review it again.
-5. Treat a Qwen `approve` decision only as comment interpretation.  Fixed host
+5. Treat a model `approve` decision only as comment interpretation.  Fixed host
    code must also detect explicit execution consent and create a hash-bound
    execution approval.
 6. Execute only the exact candidate, prompt, review packet, round, and runner

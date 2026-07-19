@@ -1,32 +1,1131 @@
 "use strict";
+
 let state = null;
 let csrf = "";
 let selectedArtifact = "";
+let selectedArtifactSession = null;
 let settingsInitialized = false;
 let lastJobError = "";
+let abcInspection = null;
+let toastTimer = null;
+let artifactRequestSerial = 0;
+let lastFailureAnalysisKey = "";
+const artifactGroupState = new Map();
 const $ = (id) => document.getElementById(id);
 
-function toast(message, error=false){const el=$("toast");el.textContent=message;el.className="toast show"+(error?" error":"");setTimeout(()=>el.className="toast",3500)}
-async function request(path, options={}){const response=await fetch(path,options);const value=await response.json();if(!response.ok||!value.ok)throw new Error(value.error||`HTTP ${response.status}`);return value}
-async function post(path,payload){return request(path,{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(payload)})}
-function text(tag,value,className){const el=document.createElement(tag);el.textContent=value;if(className)el.className=className;return el}
+function toast(message, error = false) {
+  const element = $("toast");
+  element.textContent = message;
+  element.className = "toast show" + (error ? " error" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { element.className = "toast"; }, 4200);
+}
 
-function renderStages(items){const root=$("stages");root.replaceChildren();items.forEach((item,index)=>{const li=document.createElement("li");li.className=`stage ${item.status}`;li.append(text("span",item.status==="done"?"✓":String(index+1),"stage-number"),text("h3",item.title),text("p",item.detail));root.append(li)})}
-function renderReadiness(items){const root=$("readiness");root.replaceChildren();items.forEach(item=>{const li=document.createElement("li");li.className=item.ok?"ok":"";const dot=text("span","","check-dot");const body=document.createElement("div");body.append(text("div",item.label,"check-label"),text("div",item.detail,"check-detail"));li.append(dot,body);root.append(li)})}
-function renderEvents(items){const root=$("events");root.replaceChildren();[...items].reverse().forEach(item=>{const li=document.createElement("li");li.append(text("strong",`${String(item.sequence||"").padStart(3,"0")} · ${item.type}`),text("span",item.timestamp||""));root.append(li)});if(!items.length)root.append(text("li","尚无事件"))}
-function renderArtifacts(items){const root=$("artifactList");root.replaceChildren();$("artifactCount").textContent=`${items.length} 个可预览文件`;items.forEach(item=>{const button=text("button",item.path,"artifact-item"+(item.path===selectedArtifact?" active":""));button.type="button";button.title=`${item.bytes} bytes`;button.addEventListener("click",()=>loadArtifact(item.path));root.append(button)});if(!items.length)root.append(text("div","会话开始后，输出文件将在这里出现。","muted-text"));if(!selectedArtifact&&items.length){const preferred=[...items].reverse().find(item=>item.suffix===".md")||items[items.length-1];selectedArtifact=preferred.path;queueMicrotask(()=>loadArtifact(preferred.path))}}
-function fillSettings(settings){const form=$("settingsForm");for(const [name,value] of Object.entries(settings)){const input=form.elements.namedItem(name);if(input)input.value=value??""}}
-function render(next){state=next;csrf=next.csrf_token;const session=next.session;$("taskTitle").textContent=session.public_function||"等待输入公开接口";$("taskMeta").textContent=session.session_id?`会话 ${session.session_id} · 第 ${session.current_round} 轮`:"配置内网 Message API 与 SDK 后即可开始。";$("sessionBadge").textContent=session.state||"idle";$("jobBadge").textContent=next.job.status==="running"?`${next.job.operation} 运行中`:next.job.status;$("jobBadge").className="badge"+(next.job.status==="running"?"":" muted");renderStages(next.stages);renderReadiness(next.readiness);renderEvents(next.events);renderArtifacts(next.artifacts);if(!settingsInitialized){fillSettings(next.settings);settingsInitialized=true}const busy=next.job.status==="running";document.querySelectorAll("button").forEach(button=>{if(button.id!=="refreshButton"&&button.id!=="settingsToggle")button.disabled=busy});if(next.job.status==="failed"&&next.job.error&&next.job.error!==lastJobError){lastJobError=next.job.error;toast(next.job.error,true)}if(next.job.status!=="failed")lastJobError=""}
-async function refresh(){try{render(await request("/api/state"))}catch(error){toast(error.message,true)}}
-async function loadArtifact(path){try{const value=await request(`/api/artifact?path=${encodeURIComponent(path)}`);selectedArtifact=path;$("previewPath").textContent=path;$("artifactPreview").textContent=value.content;renderArtifacts(state.artifacts)}catch(error){toast(error.message,true)}}
-async function action(path,payload,message){try{await post(path,payload);toast(message);await refresh()}catch(error){toast(error.message,true)}}
+async function request(path, options = {}) {
+  const response = await fetch(path, options);
+  const value = await response.json();
+  if (!response.ok || !value.ok) throw new Error(value.error || `HTTP ${response.status}`);
+  return value;
+}
 
-$("startForm").addEventListener("submit",event=>{event.preventDefault();action("/api/start",{public_function:$("publicFunction").value.trim()},"已开始生成，页面会自动更新")});
-$("commentForm").addEventListener("submit",event=>{event.preventDefault();action("/api/comment",{comment:$("comment").value.trim()},"审查意见已提交")});
-$("approveButton").addEventListener("click",()=>action("/api/approve",{},"已批准，开始 SDK 实测"));
-$("retryButton").addEventListener("click",()=>action("/api/retry",{},"已提交重试"));
-$("buildButton").addEventListener("click",()=>action("/api/build",{},"已开始构建 Runner"));
-$("refreshButton").addEventListener("click",refresh);
-$("settingsToggle").addEventListener("click",()=>$("settingsPanel").classList.toggle("hidden"));
-$("settingsForm").addEventListener("submit",async event=>{event.preventDefault();const form=new FormData(event.currentTarget);const numeric=new Set(["candidate_count","candidate_parallelism","jobs","execution_timeout_seconds"]);const settings={profile:"intranet",thinking_mode:"omit"};for(const [key,value] of form.entries()){if(key!=="api_key")settings[key]=numeric.has(key)?Number(value):String(value)}await action("/api/settings",{settings,api_key:String(form.get("api_key")||"")},"配置已保存到本机")});
-refresh();setInterval(refresh,2000);
+async function post(path, payload) {
+  return request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    body: JSON.stringify(payload),
+  });
+}
+
+function text(tag, value, className) {
+  const element = document.createElement(tag);
+  element.textContent = value;
+  if (className) element.className = className;
+  return element;
+}
+
+function formatBytes(raw) {
+  const value = Number(raw || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const number = value / (1024 ** index);
+  return `${number >= 100 || index === 0 ? number.toFixed(0) : number.toFixed(1)} ${units[index]}`;
+}
+
+function renderStages(items) {
+  const root = $("stages");
+  root.replaceChildren();
+  items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.className = `stage ${item.status}`;
+    li.append(
+      text("span", item.status === "done" ? "✓" : String(index + 1), "stage-number"),
+      text("h3", item.title),
+      text("p", item.detail),
+    );
+    root.append(li);
+  });
+}
+
+function renderReadiness(items) {
+  const root = $("readiness");
+  root.replaceChildren();
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = item.ok ? "ok" : "";
+    const body = document.createElement("div");
+    body.append(text("div", item.label, "check-label"), text("div", item.detail, "check-detail"));
+    li.append(text("span", "", "check-dot"), body);
+    root.append(li);
+  });
+}
+
+function renderEvents(items) {
+  const root = $("events");
+  root.replaceChildren();
+  [...items].reverse().forEach((item) => {
+    const li = document.createElement("li");
+    li.append(
+      text("strong", `${String(item.sequence || "").padStart(3, "0")} · ${item.type}`),
+      text("span", item.timestamp || ""),
+    );
+    root.append(li);
+  });
+  if (!items.length) root.append(text("li", "尚无事件"));
+}
+
+const artifactGroupDefaults = {
+  reports: { label: "重点报告", description: "建议先看这里，了解当前方案或最终结论。", order: 10 },
+  proposal: { label: "测试方案与代码", description: "模型生成并通过固定门禁的测试内容。", order: 20 },
+  execution: { label: "SDK 运行结果", description: "真实 SDK 执行的结果、诊断与日志。", order: 30 },
+  review: { label: "审查与批准记录", description: "用户意见、模型理解与执行批准记录。", order: 40 },
+  details: { label: "技术细节", description: "Harness 内部清单、提示词、事件和完整性记录。", order: 50 },
+};
+
+function resetArtifactPreview() {
+  artifactRequestSerial += 1;
+  $("previewTitle").textContent = "选择一个文件查看";
+  $("previewPath").textContent = "完整路径会显示在这里";
+  $("previewDescription").textContent = (
+    "重点报告会自动打开；技术细节默认收起。"
+    + "SGT、PNG 等二进制产物仍保留在 session 目录，不在浏览器中预览。"
+  );
+  renderRawArtifact("这里会安全显示 Markdown、JSON、C++、Python 和日志文本；二进制产物请从 session 目录查看。");
+  $("copyArtifactPath").classList.add("hidden");
+}
+
+function renderRawArtifact(content) {
+  const preview = $("artifactPreview");
+  const raw = document.createElement("pre");
+  raw.className = "artifact-raw-preview";
+  raw.textContent = String(content || "");
+  preview.classList.remove("is-markdown");
+  preview.replaceChildren(raw);
+}
+
+function renderArtifactContent(item, content) {
+  const preview = $("artifactPreview");
+  const markdown = String(item?.suffix || "").toLowerCase() === ".md";
+  if (markdown && window.HarnessMarkdownPreview?.renderInto) {
+    preview.classList.add("is-markdown");
+    window.HarnessMarkdownPreview.renderInto(preview, content);
+    return;
+  }
+  renderRawArtifact(content);
+}
+
+function artifactByPath(path) {
+  return (state?.artifacts || []).find((item) => item.path === path) || null;
+}
+
+function updateArtifactSelection() {
+  document.querySelectorAll("[data-artifact-path]").forEach((button) => {
+    const active = button.dataset.artifactPath === selectedArtifact;
+    button.classList.toggle("active", active);
+    if (button.classList.contains("artifact-item")) {
+      button.setAttribute("aria-current", active ? "true" : "false");
+    }
+  });
+}
+
+function renderArtifactSummary(summary, items) {
+  const value = summary || {};
+  const tones = new Set(["neutral", "info", "ready", "success", "error"]);
+  const tone = tones.has(value.tone) ? value.tone : "neutral";
+  $("artifactSummary").className = `artifact-summary tone-${tone}`;
+  $("artifactSummaryTitle").textContent = value.title || (items.length ? "测试产物已生成" : "还没有测试产物");
+  $("artifactSummaryDetail").textContent = value.detail || (items.length
+    ? "从下方分组中选择报告、方案或运行结果。"
+    : "开始生成后，这里会告诉你应该先看什么。");
+
+  const error = $("artifactSummaryError");
+  error.textContent = value.error || "";
+  error.classList.toggle("hidden", !value.error);
+
+  const actions = $("artifactActions");
+  actions.replaceChildren();
+  (value.actions || []).forEach((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `artifact-action role-${action.role || "report"}`;
+    button.dataset.artifactPath = action.path;
+    button.disabled = action.previewable === false;
+    button.title = action.path;
+    button.append(
+      text("strong", action.label || "查看产物"),
+      text("span", action.hint || "打开预览", "artifact-action-hint"),
+      text("span", action.path, "artifact-action-path"),
+    );
+    button.addEventListener("click", () => loadArtifact(action.path));
+    actions.append(button);
+  });
+}
+
+function renderRoundOverview(overview) {
+  const root = $("roundOverview");
+  root.replaceChildren();
+  const value = overview || {};
+  // Only show the card when there is a round to summarize or a failure to explain.
+  if (!value.available && !value.failure_reason) {
+    root.classList.add("hidden");
+    return;
+  }
+  root.className = `round-overview tone-${value.tone || "neutral"}`;
+
+  const head = document.createElement("div");
+  head.className = "round-overview-head";
+  head.append(
+    text("span", "", "round-overview-mark"),
+    text("h3", value.headline || "本轮概览", "round-overview-title"),
+  );
+
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label) => {
+    if (!label) return;
+    chips.append(text("span", label, "round-chip"));
+  };
+  if (value.round_number) addChip(`第 ${value.round_number} 轮`);
+  if (value.candidate_kind) addChip(`类型 ${value.candidate_kind}`);
+  if (value.case_count) addChip(`${value.case_count} 个用例`);
+  if (value.oracle_count) addChip(`${value.oracle_count} 个 Oracle`);
+  if (value.gate_ok === true) addChip("机器门禁通过");
+  else if (value.gate_ok === false) addChip("机器门禁未通过");
+  if (chips.childNodes.length) head.append(chips);
+
+  root.append(head);
+
+  const fields = [
+    { label: "测试思路", value: value.purpose },
+    { label: "风险覆盖", value: value.risk },
+    { label: "预期行为", value: value.expected },
+    { label: "下一步", value: value.next_hint },
+  ];
+  fields.forEach((field) => {
+    if (!field.value) return;
+    const row = document.createElement("div");
+    row.className = "round-overview-field";
+    row.append(text("span", field.label, "round-overview-label"), text("span", field.value, "round-overview-value"));
+    root.append(row);
+  });
+
+  if (value.failure_reason) {
+    const failure = document.createElement("div");
+    failure.className = "round-overview-failure";
+    failure.append(
+      text("strong", "失败原因"),
+      text("span", value.failure_reason, "round-overview-failure-text"),
+    );
+    root.append(failure);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "round-overview-actions";
+  const addAction = (label, path) => {
+    if (!path) return;
+    const item = artifactByPath(path);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "round-overview-action";
+    button.disabled = item?.previewable === false;
+    button.title = path;
+    button.append(text("strong", label), text("span", path, "round-overview-action-path"));
+    button.addEventListener("click", () => loadArtifact(path));
+    actions.append(button);
+  };
+  if (value.failure_reason && value.tone === "error") {
+    addAction("查看失败报告", value.review_report_path || value.fixed_review_report_path);
+  } else {
+    addAction("查看本轮审查报告", value.review_report_path || value.fixed_review_report_path);
+  }
+  addAction("查看完整测试方案", value.candidate_path);
+  if (actions.childNodes.length) root.append(actions);
+}
+
+const EXECUTION_OUTCOME_LABELS = { pass: "通过", fail: "失败", timeout: "超时", skip: "跳过" };
+
+function renderExecutionOverview(overview) {
+  const root = $("executionOverview");
+  root.replaceChildren();
+  const value = overview || {};
+  if (!value.available) {
+    root.classList.add("hidden");
+    return;
+  }
+  const tone = value.ok === true ? "success" : (value.ok === false ? "error" : "info");
+  root.className = `round-overview execution-overview tone-${tone}`;
+
+  const head = document.createElement("div");
+  head.className = "round-overview-head";
+  head.append(
+    text("span", "", "round-overview-mark"),
+    text("h3", "SDK 执行结果概览", "round-overview-title"),
+  );
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label, className) => {
+    if (!label) return;
+    chips.append(text("span", label, className || "round-chip"));
+  };
+  const statusLabel = value.status || (value.ok === true ? "执行通过" : (value.ok === false ? "执行未通过" : "执行中"));
+  addChip(`执行状态 ${statusLabel}`);
+  const totals = value.totals || {};
+  if (Number(totals.total) > 0) {
+    addChip(`共 ${totals.total} 例`);
+    addChip(`通过 ${totals.passed || 0}`, "round-chip exec-chip-pass");
+    if (Number(totals.failed) > 0) addChip(`失败 ${totals.failed}`, "round-chip exec-chip-fail");
+    if (Number(totals.timed_out) > 0) addChip(`超时 ${totals.timed_out}`, "round-chip exec-chip-timeout");
+    if (Number(totals.skipped) > 0) addChip(`跳过 ${totals.skipped}`, "round-chip exec-chip-skip");
+  }
+  if (Number(value.total_elapsed_seconds) > 0) {
+    addChip(`总耗时 ${Number(value.total_elapsed_seconds).toFixed(1)} s`);
+  }
+  if (chips.childNodes.length) head.append(chips);
+  root.append(head);
+
+  const addField = (label, content) => {
+    if (!content) return;
+    const row = document.createElement("div");
+    row.className = "round-overview-field";
+    row.append(text("span", label, "round-overview-label"), text("span", content, "round-overview-value"));
+    root.append(row);
+  };
+  addField("失败归因", value.candidate_cause);
+
+  const steps = (value.commands || []).filter((step) => step.name);
+  if (steps.length) {
+    const stepRow = document.createElement("div");
+    stepRow.className = "round-overview-chips execution-steps";
+    steps.forEach((step) => {
+      const cls = step.ok ? "exec-chip-pass" : "exec-chip-fail";
+      const rc = step.returncode === null || step.returncode === undefined ? "?" : step.returncode;
+      stepRow.append(text(
+        "span",
+        `${step.name} · rc=${rc} · ${Number(step.elapsed_seconds || 0).toFixed(2)} s`,
+        `round-chip ${cls}`,
+      ));
+    });
+    root.append(stepRow);
+  }
+
+  const parasolid = value.parasolid || {};
+  if (parasolid.ran) {
+    addField("Parasolid 对比", `与 Parasolid 一致 ${parasolid.consistent || 0} / 需关注 ${parasolid.attention || 0}`);
+    const attentionCases = Array.isArray(parasolid.attention_cases) ? parasolid.attention_cases : [];
+    if (attentionCases.length) {
+      root.append(text("div", "Parasolid 需关注用例（诊断线索）", "execution-section-title"));
+      const list = document.createElement("div");
+      list.className = "round-overview-chips execution-steps";
+      attentionCases.slice(0, 24).forEach((entry) => {
+        const label = [entry.case_id, entry.verdict, entry.cause_class].filter(Boolean).join(" · ");
+        list.append(text("span", label || "未命名用例", "round-chip exec-chip-fail"));
+      });
+      root.append(list);
+    }
+  }
+
+  const visual = value.visual_review || {};
+  if (visual.ran) {
+    const vs = visual.summary || {};
+    addField(
+      "视觉复核（咨询性意见）",
+      visual.ok
+        ? `复核 ${vs.reviewed || 0} 例：合理 ${vs.plausible || 0} / 存疑 ${vs.suspect || 0}`
+          + ` / 不合理 ${vs.implausible || 0} / 误用标记 ${vs.flags || 0}`
+        : (visual.note || "未产出报告"),
+    );
+    const flagged = (Array.isArray(visual.cases) ? visual.cases : []).filter(
+      (entry) => (entry.plausibility && entry.plausibility !== "plausible") || (entry.flags || []).length,
+    );
+    if (visual.ok && flagged.length) {
+      root.append(text("div", "视觉复核存疑用例（仅供参考，不构成结论）", "execution-section-title"));
+      const list = document.createElement("div");
+      list.className = "round-overview-chips execution-steps";
+      flagged.slice(0, 24).forEach((entry) => {
+        const flags = (entry.flags || []).join("/");
+        const label = [entry.case_id, entry.plausibility, flags].filter(Boolean).join(" · ");
+        list.append(text("span", label || "未命名用例", "round-chip exec-chip-timeout"));
+      });
+      root.append(list);
+    }
+  }
+
+  if (value.error) {
+    const failure = document.createElement("div");
+    failure.className = "round-overview-failure";
+    failure.append(
+      text("strong", "失败摘要"),
+      text("span", value.error, "round-overview-failure-text"),
+    );
+    root.append(failure);
+  }
+
+  const groups = value.failure_groups || [];
+  if (groups.length) {
+    root.append(text("div", "失败分组", "execution-section-title"));
+    const wrap = document.createElement("div");
+    wrap.className = "execution-groups";
+    groups.forEach((group) => {
+      const signature = group.signature || {};
+      const title = [signature.kind, signature.phase].filter(Boolean).join(" · ") || "失败组";
+      const card = document.createElement("div");
+      card.className = "execution-group";
+      card.append(
+        text("strong", `${title} × ${group.count || 0}`, "execution-group-title"),
+        text("span", `代表用例 ${group.representative_case_id || "—"}`, "execution-group-detail"),
+      );
+      const groupReasons = (group.reasons_zh && group.reasons_zh.length) ? group.reasons_zh : (group.reasons || []);
+      if (groupReasons.length) {
+        card.append(text("span", `原因：${groupReasons.join("、")}`, "execution-group-detail"));
+      }
+      if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
+        card.append(text("span", `SDK 错误码 ${signature.sdk_error_code}`, "execution-group-detail"));
+      }
+      wrap.append(card);
+    });
+    root.append(wrap);
+  }
+
+  const cases = value.cases || [];
+  if (cases.length) {
+    const heading = value.cases_truncated
+      ? `用例结果（共 ${Number(totals.total) || cases.length} 例，仅显示前 ${cases.length} 条，失败/超时优先）`
+      : "用例结果";
+    root.append(text("div", heading, "execution-section-title"));
+    const wrap = document.createElement("div");
+    wrap.className = "execution-table-wrap";
+    const table = document.createElement("table");
+    table.className = "execution-table";
+    const headRow = document.createElement("tr");
+    ["用例", "状态", "阶段", "耗时", "失败原因 / 校验失败", "产物路径"].forEach((label) => {
+      headRow.append(text("th", label));
+    });
+    const thead = document.createElement("thead");
+    thead.append(headRow);
+    table.append(thead);
+    const tbody = document.createElement("tbody");
+    cases.forEach((row) => {
+      const outcome = EXECUTION_OUTCOME_LABELS[row.outcome] ? row.outcome : "pass";
+      const reason = row.error_message
+        || (row.validation_failures_zh || []).join("；")
+        || (row.validation_failures || []).join("；")
+        || (row.triage_reasons_zh || []).join("、")
+        || (row.triage_reasons || []).join("、");
+      const tr = document.createElement("tr");
+      tr.className = `exec-row-${outcome}`;
+      const statusCell = document.createElement("td");
+      statusCell.append(text("span", EXECUTION_OUTCOME_LABELS[outcome], `exec-chip exec-chip-${outcome}`));
+      tr.append(
+        text("td", row.case_id || "—", "execution-case-id"),
+        statusCell,
+        text("td", row.phase_label || row.phase || "—"),
+        text("td", `${Number(row.elapsed_seconds || 0).toFixed(2)} s`),
+        text("td", reason || "—", "execution-reason"),
+        text("td", row.artifact_path || "—", "execution-path"),
+      );
+      tbody.append(tr);
+    });
+    table.append(tbody);
+    wrap.append(table);
+    root.append(wrap);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "round-overview-actions";
+  const addAction = (label, path) => {
+    if (!path) return;
+    const item = artifactByPath(path);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "round-overview-action";
+    button.disabled = item?.previewable === false;
+    button.title = path;
+    button.append(text("strong", label), text("span", path, "round-overview-action-path"));
+    button.addEventListener("click", () => loadArtifact(path));
+    actions.append(button);
+  };
+  addAction("查看 SDK 执行明细", value.execution_result_path);
+  addAction("查看 Parasolid 对比报告", parasolid.report_path || "");
+  addAction("查看视觉复核报告", visual.report_path || "");
+  if (actions.childNodes.length) root.append(actions);
+}
+
+const FAULT_DOMAIN_LABELS = {
+  test_expectation_suspect: "疑似测试预期问题",
+  oracle_tooling_suspect: "疑似 Oracle 工具链问题",
+  transport_suspect: "疑似传输/导出环节问题",
+  geometry_result_suspect: "疑似 SDK 几何结果问题",
+  inconclusive: "证据不足无法归因",
+};
+const VISUAL_HINT_LABELS = {
+  test_expectation: "疑似测试预期",
+  geometry: "疑似几何结果",
+  transport: "疑似传输环节",
+  tooling: "疑似工具链",
+  unclear: "无法判断",
+};
+
+function switchTab(name) {
+  const overview = name !== "failure";
+  $("overviewTab").hidden = !overview;
+  $("failureTab").hidden = overview;
+  $("tabOverviewButton").classList.toggle("active", overview);
+  $("tabFailureButton").classList.toggle("active", !overview);
+}
+
+function openLightbox(src, alt) {
+  const image = $("lightboxImage");
+  image.src = src;
+  image.alt = alt || "失败用例分析图放大预览";
+  $("lightbox").hidden = false;
+}
+
+async function loadFailureImage(path, container) {
+  try {
+    const value = await request(`/api/artifact?path=${encodeURIComponent(path)}`);
+    if (value.kind !== "image" || !value.content_base64) {
+      container.textContent = "分析图不可用。";
+      return;
+    }
+    const img = document.createElement("img");
+    img.className = "failure-case-image";
+    img.src = `data:${value.mime || "image/png"};base64,${value.content_base64}`;
+    img.alt = "失败用例分析图";
+    img.title = "点击放大";
+    img.addEventListener("click", () => openLightbox(img.src, img.alt));
+    container.replaceChildren(img);
+  } catch (_error) {
+    container.textContent = "分析图加载失败。";
+  }
+}
+
+function failureAnalysisKey(data, sessionId) {
+  const value = data && typeof data === "object" ? data : {};
+  const cases = Array.isArray(value.cases) ? value.cases : [];
+  return JSON.stringify([
+    sessionId,
+    Boolean(value.available),
+    value.note || "",
+    value.root || "",
+    cases.map((item) => [
+      item && item.case_id,
+      item && item.outcome,
+      item && item.fault_module,
+      item && item.priority,
+      item && item.visual_fault_hint,
+      item && item.analysis_png,
+    ]),
+  ]);
+}
+
+function renderFailureCaseCard(item) {
+  const card = document.createElement("div");
+  card.className = "failure-case" + (item.priority === "low" ? " failure-case-low" : "");
+  const head = document.createElement("div");
+  head.className = "failure-case-head";
+  head.append(text("strong", item.case_id || "未命名用例", "failure-case-id"));
+  const chips = document.createElement("div");
+  chips.className = "round-overview-chips";
+  const addChip = (label, className) => {
+    if (label) chips.append(text("span", label, className || "round-chip"));
+  };
+  if (item.outcome) addChip(item.outcome === "timeout" ? "超时" : "失败", "round-chip exec-chip-fail");
+  if (item.priority === "low") addChip("低优先级", "round-chip failure-priority-low");
+  if (chips.childNodes.length) head.append(chips);
+  card.append(head);
+
+  const oracleFailures = (item.oracle_failures_zh && item.oracle_failures_zh.length)
+    ? item.oracle_failures_zh
+    : (item.oracle_failures || []);
+  if (oracleFailures.length) {
+    const list = document.createElement("div");
+    list.className = "failure-case-oracles";
+    list.append(text("div", "主要校验失败", "failure-case-label"));
+    oracleFailures.slice(0, 4).forEach((failure) => {
+      list.append(text("div", failure, "failure-case-oracle"));
+    });
+    card.append(list);
+  }
+  if (item.priority_reason_zh) {
+    card.append(text("div", item.priority_reason_zh, "failure-case-note"));
+  }
+  if (item.analysis_png) {
+    const imageWrap = document.createElement("div");
+    imageWrap.className = "failure-case-image-wrap";
+    imageWrap.textContent = "分析图加载中…";
+    card.append(imageWrap);
+    loadFailureImage(item.analysis_png, imageWrap);
+  }
+  if (item.showcase_dir) {
+    card.append(text("div", `证据目录：${item.showcase_dir}`, "failure-case-path"));
+  }
+  if (item.reproduction_note) {
+    card.append(text("div", item.reproduction_note, "failure-case-note"));
+  }
+  return card;
+}
+
+function renderFailureAnalysis(value) {
+  const data = value || {};
+  // The 2s poll carries an identical payload most of the time; rebuilding the
+  // cards (and re-fetching every analysis PNG) on each poll makes the tab
+  // flicker, so only re-render when the projected data actually changed.
+  const key = failureAnalysisKey(data, (state && state.session && state.session.session_id) || "");
+  if (key === lastFailureAnalysisKey) return;
+  lastFailureAnalysisKey = key;
+  const root = $("failureAnalysisCases");
+  root.replaceChildren();
+  const badge = $("failureCountBadge");
+  const cases = Array.isArray(data.cases) ? data.cases : [];
+  badge.hidden = !cases.length;
+  badge.textContent = String(cases.length);
+  $("failureAnalysisNote").textContent = data.available
+    ? (data.note || "诊断性证据，不构成 SDK 缺陷定论")
+    : "";
+  const head = $("failureAnalysisRoot");
+  if (!data.available) {
+    head.textContent = "当前会话还没有失败用例分析产物；执行真实 SDK 测试后，失败用例会自动出现在这里。";
+    return;
+  }
+  const summary = data.summary || {};
+  head.textContent = [
+    data.root ? `证据目录：${data.root}` : "",
+    data.db ? `失败用例数据库：${data.db}` : "",
+  ].filter(Boolean).join(" · ") || "失败用例分析产物已生成。";
+  if (!cases.length) {
+    root.append(text("p", "本次执行没有失败用例。", "muted-text"));
+    return;
+  }
+  const banner = document.createElement("div");
+  banner.className = "failure-banner";
+  banner.append(text(
+    "span",
+    `本批 ${summary.total ?? cases.length} 例失败：${summary.high ?? "—"} 例需进一步分析，`
+    + `${summary.low ?? "—"} 例低优先级（与 Parasolid/视觉复核一致，疑似非内核缺陷）`,
+    "failure-banner-text",
+  ));
+  root.append(banner);
+  const groups = Array.isArray(data.groups) && data.groups.length
+    ? data.groups
+    : [{ module: "", label: "失败用例", note: "", count: cases.length, high_count: 0, low_count: 0 }];
+  groups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "failure-module" + (group.module === "test_authoring" ? " failure-module-low" : "");
+    const title = document.createElement("h3");
+    title.className = "failure-module-title";
+    const priorityBits = [];
+    if (group.high_count) priorityBits.push(`${group.high_count} 例需分析`);
+    if (group.low_count) priorityBits.push(`${group.low_count} 例低优先级`);
+    title.textContent = `归因模块：${group.label || "其他"}（${group.count} 例${priorityBits.length ? `：${priorityBits.join("，")}` : ""}）`;
+    section.append(title);
+    if (group.note) {
+      section.append(text("p", group.note, "failure-module-note"));
+    }
+    const moduleCases = group.module
+      ? cases.filter((item) => (item.fault_module || "unclassified") === group.module)
+      : cases;
+    moduleCases.forEach((item) => section.append(renderFailureCaseCard(item)));
+    root.append(section);
+  });
+}
+
+function renderArtifacts(items, summary = {}) {  const root = $("artifactList");
+  const scrollTop = root.scrollTop;
+  root.replaceChildren();
+  renderArtifactSummary(summary, items);
+
+  const previewable = items.filter((item) => item.previewable !== false).length;
+  $("artifactCount").textContent = previewable === items.length
+    ? `${items.length} 个可查看文件`
+    : `${previewable} / ${items.length} 个可直接预览文件`;
+
+  if (selectedArtifact && !items.some((item) => item.path === selectedArtifact)) {
+    selectedArtifact = "";
+    resetArtifactPreview();
+  }
+
+  const summaryGroups = new Map((summary.groups || []).map((group) => [group.id, group]));
+  const groups = new Map();
+  items.forEach((item) => {
+    const id = item.group || "details";
+    if (!groups.has(id)) {
+      const fallback = artifactGroupDefaults[id] || artifactGroupDefaults.details;
+      const metadata = summaryGroups.get(id) || {};
+      groups.set(id, {
+        id,
+        label: metadata.label || item.group_label || fallback.label,
+        description: metadata.description || fallback.description,
+        order: Number(metadata.order || item.group_order || fallback.order),
+        items: [],
+      });
+    }
+    groups.get(id).items.push(item);
+  });
+
+  [...groups.values()]
+    .sort((left, right) => left.order - right.order)
+    .forEach((group) => {
+      group.items.sort((left, right) => {
+        if (Boolean(left.featured) !== Boolean(right.featured)) return left.featured ? -1 : 1;
+        return String(left.label || left.name).localeCompare(String(right.label || right.name), "zh-CN");
+      });
+
+      const section = document.createElement("details");
+      section.className = `artifact-group group-${group.id}`;
+      section.dataset.group = group.id;
+      // Keep the first view compact: the user-facing report is open, while
+      // proposal, execution, review and host details remain one click away.
+      section.open = artifactGroupState.has(group.id) ? artifactGroupState.get(group.id) : group.id === "reports";
+      section.addEventListener("toggle", () => artifactGroupState.set(group.id, section.open));
+
+      const heading = document.createElement("summary");
+      const headingCopy = document.createElement("span");
+      headingCopy.className = "artifact-group-copy";
+      headingCopy.append(
+        text("strong", group.label),
+        text("small", group.description),
+      );
+      heading.append(headingCopy, text("span", String(group.items.length), "artifact-group-count"));
+      section.append(heading);
+
+      const files = document.createElement("div");
+      files.className = "artifact-group-files";
+      group.items.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "artifact-item" + (item.path === selectedArtifact ? " active" : "");
+        button.dataset.artifactPath = item.path;
+        button.disabled = item.previewable === false;
+        button.title = `${item.description || item.path}\n${item.path}`;
+        button.setAttribute("aria-current", item.path === selectedArtifact ? "true" : "false");
+
+        const top = document.createElement("span");
+        top.className = "artifact-item-top";
+        top.append(
+          text("span", item.kind || item.suffix?.slice(1).toUpperCase() || "文件", "artifact-kind"),
+          text("strong", item.label || item.name || item.path, "artifact-item-label"),
+          text("span", formatBytes(item.bytes), "artifact-size"),
+        );
+        const slash = item.path.lastIndexOf("/");
+        const folder = slash >= 0 ? item.path.slice(0, slash) : "会话根目录";
+        button.append(top, text("span", folder, "artifact-item-path"));
+        button.addEventListener("click", () => loadArtifact(item.path));
+        files.append(button);
+      });
+      section.append(files);
+      root.append(section);
+    });
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "artifact-empty";
+    empty.append(
+      text("strong", "等待测试产物"),
+      text(
+        "span",
+        "会话开始后，可查看的文本报告、方案与运行结果会按用途出现在这里；二进制产物仍保留在 session 目录。",
+      ),
+    );
+    root.append(empty);
+  }
+
+  root.scrollTop = scrollTop;
+  updateArtifactSelection();
+  if (!selectedArtifact && items.length) {
+    const actionPath = (summary.actions || []).find((action) => action.previewable !== false)?.path;
+    const preferred = items.find((item) => item.path === actionPath)
+      || items.find((item) => item.featured && item.previewable !== false)
+      || items.find((item) => item.group === "reports" && item.previewable !== false)
+      || items.find((item) => item.previewable !== false);
+    if (preferred) {
+      selectedArtifact = preferred.path;
+      updateArtifactSelection();
+      queueMicrotask(() => loadArtifact(preferred.path));
+    }
+  }
+}
+
+function fillSettings(settings) {
+  const form = $("settingsForm");
+  for (const [name, value] of Object.entries(settings)) {
+    const input = form.elements.namedItem(name);
+    if (input) input.value = value ?? "";
+  }
+  if (!$("abcOutRoot").value) $("abcOutRoot").value = "artifacts/abc_dataset_full";
+  if (settings.campaign_dataset && !$("abcExistingPath").value) $("abcExistingPath").value = settings.campaign_dataset;
+}
+
+function badge(element, label, kind = "muted") {
+  element.textContent = label;
+  element.className = "badge" + (kind ? ` ${kind}` : "");
+}
+
+function setJobControlsBusy(busy) {
+  document.querySelectorAll("[data-job-action]").forEach((button) => { button.disabled = busy; });
+  $("startButton").disabled = busy || !Boolean(state?.ready_to_start);
+  $("buildButton").disabled = busy || !Boolean(state?.ready_to_build);
+  $("buildButton").title = state?.ready_to_build
+    ? "使用自动检测到的 MSVC/CMake 工具链构建 Runner"
+    : "需要有效的 SDK、CMake，以及 VS 2022 或 VS 2026 C++ 工具链";
+  $("nxProbeButton").disabled = busy;
+  const canApprove = state?.session?.state === "awaiting_comment";
+  $("approveButton").disabled = busy || !canApprove;
+  $("approveButton").title = canApprove
+    ? "批准当前不可变候选并开始 SDK 实测"
+    : "只有处于待审查状态的新候选才能批准；执行失败后请先修订或按规则重试。";
+}
+
+function renderABC(snapshot) {
+  const value = snapshot || { status: "idle", progress: {} };
+  const progress = value.progress || {};
+  const download = progress.download || {};
+  const status = String(value.status || progress.status || "idle");
+  const running = ["running", "cancelling"].includes(status);
+  const failed = status === "failed";
+  badge($("abcStatusBadge"), status, failed ? "error" : (running ? "" : "muted"));
+
+  const percent = Math.max(0, Math.min(100, Number(download.percent || (status === "completed" ? 100 : 0))));
+  $("abcProgress").value = percent;
+  $("abcProgressText").textContent = `${percent.toFixed(1)}%`;
+  $("abcPhase").textContent = progress.message || progress.phase || value.operation || "尚未开始";
+  $("abcBytes").textContent = `${formatBytes(download.completed_bytes)} / ${formatBytes(download.total_bytes)}`;
+  $("abcArchives").textContent = `${download.archives_completed || 0} / ${download.archives_total || 0} archives`;
+  const current = download.current;
+  $("abcCurrent").textContent = current
+    ? `${current.chunk || ""} ${current.format || ""} · ${current.archive || ""}`.trim()
+    : (value.error || progress.error || "—");
+
+  $("abcPlanButton").disabled = running;
+  $("abcSampleButton").disabled = running;
+  $("abcFetchButton").disabled = running;
+  $("abcCancelButton").disabled = !running;
+  if (progress.dataset_index && !$("abcExistingPath").value) $("abcExistingPath").value = progress.dataset_index;
+}
+
+function renderABCInspection(report) {
+  const root = $("abcInspection");
+  if (!report) {
+    root.textContent = "尚未检查已有索引或 fetch 根目录。";
+    $("abcUseButton").disabled = true;
+    return;
+  }
+  const pieces = [report.kind || "unknown"];
+  if (report.total_files) pieces.push(`${report.total_files} files`);
+  if (report.archive_count) pieces.push(`${report.archive_count} archives`);
+  if (report.needs_index) pieces.push("需要先生成 dataset_index.json");
+  const issues = [...(report.errors || []), ...(report.warnings || [])].slice(0, 3);
+  root.textContent = `${report.ready ? "可用于 Harness" : "尚未就绪"} · ${pieces.join(" · ")}${issues.length ? ` · ${issues.join("；")}` : ""}`;
+  root.style.color = report.ready ? "var(--accent-strong)" : "var(--muted)";
+  $("abcUseButton").disabled = !report.ready;
+}
+
+function selectedInstallation(detection) {
+  const installations = Array.isArray(detection.installations) ? detection.installations : [];
+  return installations.find((item) => item.root === detection.selected_root) || installations[0] || null;
+}
+
+function nxInstallationIdentity(detection) {
+  const installation = selectedInstallation(detection || {});
+  const root = String(detection?.selected_root || installation?.root || "").toLowerCase();
+  const journal = String(installation?.paths?.run_journal || "").toLowerCase();
+  return root ? `${root}|${journal}` : "";
+}
+
+function renderNX(nx) {
+  const detection = nx?.detection || {};
+  const probe = nx?.probe || { status: "not_run" };
+  const installation = selectedInstallation(detection);
+  const detectionOk = Boolean(detection.ok);
+  const probeMatchesDetection = Boolean(probe.ok)
+    && nxInstallationIdentity(probe.environment || {}) === nxInstallationIdentity(detection);
+  badge($("nxStatusBadge"), detection.status || (detectionOk ? "ready" : "not found"), detectionOk ? "" : "muted");
+  $("nxSummary").textContent = detectionOk
+    ? `已找到 NX：${detection.selected_root || installation?.root || "安装路径已确认"}`
+    : (detection.diagnostics?.[0]?.message || "未找到可用于 journal 的 NX 安装。请点击环境检查旁的配置并指定路径。");
+
+  const capabilities = installation?.capabilities || {};
+  const labels = [
+    ["nx_installed", "NX 安装"],
+    ["gui_executable", "NX GUI"],
+    ["journal_runner", "Journal runner"],
+    ["python_runtime_evidence", "Python 运行时线索"],
+    ["python_api_verified", "NXOpen 已验证"],
+  ];
+  const root = $("nxCapabilities");
+  root.replaceChildren();
+  labels.forEach(([key, label]) => {
+    const ok = Boolean(capabilities[key]) || (key === "python_api_verified" && probeMatchesDetection);
+    root.append(text("li", `${ok ? "✓" : "○"} ${label}`, ok ? "ok" : ""));
+  });
+
+  const probeStatus = probe.status || "not_run";
+  const detail = probe.error || probe.probe?.error || probe.diagnostics?.[0]?.message || "";
+  $("nxProbeSummary").textContent = probeStatus === "not_run"
+    ? "尚未运行真实探针。"
+    : `${probe.ok ? "NX Python API 验证通过" : `探针状态：${probeStatus}`}${detail ? ` · ${detail}` : ""}`;
+}
+
+function render(next) {
+  state = next;
+  csrf = next.csrf_token;
+  const session = next.session;
+  if (selectedArtifactSession !== session.session_id) {
+    selectedArtifactSession = session.session_id;
+    selectedArtifact = "";
+    artifactGroupState.clear();
+    resetArtifactPreview();
+  }
+  $("taskTitle").textContent = session.public_function || "等待输入公开接口";
+  $("taskMeta").textContent = session.session_id
+    ? `会话 ${session.session_id} · 第 ${session.current_round} 轮`
+    : "配置 SiliconFlow、SGGK SDK 与 Runner 后即可开始。";
+  $("sessionBadge").textContent = `会话 · ${session.state || "idle"}`;
+  const busy = next.job.status === "running";
+  $("repairButton").hidden = session.state !== "execution_failed";
+  window.HarnessJobStatus.sync(next.job, next.settings, next.stages);
+
+  renderStages(next.stages);
+  renderReadiness(next.readiness);
+  renderEvents(next.events);
+  renderRoundOverview(next.round_overview);
+  renderExecutionOverview(next.execution_overview);
+  renderFailureAnalysis(next.failure_analysis);
+  renderArtifacts(next.artifacts, next.artifact_summary);
+  renderABC(next.abc);
+  renderNX(next.nx);
+  if (!settingsInitialized) {
+    fillSettings(next.settings);
+    settingsInitialized = true;
+  }
+
+  setJobControlsBusy(busy);
+  if (next.job.status === "failed" && next.job.error && next.job.error !== lastJobError) {
+    lastJobError = next.job.error;
+    toast(next.job.error, true);
+  }
+  if (next.job.status !== "failed") lastJobError = "";
+}
+
+async function refresh() {
+  try { render(await request("/api/state")); }
+  catch (error) { toast(error.message, true); }
+}
+
+async function loadArtifact(path) {
+  const item = artifactByPath(path);
+  if (item?.previewable === false) {
+    toast("该文件过大，无法在页面中安全预览。", true);
+    return;
+  }
+  const requestSession = state?.session?.session_id || "";
+  const requestSerial = ++artifactRequestSerial;
+  try {
+    const value = await request(`/api/artifact?path=${encodeURIComponent(path)}`);
+    if (
+      requestSerial !== artifactRequestSerial
+      || requestSession !== (state?.session?.session_id || "")
+    ) return;
+    selectedArtifact = path;
+    $("previewTitle").textContent = item?.label || item?.name || path;
+    $("previewPath").textContent = path;
+    if (value.kind === "image" && value.content_base64) {
+      $("previewDescription").textContent = `PNG 图像 · ${formatBytes(value.bytes)} · 点击图可放大`;
+      const preview = $("artifactPreview");
+      preview.classList.remove("is-markdown");
+      const img = document.createElement("img");
+      img.className = "artifact-image-preview";
+      img.src = `data:${value.mime || "image/png"};base64,${value.content_base64}`;
+      img.alt = path;
+      img.addEventListener("click", () => openLightbox(img.src, img.alt));
+      preview.replaceChildren(img);
+    } else {
+      $("previewDescription").textContent = [
+        item?.description || "当前会话中的文本产物。",
+        `${item?.kind || "文本"} · ${formatBytes(value.bytes)}`,
+      ].join(" · ");
+      renderArtifactContent(item, value.content);
+    }
+    $("copyArtifactPath").classList.remove("hidden");
+    updateArtifactSelection();
+  } catch (error) {
+    if (
+      requestSerial === artifactRequestSerial
+      && requestSession === (state?.session?.session_id || "")
+    ) toast(error.message, true);
+  }
+}
+
+async function copySelectedArtifactPath() {
+  if (!selectedArtifact) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(selectedArtifact);
+    } else {
+      const area = document.createElement("textarea");
+      area.value = selectedArtifact;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.append(area);
+      area.select();
+      const copied = document.execCommand("copy");
+      area.remove();
+      if (!copied) throw new Error("copy unavailable");
+    }
+    toast("产物路径已复制");
+  } catch (_error) {
+    toast("无法自动复制，请从预览标题栏手动复制路径。", true);
+  }
+}
+
+async function action(path, payload, message, operation = "") {
+  if (operation) {
+    window.HarnessJobStatus.begin(operation, state?.settings);
+    setJobControlsBusy(true);
+  }
+  try {
+    const result = await post(path, payload);
+    if (operation && result.job) window.HarnessJobStatus.sync(result.job, state?.settings);
+    toast(message);
+    await refresh();
+    return result;
+  } catch (error) {
+    if (operation) {
+      window.HarnessJobStatus.stop({ status: "failed" });
+      setJobControlsBusy(false);
+      await refresh();
+    }
+    toast(error.message, true);
+    return null;
+  }
+}
+
+async function startABC(mode) {
+  const outRoot = $("abcOutRoot").value.trim();
+  if (!outRoot) return toast("请先填写 ABC 数据工作目录。", true);
+  if (mode === "full" && !window.confirm("全量 ABC 压缩包约 100 GiB，完整解压需要更多磁盘空间。确认开始？")) return;
+  const payload = { mode, out_root: outRoot };
+  const downloadRoot = $("abcDownloadRoot").value.trim();
+  if (downloadRoot) payload.download_root = downloadRoot;
+  if (mode === "sample") Object.assign(payload, { smallest_step: 1, sample_count: 50 });
+  await action("/api/abc/fetch", payload, mode === "plan" ? "已开始生成全量下载计划" : "ABC 拉取已启动");
+}
+
+$("startForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  action(
+    "/api/start",
+    {
+      public_function: $("publicFunction").value.trim(),
+      use_memory: !$("startNoMemory").checked,
+    },
+    "已开始生成，页面会自动更新",
+    "start",
+  );
+});
+$("commentForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  action("/api/comment", { comment: $("comment").value.trim() }, "审查意见已提交", "comment");
+});
+$("approveButton").addEventListener("click", () => action("/api/approve", {}, "已批准，开始 SDK 实测", "approve"));
+$("repairButton").addEventListener("click", () => action(
+  "/api/comment",
+  {
+    comment: (
+      "请根据失败诊断修改测试方案，结合上一轮已绑定的执行证据修复候选代码或测试 oracle 的问题，"
+      + "保留真实语义检查且不要掩盖 SDK 缺陷，生成完整的新候选供我重新审查。"
+    ),
+  },
+  "已提交失败诊断，正在生成可重新审查的修复版",
+  "comment",
+));
+$("retryButton").addEventListener("click", () => action("/api/retry", {}, "已提交重试", "retry"));
+$("buildButton").addEventListener("click", () => action("/api/build", {}, "已开始构建 Runner", "build"));
+$("refreshButton").addEventListener("click", refresh);
+$("copyArtifactPath").addEventListener("click", copySelectedArtifactPath);
+$("settingsToggle").addEventListener("click", () => $("settingsPanel").classList.toggle("hidden"));
+$("tabOverviewButton").addEventListener("click", () => switchTab("overview"));
+$("tabFailureButton").addEventListener("click", () => switchTab("failure"));
+$("lightbox").addEventListener("click", () => {
+  $("lightbox").hidden = true;
+  $("lightboxImage").src = "";
+});
+
+$("abcPlanButton").addEventListener("click", () => startABC("plan"));
+$("abcSampleButton").addEventListener("click", () => startABC("sample"));
+$("abcFetchButton").addEventListener("click", () => startABC("full"));
+$("abcCancelButton").addEventListener("click", () => action("/api/abc/cancel", {}, "正在取消 ABC 拉取"));
+$("abcValidateButton").addEventListener("click", async () => {
+  const path = $("abcExistingPath").value.trim();
+  if (!path) return toast("请填写含 dataset_index.json 的 fetch 根目录或索引文件。", true);
+  try {
+    const result = await post("/api/abc/validate", { path });
+    abcInspection = result.inspection;
+    renderABCInspection(abcInspection);
+  } catch (error) { toast(error.message, true); }
+});
+$("abcUseButton").addEventListener("click", async () => {
+  const path = abcInspection?.dataset_index || abcInspection?.root || $("abcExistingPath").value.trim();
+  const result = await action("/api/abc/use-existing", { path }, "ABC 数据集已绑定到 Harness");
+  if (result?.settings) {
+    const input = $("settingsForm").elements.namedItem("campaign_dataset");
+    if (input) input.value = result.settings.campaign_dataset || "";
+  }
+});
+
+$("nxRefreshButton").addEventListener("click", async () => {
+  try {
+    const result = await request("/api/nx/environment");
+    if (state) state.nx = result.nx;
+    renderNX(result.nx);
+    toast("NX 静态检测已刷新");
+  } catch (error) { toast(error.message, true); }
+});
+$("nxProbeButton").addEventListener("click", () => (
+  action("/api/nx/probe", {}, "NX Python 探针已启动", "nx_probe")
+));
+
+$("settingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const numeric = new Set([
+    "candidate_count",
+    "candidate_parallelism",
+    "jobs",
+    "execution_timeout_seconds",
+    "nx_probe_timeout_seconds",
+  ]);
+  const settings = {};
+  for (const [key, value] of form.entries()) {
+    if (key !== "api_key") settings[key] = numeric.has(key) ? Number(value) : String(value);
+  }
+  const result = await action(
+    "/api/settings",
+    { settings, api_key: String(form.get("api_key") || "") },
+    "配置已保存到本机",
+  );
+  if (result) event.currentTarget.elements.namedItem("api_key").value = "";
+});
+
+renderABCInspection(null);
+refresh();
+setInterval(refresh, 2000);

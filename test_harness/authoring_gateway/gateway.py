@@ -20,9 +20,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .client import CompletionOptions, OpenAICompatibleMessageClient, canonical_json_bytes
+from .client import (
+    ClientError,
+    CompletionOptions,
+    OpenAICompatibleMessageClient,
+    canonical_json_bytes,
+    prepare_images,
+)
 from .config import GatewayConfig
-from .contracts import ContractDiagnostic, ContractReport, response_schema_for_contract, validate_candidate
+from .contracts import (
+    ContractDiagnostic,
+    ContractReport,
+    normalize_visual_review_candidate,
+    response_schema_for_contract,
+    validate_candidate,
+)
 
 DEFAULT_SYSTEM_PROMPT = """You author bounded SGGK harness test descriptions.
 Return exactly one JSON object in choices[0].message.content.
@@ -32,6 +44,8 @@ Follow the task's output_contract exactly; deterministic local code validates th
 """
 
 SOURCE_TASK_TYPES = frozenset({"source_attack", "sggk_source_attack"})
+# Host-supplied geometry renders per task (e.g. advisory visual review).
+MAX_TASK_IMAGES = 8
 
 
 class GatewayError(ValueError):
@@ -47,6 +61,22 @@ def is_source_task_type(task_type: str) -> bool:
 def _safe_id(value: str) -> str:
     result = "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in value)
     return result.strip("._-") or "task"
+
+
+def _storage_id(value: str, namespace: str) -> str:
+    """Map long logical IDs to stable, bounded artifact path components.
+
+    Short IDs (<32 chars) pass through unchanged so human-readable run/task
+    names stay legible; longer ones collapse to ``<namespace>_<24hex>`` to keep
+    directory paths well under Windows MAX_PATH. Mirrors the staging helper in
+    ``run_message_harness_pipeline`` so gateway depths match the pipeline's.
+    """
+
+    safe = _safe_id(value)
+    if len(safe) < 32:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}_{digest}"
 
 
 def _utc_now() -> datetime:
@@ -111,7 +141,11 @@ def _atomic_write(path: Path, value: bytes) -> None:
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=path.parent,
-            prefix=f".{path.name}.",
+            # Minimal prefix/suffix to stay well under Windows MAX_PATH (260):
+            # the staged dir is already deep, so embedding the full target name
+            # (e.g. ".raw_response.json.<rand>.tmp") risks overflow. The parent
+            # dir scopes the file; os.replace atomically promotes it.
+            prefix=".~",
             suffix=".tmp",
             delete=False,
         ) as handle:
@@ -145,6 +179,10 @@ class TaskSpec:
     manifest_path: str = ""
     allowed_campaign_profiles: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Host-supplied geometry renders (never model-derived). Each path goes
+    # through the same containment + SHA-256 binding discipline as prompts;
+    # the prepared image bytes never persist — only hashes and sizes do.
+    image_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -244,16 +282,33 @@ class AuthoringGateway:
             raise GatewayError("expected_output_path must stay under repository artifacts/") from exc
         if output_path.suffix.lower() != ".json" or output_path.name.endswith(".provenance.json"):
             raise GatewayError("expected_output_path must be a formal .json output, not a provenance sidecar")
-        task_root = self.staging_root / _safe_id(run_id) / _safe_id(task.task_id)
+        task_root = (
+            self.staging_root
+            / _storage_id(run_id, "run")
+            / _storage_id(task.task_id, "task")
+        )
         provenance_path = output_path.with_name(f"{output_path.stem}.provenance.json")
         return task_root, output_path, provenance_path
 
     @staticmethod
-    def _completion_diagnostics(error: str) -> list[ContractDiagnostic]:
+    def _completion_diagnostics(error: str, error_kind: str = "") -> list[ContractDiagnostic]:
+        error_codes = {
+            "transport_timeout": "MESSAGE_API_TIMEOUT",
+            "transport_error": "MESSAGE_API_TRANSPORT_ERROR",
+            "http_error": "MESSAGE_API_HTTP_ERROR",
+            "provider_error": "MESSAGE_API_PROVIDER_ERROR",
+            "stream_candidate_too_large": "MESSAGE_API_OUTPUT_TOO_LARGE",
+            "stream_event_too_large": "MESSAGE_API_STREAM_EVENT_TOO_LARGE",
+            "stream_incomplete": "MESSAGE_API_STREAM_INCOMPLETE",
+            "stream_invalid_event": "MESSAGE_API_STREAM_INVALID",
+            "stream_invalid_utf8": "MESSAGE_API_STREAM_INVALID",
+            "stream_refusal_too_large": "MESSAGE_API_STREAM_REFUSAL_TOO_LARGE",
+            "stream_wire_too_large": "MESSAGE_API_STREAM_TOO_LARGE",
+        }
         return [
             ContractDiagnostic(
                 "error",
-                "MESSAGE_API_OUTPUT_INVALID",
+                error_codes.get(error_kind, "MESSAGE_API_OUTPUT_INVALID"),
                 "$.choices[0].message.content",
                 error or "Message API completion did not yield an exact JSON object.",
                 "Return exactly one JSON object in choices[0].message.content.",
@@ -329,6 +384,19 @@ Fixed diagnostics:
                 "user_chars": len(prompt),
                 "user_sha256": _sha256_text(prompt),
             },
+            "images": {
+                "count": len(options.images),
+                "items": [
+                    {
+                        "path": _repo_relative(self.repo_root, Path(image.path)),
+                        "sha256": image.sha256,
+                        "mime": image.mime,
+                        "source_bytes": image.source_bytes,
+                        "prepared_bytes": image.prepared_bytes,
+                    }
+                    for image in options.images
+                ],
+            },
             "output_contract": task.output_contract,
             "allowed_campaign_profiles": task.allowed_campaign_profiles,
             "response_options": {
@@ -338,6 +406,7 @@ Fixed diagnostics:
                 "temperature": options.temperature,
                 "max_tokens": options.max_tokens,
                 "thinking_mode": options.thinking_mode,
+                "stream": options.stream,
                 "seed": options.seed,
             },
             "boundary": {
@@ -384,8 +453,11 @@ Fixed diagnostics:
             "reasoning_content_chars": completion.reasoning_content_chars,
             "candidate_sha256": candidate_hash,
             "finish_reason": completion.finish_reason,
+            "error_kind": completion.error_kind,
             "response_mode": completion.final_mode,
             "usage": completion.usage,
+            "image_count": completion.image_count,
+            "image_sha256": list(completion.image_sha256),
             "contract": report.as_dict(),
             "promotion": {
                 "eligible": report.ok,
@@ -510,6 +582,7 @@ Fixed diagnostics:
         raw_response = {
             "ok": completion.ok,
             "error": completion.error,
+            "error_kind": completion.error_kind,
             "candidate_source": completion.candidate_source,
             "message_content": completion.content,
             "message_content_sha256": _sha256_text(completion.content) if completion.content else "",
@@ -518,6 +591,8 @@ Fixed diagnostics:
             "finish_reason": completion.finish_reason,
             "final_mode": completion.final_mode,
             "usage": completion.usage,
+            "image_count": completion.image_count,
+            "image_sha256": list(completion.image_sha256),
             "events": completion.events,
             "provider_responses": completion.response_records,
         }
@@ -566,7 +641,11 @@ Fixed diagnostics:
                 with tempfile.NamedTemporaryFile(
                     mode="wb",
                     dir=target.parent,
-                    prefix=f".{target.name}.{label}.",
+                    # Minimal prefix/suffix to stay under Windows MAX_PATH (260):
+                    # the formal output lives under a deep staging dir, so
+                    # embedding ".candidate.json.output.<rand>.tmp" can overflow.
+                    # The parent dir scopes the file; os.replace promotes it.
+                    prefix=f".~{label}.",
                     suffix=".tmp",
                     delete=False,
                 ) as handle:
@@ -652,6 +731,14 @@ Fixed diagnostics:
                 "external Message API tasks must be explicitly bound to the configured "
                 "provider profile and category"
             )
+        if self.config.profile.category != "intranet" and (
+            classification != "public_interface"
+            or allowed_categories != [self.config.profile.category]
+        ):
+            raise GatewayError(
+                "external Message API tasks must declare data_classification=public_interface "
+                "and the exact configured external profile category"
+            )
         if not 0 <= max_repairs <= 3:
             raise GatewayError("max_repairs must be between 0 and 3")
         if not task.prompt.strip():
@@ -662,6 +749,18 @@ Fixed diagnostics:
             )
         run_id = _safe_id(run_id or self.new_run_id())
         task_root, output_path, formal_provenance_path = self._task_paths(task, run_id)
+        resolved_images: list[Path] = []
+        for raw_image in task.image_paths:
+            image_path = _inside(self.repo_root, raw_image, label="image_path")
+            if not image_path.is_file():
+                raise GatewayError(f"task image does not exist: {image_path}")
+            resolved_images.append(image_path)
+        if len(resolved_images) > MAX_TASK_IMAGES:
+            raise GatewayError(f"task carries too many images: {len(resolved_images)} > {MAX_TASK_IMAGES}")
+        try:
+            prepared_images = tuple(prepare_images(resolved_images, max_images=MAX_TASK_IMAGES))
+        except ClientError as exc:
+            raise GatewayError(f"task images fail the fixed budgets: {exc}") from exc
         result = GatewayRunResult(
             ok=False,
             task_id=task.task_id,
@@ -679,9 +778,16 @@ Fixed diagnostics:
             result.provenance_path = _repo_relative(self.repo_root, formal_provenance_path)
             return result
 
-        options = completion_options or CompletionOptions(response_mode="auto")
+        options = completion_options or CompletionOptions(
+            response_mode="auto",
+            thinking_mode=self.config.profile.default_thinking_mode,
+            stream=self.config.profile.default_stream,
+        )
         if options.response_mode in {"auto", "json_schema"} and options.response_schema is None:
             options = replace(options, response_schema=response_schema_for_contract(task.output_contract))
+        # Images only ever come from containment-checked TaskSpec.image_paths;
+        # caller-supplied options cannot inject unprepared pixel data.
+        options = replace(options, images=prepared_images)
         prompt = task.prompt
         prior_attempt = 0
         last_diagnostics: list[dict[str, Any]] = []
@@ -703,12 +809,23 @@ Fixed diagnostics:
                 options=options,
             )
             elapsed = time.perf_counter() - started_perf
+            promotable_candidate = completion.candidate
             if completion.candidate is None:
-                report = ContractReport(False, diagnostics=self._completion_diagnostics(completion.error))
+                report = ContractReport(
+                    False,
+                    diagnostics=self._completion_diagnostics(
+                        completion.error,
+                        completion.error_kind,
+                    ),
+                )
                 diagnostics = report.as_dict()["diagnostics"]
             else:
+                if isinstance(promotable_candidate, dict) and str(
+                    promotable_candidate.get("kind") or ""
+                ) == "visual_review_report":
+                    promotable_candidate = normalize_visual_review_candidate(promotable_candidate)
                 report = validate_candidate(
-                    completion.candidate,
+                    promotable_candidate,
                     task.output_contract,
                     allowed_campaign_profiles=task.allowed_campaign_profiles,
                     secret_values=self.config.secrets,
@@ -730,8 +847,8 @@ Fixed diagnostics:
             self._write_attempt(attempt_root, request_manifest, completion, report, provenance)
             result.attempts = attempt
             result.diagnostics = list(_redact(diagnostics, self.config.secrets))
-            if report.ok and isinstance(completion.candidate, dict):
-                candidate_hash = _sha256_bytes(canonical_json_bytes(completion.candidate))
+            if report.ok and isinstance(promotable_candidate, dict):
+                candidate_hash = _sha256_bytes(canonical_json_bytes(promotable_candidate))
                 formal_provenance = self._formal_provenance(
                     task,
                     run_id,
@@ -743,7 +860,7 @@ Fixed diagnostics:
                 )
                 try:
                     self._promote(
-                        completion.candidate,
+                        promotable_candidate,
                         formal_provenance,
                         output_path,
                         formal_provenance_path,
@@ -778,6 +895,14 @@ Fixed diagnostics:
                 and 200 <= last_status < 300
                 and "refusal" not in completion.error
                 and completion.finish_reason != "content_filter"
+                and completion.error_kind
+                not in {
+                    "provider_error",
+                    "stream_candidate_too_large",
+                    "stream_event_too_large",
+                    "stream_refusal_too_large",
+                    "stream_wire_too_large",
+                }
             )
             repairable = completion.candidate is not None or repairable_completion
             if attempt > max_repairs or not repairable:

@@ -24,6 +24,7 @@
   "expected_behavior": "Each selected STEP should either import into valid checked bodies/topologies or produce a clearly triaged failure with source path preserved.",
   "case_count": 48,
   "run_profile": "corpus",
+  "campaign_profile": "abc_step_import",
   "input_assets": {
     "dataset_index": "artifacts/abc_fetch_smoke/complex_dataset_index.json"
   },

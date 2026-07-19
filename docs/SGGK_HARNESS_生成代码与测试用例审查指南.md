@@ -12,7 +12,7 @@
 - 批准后的构建、执行、语义重放和故障定位报告；
 - 与上述文件绑定的 session、轮次、comment、批准和 provenance 证据。
 
-模型输出始终是不可信候选。Qwen 可以解释意见和修订候选，但不能声明固定门禁通过、不能批准轮次，也不能启动 runner。
+模型输出始终是不可信候选。GLM-5.2 可以解释意见和修订候选，但不能声明固定门禁通过、不能批准轮次，也不能启动 runner。
 
 ## 2. 普通用户审查流程
 
@@ -36,18 +36,18 @@ Harness 自动解析函数声明、重载、能力、源码证据、风险、输
 
 1. 以原文保存，不能由模型改写后替代；
 2. 绑定当前最新轮次，由固定宿主生成内部哈希；
-3. 通过同一个 Message API contract 交给 Qwen 解释；
+3. 通过同一个 Message API contract 交给 GLM-5.2 解释；
 4. 形成不可变 comment 事件；
-5. 被明确分类为内部 `decision=revise|question|reject|approve`；这些是 Qwen 响应枚举，不是 CLI 命令。
+5. 被明确分类为内部 `decision=revise|question|reject|approve`；这些是模型响应枚举，不是 CLI 命令。
 
 不同语义的结果不同：
 
 - `revise`：涉及代码、用例、参数、Oracle、范围或假设修改，必须生成完整替换候选、不可变新轮次和新中文报告；
-- `question`：把 Qwen 中文回答保存在当前轮，不修改候选；
+- `question`：把模型中文回答保存在当前轮，不修改候选；
 - `reject`：保存拒绝原因并终止 session，不执行 SDK；
 - `decision=approve`：仅当原始 comment 明确同意执行时，固定宿主才绑定并执行当前最新轮次，不生成新候选轮；普通用户仍只使用 `comment`。
 
-Qwen 对所有 comment 的中文解释至少包含意见理解、语义分类和分类理由。`revise` 还必须包含：
+GLM-5.2 对所有 comment 的中文解释至少包含意见理解、语义分类和分类理由。`revise` 还必须包含：
 
 - 本轮采纳项；
 - 未采纳项及具体原因；
@@ -62,7 +62,7 @@ Qwen 对所有 comment 的中文解释至少包含意见理解、语义分类和
 .\harness.ps1 comment "这一版可以开始执行真实测试。"
 ```
 
-用户通过上面的明确批准 `comment` 同意执行。内部 `decision=approve` 只作用于当前最新轮次，并且不生成新候选轮；它不是 CLI 命令。Harness 会形成明确批准 comment 事件，保存 Qwen 对批准语义的中文解释；固定宿主随后验证轮次链、候选、源码 contract 和受审产物，写入不可变批准事件，并自动运行真实 SGGK SDK 构建、测试、Oracle、triage、replay 和适用的故障定位。用户不复制或编辑任何批准 JSON，也不手工启动 runner。
+用户通过上面的明确批准 `comment` 同意执行。内部 `decision=approve` 只作用于当前最新轮次，并且不生成新候选轮；它不是 CLI 命令。Harness 会形成明确批准 comment 事件，保存 GLM-5.2 对批准语义的中文解释；固定宿主随后验证轮次链、候选、源码 contract 和受审产物，写入不可变批准事件，并自动运行真实 SGGK SDK 构建、测试、Oracle、triage、replay 和适用的故障定位。用户不复制或编辑任何批准 JSON，也不手工启动 runner。
 
 执行完成后必须生成：
 
@@ -102,7 +102,7 @@ generating -> generation_failed
 | 状态 | 含义 | 允许的用户操作 |
 | --- | --- | --- |
 | `awaiting_comment` | 当前最新轮次已生成并通过批准前固定门禁 | `comment`（包括明确批准执行的自然语言 comment） |
-| `interpreting_comment` | Qwen 正在解释并分类当前 comment | `status` |
+| `interpreting_comment` | GLM-5.2 正在解释并分类当前 comment | `status` |
 | `generating` | 正在生成第 1 轮或修改后的新轮次 | `status` |
 | `rejected` | 用户已拒绝当前任务，未执行 SDK | `show` |
 | `executing` | 正在执行真实 SGGK SDK 测试 | `status` |
@@ -120,7 +120,7 @@ generating -> generation_failed
 4. 已完成任务后提交涉及修改的 comment，会创建新轮次并使旧批准只保留为历史证据。
 5. 候选、代码、schema、recipe、源码 contract 或报告内容变化时必须形成新轮次。
 6. 执行前必须再次验证批准绑定轮次仍是最新轮次。
-7. Qwen 无权写入最终批准状态；固定宿主只有在 Qwen 将 comment 解释为 `decision=approve` 且宿主独立检测到明确执行同意后，才会产生批准。
+7. GLM-5.2 无权写入最终批准状态；固定宿主只有在模型将 comment 解释为 `decision=approve` 且宿主独立检测到明确执行同意后，才会产生批准。
 8. 用户不接触内部 ID、round index 或 hash；这些值仍必须完整保存供恢复和审计。
 
 ### 3.3 批准前与批准后门禁
@@ -129,7 +129,7 @@ generating -> generation_failed
 
 ### 3.4 Message API endpoint
 
-Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API contract、轮次协议、中文解释 schema 和固定门禁。不存在外部 provider 或失败后的自动 fallback。
+外网版本只连接显式配置的 SiliconFlow GLM-5.2 endpoint，并统一使用 Message API contract、轮次协议、中文解释 schema 和固定门禁。不存在失败后的 provider/model 自动 fallback；`proprietary_source` 任务仍只允许获准的 `intranet` profile。
 
 ## 4. 报告和内部证据
 
@@ -141,7 +141,7 @@ Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API con
 - 测试目的、输入、预期行为和 Oracle 是否明确；
 - 风险假设是否落实为实际参数变化或调用序列；
 - 生成代码、schema、正例、负例和 recipes 的变化；
-- 若由修改 comment 派生，本轮的 comment 原文和 Qwen 中文解释；
+- 若由修改 comment 派生，本轮的 comment 原文和模型中文解释；
 - 当前状态是否等待 comment 或批准。
 
 报告不是批准证明。编辑 Markdown 不改变轮次、内部哈希或批准状态。用户只能通过修改语义的 `comment` 创建修订，通过明确同意执行的 `comment` 批准当前最新轮次。
@@ -153,7 +153,7 @@ Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API con
 - `internal/api_test_form.json`：Harness 根据 public function 推导的内部请求；
 - `prompt/model_task_manifest.json`：内部 Message 任务；
 - `candidate/candidate.json`：Message API 候选；
-- 如当前轮收到 comment，`comments/<comment-hash>/user_comment.txt` 与 `interpretation.json` 保存原文和 Qwen 中文解释；
+- 如当前轮收到 comment，`comments/<comment-hash>/user_comment.txt` 与 `interpretation.json` 保存原文和模型中文解释；
 - `pipeline/` 中的 `review_packet.json`：结构化、机器可复核的固定审查包；
 - `review/第<round>轮测试方案审查.zh-CN.md`：面向用户的中文报告；
 - `round_manifest.json`：父轮次、comment、候选、产物和报告的哈希链。
@@ -179,7 +179,7 @@ Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API con
 `final_report.zh-CN.md` 至少应包含：
 
 - 目标 public function 和最终批准轮次；
-- 各轮 comment、Qwen 理解和主要变化摘要；
+- 各轮 comment、模型理解和主要变化摘要；
 - 实际执行的代码、用例和 Oracle 覆盖；
 - 构建、SDK status、TopoCheck、validation 和稳定性结果；
 - 失败分类、复现路径、triage/replay/TopoTrack/failure bundle；
@@ -251,7 +251,7 @@ Harness 只连接获准的内网 Qwen endpoint，并统一使用 Message API con
 - [ ] prompt、message content、candidate、正式输出和关键报告均有 SHA-256。
 - [ ] `authoring_accepted` 只能由固定 Message Harness 宿主写入。
 - [ ] session、活动轮次和父轮次链一致，每条 comment 原文都有独立绑定。
-- [ ] Qwen comment 解释、candidate、packet、中文报告和 round manifest 指向同一轮次。
+- [ ] 模型 comment 解释、candidate、packet、中文报告和 round manifest 指向同一轮次。
 - [ ] 批准前 fixed gate 与批准后构建、执行、runtime registry 和语义重放状态分开保存。
 - [ ] approval event 由固定宿主生成，并绑定批准时的最新轮次。
 - [ ] 执行开始前再次验证批准轮次仍是最新轮次；任何产物变化都会使旧批准失效。

@@ -5,15 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Any, Sequence
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
-from test_harness.authoring_gateway.config import PROFILE_SPECS, ConfigError
+from test_harness.authoring_gateway.config import DEFAULT_PROFILE, PROFILE_SPECS, ConfigError
 
 from .runtime import MessageApiRuntime
 from .workflow import HarnessWorkflow, WorkflowError
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,13 +43,19 @@ class _OfflineRuntime:
         self.provider_profile = profile
         profile_spec = PROFILE_SPECS.get(profile)
         self.provider_profile_category = profile_spec.category if profile_spec is not None else ""
+        # Plain-data attribute mirrored from MessageApiRuntime so read-only
+        # status/show commands can construct the workflow without API config.
+        self.campaign_dataset = ""
 
     def __getattr__(self, name: str) -> Any:
         raise WorkflowError(f"runtime operation {name} is unavailable in read-only mode")
 
 
 def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
-    profile = os.environ.get("SGGK_HARNESS_PROFILE", "intranet").strip() or "intranet"
+    profile = os.environ.get("SGGK_HARNESS_PROFILE", DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
+    profile_spec = PROFILE_SPECS.get(profile)
+    default_thinking_mode = profile_spec.default_thinking_mode if profile_spec else "omit"
+    use_memory = os.environ.get("SGGK_HARNESS_NO_MEMORY", "").strip().lower() not in {"1", "true", "yes", "on"}
     runtime: Any
     if require_runtime:
         runtime = MessageApiRuntime(
@@ -58,10 +64,11 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
             candidate_count=int(os.environ.get("SGGK_HARNESS_CANDIDATES", "3")),
             candidate_parallelism=int(os.environ.get("SGGK_HARNESS_PARALLELISM", "3")),
             max_tokens=int(os.environ.get("SGGK_HARNESS_MAX_TOKENS", "32768")),
-            thinking_mode=os.environ.get("SGGK_HARNESS_THINKING", "omit"),
+            thinking_mode=os.environ.get("SGGK_HARNESS_THINKING", default_thinking_mode),
             jobs=int(os.environ.get("SGGK_HARNESS_JOBS", "1")),
             execution_timeout_seconds=float(os.environ.get("SGGK_HARNESS_TIMEOUT", "180")),
             campaign_dataset=os.environ.get("SGGK_CAMPAIGN_DATASET", ""),
+            sdk_dir=_sdk_dir_from_environment(),
         )
     else:
         runtime = _OfflineRuntime(profile)
@@ -72,6 +79,10 @@ def _workflow(*, require_runtime: bool = True) -> HarnessWorkflow:
         sdk_dir=_sdk_dir_from_environment(),
         source_root=_source_root_from_environment(),
         runner_path=_runner_from_environment(),
+        use_memory=use_memory,
+        nx_root=(lambda raw: Path(raw).expanduser().resolve() if raw else None)(
+            os.environ.get("SGGK_NX_ROOT", "").strip()
+        ),
     )
 
 
@@ -82,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start", help="输入一个 public function 并生成第 1 轮审查")
     start.add_argument("public_function")
+    start.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="初始不使用历史修改建议记忆（默认使用）",
+    )
     comment = commands.add_parser("comment", help="提交一条自然语言审查意见")
     comment.add_argument("text")
     commands.add_parser("status", help="查看当前会话状态")
@@ -106,7 +122,7 @@ def _print_payload(payload: dict[str, Any]) -> None:
     if payload.get("final_report_path"):
         print(f"最终报告：{payload['final_report_path']}")
     if payload.get("answer_path"):
-        print(f"Qwen 回答：{payload['answer_path']}")
+        print(f"模型回答：{payload['answer_path']}")
     if payload.get("notice_path"):
         print(f"提示：{payload['notice_path']}")
     if payload.get("last_error"):
@@ -120,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         workflow = _workflow(require_runtime=args.command not in {"status", "show"})
         if args.command == "start":
-            payload = workflow.start(args.public_function)
+            payload = workflow.start(args.public_function, use_memory=False if args.no_memory else None)
         elif args.command == "comment":
             payload = workflow.comment(args.text)
         elif args.command == "status":

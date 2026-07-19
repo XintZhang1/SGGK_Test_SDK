@@ -12,12 +12,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
-
 
 CANVAS_W = 1600
 CANVAS_H = 1000
@@ -81,7 +80,7 @@ def as_str(value: Any) -> str:
 
 
 def as_num(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
     return None
 
@@ -164,8 +163,11 @@ def input_boxes(input_index: Any) -> dict[str, list[dict[str, Any]]]:
     return boxes
 
 
-def input_edges(input_index: Any, max_edges: int) -> dict[str, list[tuple[tuple[float, float, float], tuple[float, float, float]]]]:
-    edges: dict[str, list[tuple[tuple[float, float, float], tuple[float, float, float]]]] = {"target": [], "tool": []}
+EdgeSegments = list[tuple[tuple[float, float, float], tuple[float, float, float]]]
+
+
+def input_edges(input_index: Any, max_edges: int) -> dict[str, EdgeSegments]:
+    edges: dict[str, EdgeSegments] = {"target": [], "tool": []}
     if not isinstance(input_index, dict):
         return edges
     for item in input_index.get("inputs", []):
@@ -213,10 +215,16 @@ def ortho_project(point: tuple[float, float, float], axes: tuple[int, int]) -> t
     return (point[axes[0]], point[axes[1]])
 
 
-def make_transform(points: list[tuple[float, float]], rect: tuple[int, int, int, int]):
+def make_transform(
+    points: list[tuple[float, float]],
+    rect: tuple[int, int, int, int],
+) -> dict[str, Any]:
     x0, y0, x1, y1 = rect
     if not points:
-        return lambda p: ((x0 + x1) // 2, (y0 + y1) // 2)
+        return {
+            "transform": lambda p: ((x0 + x1) // 2, (y0 + y1) // 2),
+            "bounds": None,
+        }
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
     min_x, max_x = min(xs), max(xs)
@@ -232,7 +240,7 @@ def make_transform(points: list[tuple[float, float]], rect: tuple[int, int, int,
     def transform(p: tuple[float, float]) -> tuple[int, int]:
         return (int(rcx + (p[0] - cx) * scale), int(rcy - (p[1] - cy) * scale))
 
-    return transform
+    return {"transform": transform, "bounds": (min_x, max_x, min_y, max_y)}
 
 
 BOX_EDGES = [
@@ -241,7 +249,14 @@ BOX_EDGES = [
 ]
 
 
-def draw_bbox(draw: ImageDraw.ImageDraw, bbox: dict[str, Any], project, transform, color: tuple[int, int, int], width: int = 3) -> None:
+def draw_bbox(
+    draw: ImageDraw.ImageDraw,
+    bbox: dict[str, Any],
+    project: Any,
+    transform: Any,
+    color: tuple[int, int, int],
+    width: int = 3,
+) -> None:
     corners = bbox_points(bbox)
     if len(corners) != 8:
         return
@@ -250,7 +265,13 @@ def draw_bbox(draw: ImageDraw.ImageDraw, bbox: dict[str, Any], project, transfor
         draw.line([pts[a], pts[b]], fill=color, width=width)
 
 
-def draw_edges(draw: ImageDraw.ImageDraw, edges: list[tuple[tuple[float, float, float], tuple[float, float, float]]], project, transform, color: tuple[int, int, int]) -> None:
+def draw_edges(
+    draw: ImageDraw.ImageDraw,
+    edges: EdgeSegments,
+    project: Any,
+    transform: Any,
+    color: tuple[int, int, int],
+) -> None:
     for start, end in edges:
         draw.line([transform(project(start)), transform(project(end))], fill=color, width=1)
 
@@ -279,7 +300,15 @@ def wrapped_lines(text: str, max_chars: int) -> list[str]:
     return result
 
 
-def draw_text_block(draw: ImageDraw.ImageDraw, xy: tuple[int, int], lines: list[str], font, fill=INK, line_h: int = 22, max_lines: int = 20) -> int:
+def draw_text_block(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    lines: list[str],
+    font: Any,
+    fill: tuple[int, int, int] = INK,
+    line_h: int = 22,
+    max_lines: int = 20,
+) -> int:
     x, y = xy
     count = 0
     for line in lines:
@@ -293,7 +322,13 @@ def draw_text_block(draw: ImageDraw.ImageDraw, xy: tuple[int, int], lines: list[
     return y
 
 
-def collect_project_points(boxes_by_role: dict[str, list[dict[str, Any]]], result: list[dict[str, Any]], edges_by_role: dict[str, list[Any]], project) -> list[tuple[float, float]]:
+def collect_project_points(
+    boxes_by_role: dict[str, list[dict[str, Any]]],
+    result: list[dict[str, Any]],
+    edges_by_role: dict[str, list[Any]],
+    project: Any,
+    markers: list[dict[str, Any]] | None = None,
+) -> list[tuple[float, float]]:
     points: list[tuple[float, float]] = []
     for boxes in list(boxes_by_role.values()) + [result]:
         for bbox in boxes:
@@ -302,7 +337,198 @@ def collect_project_points(boxes_by_role: dict[str, list[dict[str, Any]]], resul
         for start, end in edges:
             points.append(project(start))
             points.append(project(end))
+    for marker in markers or []:
+        points.extend(project(p) for p in marker_points(marker))
     return points
+
+
+def numeric_point(value: Any) -> tuple[float, float, float] | None:
+    if not isinstance(value, list | tuple) or len(value) != 3:
+        return None
+    coords: list[float] = []
+    for item in value:
+        number = as_num(item)
+        if number is None or number != number or number in {float("inf"), float("-inf")}:
+            return None
+        coords.append(number)
+    return (coords[0], coords[1], coords[2])
+
+
+def marker_points(marker: dict[str, Any]) -> list[tuple[float, float, float]]:
+    kind = marker.get("kind")
+    if kind == "point":
+        point = numeric_point(marker.get("point"))
+        return [point] if point is not None else []
+    if kind == "segment":
+        start = numeric_point(marker.get("a"))
+        end = numeric_point(marker.get("b"))
+        return [p for p in (start, end) if p is not None]
+    if kind == "bbox" and isinstance(marker.get("bbox"), dict):
+        return bbox_points(marker["bbox"])
+    return []
+
+
+MAX_ANALYSIS_MARKERS = 12
+ORTHO_PANEL_AXES = {"XY": ("x", "y"), "XZ": ("x", "z"), "YZ": ("y", "z")}
+AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
+def _bbox_value(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return bbox_from_locator({"bbox": raw})
+
+
+def bbox_center(bbox: dict[str, Any]) -> tuple[float, float, float] | None:
+    extents = bbox_extents(bbox)
+    if extents is None:
+        return None
+    mn, mx = extents
+    return ((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2)
+
+
+def role_bboxes(input_properties: Any, properties: Any) -> dict[str, list[dict[str, Any]]]:
+    """Collect per-role body bboxes from input_properties.json and properties.json."""
+
+    boxes: dict[str, list[dict[str, Any]]] = {"target": [], "tool": [], "result": []}
+    if isinstance(input_properties, dict):
+        for role in ("target", "tool"):
+            entries = input_properties.get(role)
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                bbox = _bbox_value(entry.get("bbox"))
+                if bbox is not None:
+                    boxes[role].append(bbox)
+    boxes["result"] = result_boxes(properties)
+    return boxes
+
+
+def _role_box(
+    boxes: dict[str, list[dict[str, Any]]],
+    role: Any,
+    body_index: Any,
+) -> dict[str, Any] | None:
+    entries = boxes.get(str(role or ""), [])
+    index = body_index if isinstance(body_index, int) and not isinstance(body_index, bool) else 0
+    if 0 <= index < len(entries):
+        return entries[index]
+    return entries[0] if entries else None
+
+
+def analysis_markers(case_dir: Path) -> list[dict[str, Any]]:
+    """Compute bounded geometric focus markers for failed oracle records.
+
+    Markers are derived only from coordinates already present in the case
+    reports; records without usable coordinates are skipped silently.
+    """
+
+    validation = load_json(case_dir / "report" / "validation.json")
+    if not isinstance(validation, dict):
+        return []
+    input_properties = load_json(case_dir / "report" / "input_properties.json")
+    properties = load_json(case_dir / "report" / "properties.json")
+    boxes = role_bboxes(input_properties, properties)
+    markers: list[dict[str, Any]] = []
+
+    def room() -> bool:
+        return len(markers) < MAX_ANALYSIS_MARKERS
+
+    for key in ("point_relations", "face_point_relations"):
+        records = validation.get(key)
+        for record in records if isinstance(records, list) else []:
+            if not room():
+                break
+            if not isinstance(record, dict) or record.get("ok") is not False:
+                continue
+            point = numeric_point(record.get("point"))
+            if point is not None:
+                markers.append({"kind": "point", "point": point, "check_id": str(record.get("id") or "")})
+    for key, pair_kind in (("distance_checks", "segment"), ("clash_checks", "bbox_pair")):
+        records = validation.get(key)
+        for record in records if isinstance(records, list) else []:
+            if not room():
+                break
+            if not isinstance(record, dict) or record.get("ok") is not False:
+                continue
+            box_a = _role_box(boxes, record.get("role_a"), record.get("body_index_a"))
+            box_b = _role_box(boxes, record.get("role_b"), record.get("body_index_b"))
+            if pair_kind == "segment":
+                center_a = bbox_center(box_a) if box_a is not None else None
+                center_b = bbox_center(box_b) if box_b is not None else None
+                if center_a is not None and center_b is not None:
+                    markers.append(
+                        {"kind": "segment", "a": center_a, "b": center_b, "check_id": str(record.get("id") or "")}
+                    )
+            else:
+                for box in (box_a, box_b):
+                    if box is not None and room():
+                        markers.append({"kind": "bbox", "bbox": box, "check_id": str(record.get("id") or "")})
+    records = validation.get("plane_extreme_checks")
+    for record in records if isinstance(records, list) else []:
+        if not room():
+            break
+        if not isinstance(record, dict) or record.get("ok") is not False:
+            continue
+        axis = str(record.get("axis") or "")
+        value = as_num(record.get("expected"))
+        if axis in AXIS_INDEX and value is not None:
+            markers.append({"kind": "plane", "axis": axis, "value": value, "check_id": str(record.get("id") or "")})
+    return markers
+
+
+def _clamp_pixel(point: tuple[int, int], rect: tuple[int, int, int, int]) -> tuple[int, int]:
+    x0, y0, x1, y1 = rect
+    return (max(x0 + 2, min(x1 - 2, point[0])), max(y0 + 2, min(y1 - 2, point[1])))
+
+
+def draw_markers(
+    draw: ImageDraw.ImageDraw,
+    markers: list[dict[str, Any]],
+    project: Any,
+    panel: dict[str, Any],
+    panel_name: str,
+    rect: tuple[int, int, int, int],
+) -> None:
+    transform = panel["transform"]
+    bounds = panel["bounds"]
+    for marker in markers:
+        kind = marker.get("kind")
+        if kind == "point":
+            point = numeric_point(marker.get("point"))
+            if point is None:
+                continue
+            cx, cy = _clamp_pixel(transform(project(point)), rect)
+            radius = 9 if panel_name == "ISO" else 6
+            draw.line([(cx - radius, cy - radius), (cx + radius, cy + radius)], fill=FAIL, width=3)
+            draw.line([(cx - radius, cy + radius), (cx + radius, cy - radius)], fill=FAIL, width=3)
+            ring = radius + 4
+            draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline=FAIL, width=2)
+        elif kind == "segment":
+            start = numeric_point(marker.get("a"))
+            end = numeric_point(marker.get("b"))
+            if start is None or end is None:
+                continue
+            pa = _clamp_pixel(transform(project(start)), rect)
+            pb = _clamp_pixel(transform(project(end)), rect)
+            draw.line([pa, pb], fill=FAIL, width=3)
+            for point in (pa, pb):
+                draw.ellipse([point[0] - 6, point[1] - 6, point[0] + 6, point[1] + 6], outline=FAIL, width=2)
+        elif kind == "bbox" and isinstance(marker.get("bbox"), dict):
+            draw_bbox(draw, marker["bbox"], project, transform, FAIL, width=3 if panel_name == "ISO" else 2)
+        elif kind == "plane" and bounds is not None:
+            axis = str(marker.get("axis") or "")
+            value = as_num(marker.get("value"))
+            axes = ORTHO_PANEL_AXES.get(panel_name)
+            if axes is None or value is None or axis not in axes:
+                continue
+            min_u, max_u, min_v, max_v = bounds
+            if axis == axes[0]:
+                line = [transform((value, min_v)), transform((value, max_v))]
+            else:
+                line = [transform((min_u, value)), transform((max_u, value))]
+            pa, pb = (_clamp_pixel(point, rect) for point in line)
+            draw.line([pa, pb], fill=FAIL, width=3)
 
 
 def bbox_signature(case_data: dict[str, Any]) -> str:
@@ -310,13 +536,19 @@ def bbox_signature(case_data: dict[str, Any]) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
 
 
-def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, Any]:
+def case_preview(
+    case_dir: Path,
+    out_path: Path,
+    max_edges: int,
+    markers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     manifest = load_json(case_dir / "manifest.json") or {}
     status = load_json(case_dir / "report" / "status.json") or {}
     input_index = load_json(case_dir / "report" / "input_topology_index.json") or {}
     properties = load_json(case_dir / "report" / "properties.json") or {}
     validation = load_json(case_dir / "report" / "validation.json") or {}
     topo_check = load_json(case_dir / "report" / "topo_check.json") or {}
+    markers = markers or []
 
     case_id = as_str(manifest.get("case_id")) or case_dir.name
     api = as_str(manifest.get("api"))
@@ -346,9 +578,19 @@ def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, An
     draw.rectangle([0, 0, CANVAS_W, 78], fill=(239, 242, 247))
     status_color = PASS if validation_ok is True and succeeded is not False and not topo_failures else FAIL
     draw.text((28, 20), case_id, font=title_font, fill=INK)
-    draw.text((28, 54), f"api={api}  succeeded={succeeded}  validation_ok={validation_ok}", font=small, fill=status_color)
+    draw.text(
+        (28, 54),
+        f"api={api}  succeeded={succeeded}  validation_ok={validation_ok}",
+        font=small,
+        fill=status_color,
+    )
     if dsl:
-        draw.text((640, 20), f"dsl={as_str(dsl.get('case_id'))} variant={as_str(dsl.get('variant'))}", font=small, fill=MUTED)
+        draw.text(
+            (640, 20),
+            f"dsl={as_str(dsl.get('case_id'))} variant={as_str(dsl.get('variant'))}",
+            font=small,
+            fill=MUTED,
+        )
         draw.text((640, 45), as_str(dsl.get("hypothesis"))[:95], font=tiny, fill=MUTED)
 
     panels = {
@@ -360,13 +602,19 @@ def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, An
     for name, (x0, y0, x1, y1, project) in panels.items():
         draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 255), outline=GRID, width=1)
         draw.text((x0 + 10, y0 + 8), name, font=small, fill=MUTED)
-        transform = make_transform(collect_project_points(boxes_by_role, result, edges_by_role, project), (x0, y0 + 28, x1, y1))
+        panel = make_transform(
+            collect_project_points(boxes_by_role, result, edges_by_role, project, markers),
+            (x0, y0 + 28, x1, y1),
+        )
+        transform = panel["transform"]
         for role, color in [("target", TARGET), ("tool", TOOL)]:
             for bbox in boxes_by_role.get(role, []):
                 draw_bbox(draw, bbox, project, transform, color, width=3 if name == "ISO" else 2)
             draw_edges(draw, edges_by_role.get(role, []), project, transform, color)
         for bbox in result:
             draw_bbox(draw, bbox, project, transform, RESULT, width=4 if name == "ISO" else 2)
+        if markers:
+            draw_markers(draw, markers, project, panel, name, (x0, y0 + 28, x1, y1))
 
     legend_y = 665
     for label, color in [("target", TARGET), ("tool", TOOL), ("result", RESULT)]:
@@ -430,8 +678,23 @@ def case_preview(case_dir: Path, out_path: Path, max_edges: int) -> dict[str, An
         "validation_ok": validation_ok,
         "succeeded": succeeded,
         "signature": signature_payload,
-        "signature_hash": hashlib.sha1(json.dumps(signature_payload, sort_keys=True).encode("utf-8")).hexdigest()[:12],
+        "signature_hash": hashlib.sha1(
+            json.dumps(signature_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:12],
     }
+
+
+def case_analysis_overlay(case_dir: Path, out_path: Path, max_edges: int = 80) -> dict[str, Any]:
+    """Render the standard preview plus failing-oracle geometric markers.
+
+    Falls back to the plain preview (identical layout, no marker pass) when no
+    failed oracle record carries usable coordinates.
+    """
+
+    markers = analysis_markers(case_dir)
+    result = case_preview(case_dir, out_path, max_edges, markers=markers)
+    result["marker_count"] = len(markers)
+    return result
 
 
 def make_contact_sheet(previews: list[dict[str, Any]], out_path: Path) -> None:
@@ -455,7 +718,12 @@ def make_contact_sheet(previews: list[dict[str, Any]], out_path: Path) -> None:
         sheet.paste(img, (x, y + title_h))
         status_color = PASS if item.get("validation_ok") is True else FAIL
         draw.text((x + 10, y + 8), item["case_id"][:42], font=title, fill=INK)
-        draw.text((x + 10, y + 34), f"validation={item.get('validation_ok')} sig={item.get('signature_hash')}", font=small, fill=status_color)
+        draw.text(
+            (x + 10, y + 34),
+            f"validation={item.get('validation_ok')} sig={item.get('signature_hash')}",
+            font=small,
+            fill=status_color,
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(out_path)
 

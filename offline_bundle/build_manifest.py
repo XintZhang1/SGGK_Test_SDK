@@ -21,7 +21,10 @@ for path in sorted([*root.glob("archives/*"), *root.glob("wheelhouse/*.whl")]):
     )
 manifest = {
     "schema_version": 1,
-    "target": "Windows x86-64, CPython 3.11, Visual Studio 2022",
+    "target": (
+        "Windows x86-64, CPython 3.11, Visual Studio 2022 or "
+        "CMake-supported newer MSVC (verified VS 2026)"
+    ),
     "python": "3.11.9 embeddable amd64",
     "cmake": "4.3.3 windows x86_64",
     "files": files,

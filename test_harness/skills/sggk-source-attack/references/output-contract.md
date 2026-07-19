@@ -141,7 +141,7 @@ Run commands:
 ```powershell
 python .\test_harness\tools\scan_source_risks.py .\SGK1.4.10\SGGK\include --out .\artifacts\sdk_include_source_risk_scan --max-findings 120 --max-seeds 30
 python .\test_harness\tools\build_source_attack_tasks.py .\artifacts\sdk_include_source_risk_scan --out .\artifacts\sdk_include_source_attack_tasks --max-tasks 80 --context-lines 12 --write-dsl-seeds
-python .\test_harness\tools\build_model_prompt_pack.py --source-task-dir .\artifacts\sdk_include_source_attack_tasks --out .\artifacts\source_model_prompt_pack
+python .\test_harness\tools\build_model_prompt_pack.py --source-task-dir .\artifacts\sdk_include_source_attack_tasks --out .\artifacts\source_model_prompt_pack --profile intranet
 .\harness.ps1 start api_boolean
 .\harness.ps1 comment "增加源码分支对应的容差两侧和可观测 Oracle。"
 .\harness.ps1 comment "明确同意当前方案，可以开始执行真实测试。"

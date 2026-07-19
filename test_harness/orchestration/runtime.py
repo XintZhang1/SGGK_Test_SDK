@@ -13,11 +13,32 @@ from test_harness.authoring_gateway.review_comment import (
     ReviewCommentContext,
     build_review_comment_task,
     finalize_review_comment_response,
+    normalize_review_comment_candidate,
     validate_review_comment_response,
 )
 from test_harness.tools.run_message_harness_pipeline import MessageHarnessPipeline
 
 from .workflow import WorkflowError, _safe_id, _write_json
+
+INTERFACE_DESIGN_TASK_TYPE = "interface_dsl_design"
+API_ADAPTATION_TASK_TYPE = "api_adaptation"
+# The interface-design and fixed-archetype adaptation subagents both design
+# support for one unknown API from host-parsed SDK evidence.  They deliberately
+# run GLM-5.2 with thinking enabled and a long generation budget: the design
+# contract is large and the user accepts long generation for these roles (the
+# default authoring lane keeps thinking disabled because it did not finish in
+# 20 minutes for full code generation).
+LONG_GENERATION_TASK_TYPES = frozenset({INTERFACE_DESIGN_TASK_TYPE, API_ADAPTATION_TASK_TYPE})
+# attack_dsl interface tasks (e.g. api_boolean) are the hardest generation
+# shape the harness asks for: dozens of interlocking DSL rules across many
+# cases.  Live evidence (2026-07-18) showed three parallel short-lane
+# candidates plus repairs all failing fixed gates with disjoint DSL rule
+# violations while every long-lane task passed, so attack_dsl-heavy interface
+# tasks join the thinking lane too.
+DSL_HEAVY_TASK_TYPE = "interface_form"
+DSL_HEAVY_KIND = "attack_dsl"
+INTERFACE_DESIGN_MAX_TOKENS = 65_536
+INTERFACE_DESIGN_TIMEOUT_SECONDS = 3_600.0
 
 
 class MessageApiRuntime:
@@ -33,12 +54,14 @@ class MessageApiRuntime:
         candidate_count: int = 3,
         candidate_parallelism: int = 3,
         max_tokens: int = 32_768,
-        thinking_mode: str = "omit",
+        thinking_mode: str | None = None,
         jobs: int = 1,
         execution_timeout_seconds: float = 180.0,
         campaign_dataset: str | Path = "",
+        sdk_dir: str | Path | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
+        self.sdk_dir = Path(sdk_dir).expanduser().resolve() if sdk_dir else None
         requested_profile = profile.strip()
         self.config = config or load_gateway_config(requested_profile)
         if self.config.profile.name != requested_profile:
@@ -57,7 +80,9 @@ class MessageApiRuntime:
         self.candidate_count = candidate_count
         self.candidate_parallelism = min(candidate_parallelism, candidate_count)
         self.max_tokens = max_tokens
-        self.thinking_mode = thinking_mode
+        self.thinking_mode = thinking_mode or self.config.profile.default_thinking_mode
+        if self.thinking_mode not in {"omit", "enabled", "disabled"}:
+            raise WorkflowError("thinking_mode must be omit, enabled, or disabled")
         self.jobs = jobs
         self.execution_timeout_seconds = execution_timeout_seconds
         self.campaign_dataset = campaign_dataset
@@ -68,15 +93,48 @@ class MessageApiRuntime:
             repo_root=self.repo_root,
             staging_root=staging_root,
             client=self.client,
+            sdk_dir=self.sdk_dir,
         )
 
-    def _authoring_options(self) -> CompletionOptions:
+    def _authoring_options(self, task_type: str = "", *, dsl_heavy: bool = False) -> CompletionOptions:
+        if task_type in LONG_GENERATION_TASK_TYPES or dsl_heavy:
+            return CompletionOptions(
+                response_mode="auto",
+                temperature=0.1,
+                max_tokens=INTERFACE_DESIGN_MAX_TOKENS,
+                thinking_mode="enabled",
+                stream=self.config.profile.default_stream,
+                request_timeout_seconds=INTERFACE_DESIGN_TIMEOUT_SECONDS,
+            )
         return CompletionOptions(
             response_mode="auto",
             temperature=0.2,
             max_tokens=self.max_tokens,
             thinking_mode=self.thinking_mode,
+            stream=self.config.profile.default_stream,
         )
+
+    @staticmethod
+    def _manifest_task_type(manifest_path: Path) -> str:
+        task = MessageApiRuntime._manifest_task(manifest_path)
+        return str(task.get("task_type") or "")
+
+    @staticmethod
+    def _manifest_allowed_kinds(manifest_path: Path) -> list[str]:
+        task = MessageApiRuntime._manifest_task(manifest_path)
+        contract = task.get("output_contract") if isinstance(task.get("output_contract"), dict) else {}
+        kinds = contract.get("allowed_kinds")
+        return [str(item) for item in kinds] if isinstance(kinds, list) else []
+
+    @staticmethod
+    def _manifest_task(manifest_path: Path) -> Mapping[str, Any]:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        tasks = manifest.get("tasks") if isinstance(manifest, dict) else None
+        task = tasks[0] if isinstance(tasks, list) and tasks and isinstance(tasks[0], dict) else {}
+        return task
 
     def generate(
         self,
@@ -85,20 +143,39 @@ class MessageApiRuntime:
         run_id: str,
         staging_root: Path,
     ) -> Mapping[str, Any]:
+        task_type = self._manifest_task_type(manifest_path)
+        dsl_heavy = task_type == DSL_HEAVY_TASK_TYPE and DSL_HEAVY_KIND in self._manifest_allowed_kinds(
+            manifest_path
+        )
+        long_lane = task_type in LONG_GENERATION_TASK_TYPES or dsl_heavy
+        candidate_count = 1 if long_lane else self.candidate_count
         result = self._pipeline(staging_root).run_manifest(
             manifest_path,
             run_id=run_id,
-            completion_options=self._authoring_options(),
+            completion_options=self._authoring_options(task_type, dsl_heavy=dsl_heavy),
             max_contract_repairs=1,
             max_gate_repairs=2,
-            candidate_count=self.candidate_count,
-            candidate_parallelism=self.candidate_parallelism,
+            candidate_count=candidate_count,
+            candidate_parallelism=min(self.candidate_parallelism, candidate_count),
             selection_goal="fixed_gate_only",
             overwrite=False,
             continue_on_error=False,
             execute=False,
         )
-        return result.as_dict()
+        payload = result.as_dict()
+        if not payload.get("ok"):
+            task_errors = [
+                str(item.get("error") or "").strip()
+                for item in payload.get("results", [])
+                if isinstance(item, Mapping) and str(item.get("error") or "").strip()
+            ]
+            batch_errors = [
+                str(item).strip()
+                for item in payload.get("errors", [])
+                if str(item).strip()
+            ]
+            payload["error"] = (task_errors + batch_errors + ["generation failed"])[0]
+        return payload
 
     def interpret_comment(
         self,
@@ -168,6 +245,7 @@ class MessageApiRuntime:
                     temperature=0.0,
                     max_tokens=4096,
                     thinking_mode=self.thinking_mode,
+                    stream=self.config.profile.default_stream,
                 ),
             )
             metadata = {
@@ -179,18 +257,30 @@ class MessageApiRuntime:
                 "finish_reason": completion.finish_reason,
                 "usage": completion.usage,
                 "error": completion.error,
+                "error_kind": completion.error_kind,
                 "events": completion.events,
                 "provider_responses": completion.response_records,
             }
             _write_json(output_dir / f"message_attempt_{attempt:02d}.json", metadata)
             if completion.candidate is not None:
-                validation = validate_review_comment_response(completion.candidate, task)
+                normalized_candidate, normalization_notes = normalize_review_comment_candidate(
+                    completion.candidate
+                )
+                if normalization_notes:
+                    _write_json(
+                        output_dir / f"normalization_attempt_{attempt:02d}.json",
+                        {
+                            "attempt": attempt,
+                            "notes": list(normalization_notes),
+                        },
+                    )
+                validation = validate_review_comment_response(normalized_candidate, task)
                 _write_json(
                     output_dir / f"validation_attempt_{attempt:02d}.json",
                     validation.as_dict(),
                 )
                 if validation.ok:
-                    finalized = finalize_review_comment_response(completion.candidate, task)
+                    finalized = finalize_review_comment_response(normalized_candidate, task)
                     finalized["provider"] = self.config.public_metadata()
                     finalized["message_attempts"] = attempt
                     _write_json(output_dir / "comment_decision.json", finalized)
@@ -200,13 +290,36 @@ class MessageApiRuntime:
                 )
             else:
                 last_error = completion.error or "Message API returned no JSON decision"
+                last_status = (
+                    completion.response_records[-1].get("status")
+                    if completion.response_records
+                    else None
+                )
+                repairable_completion = (
+                    isinstance(last_status, int)
+                    and 200 <= last_status < 300
+                    and "refusal" not in completion.error
+                    and completion.finish_reason != "content_filter"
+                    and completion.error_kind
+                    not in {
+                        "provider_error",
+                        "stream_candidate_too_large",
+                        "stream_event_too_large",
+                        "stream_refusal_too_large",
+                        "stream_wire_too_large",
+                    }
+                )
+                if not repairable_completion:
+                    raise WorkflowError(
+                        f"model review comment interpretation failed: {last_error}"
+                    )
             prompt = (
                 task.user_prompt
                 + "\n\nThe prior response failed deterministic validation. Return one complete "
                 "schema-valid JSON object only. Diagnostics:\n"
                 + last_error[:4000]
             )
-        raise WorkflowError(f"Qwen review comment interpretation failed: {last_error}")
+        raise WorkflowError(f"model review comment interpretation failed: {last_error}")
 
     def execute(
         self,

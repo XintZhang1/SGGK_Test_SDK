@@ -465,23 +465,67 @@ std::string NowIsoLike()
     return os.str();
 }
 
+fs::path NativeFilesystemPath(const fs::path& path)
+{
+#ifdef _WIN32
+    if (path.empty())
+    {
+        return path;
+    }
+    const std::wstring original = path.native();
+    if (original.rfind(L"\\\\?\\", 0) == 0 || original.rfind(L"\\\\.\\", 0) == 0)
+    {
+        return path;
+    }
+
+    fs::path absolute = path.is_absolute() ? path : fs::absolute(path);
+    absolute = absolute.lexically_normal();
+    absolute.make_preferred();
+    const std::wstring native = absolute.native();
+    if (native.rfind(L"\\\\", 0) == 0)
+    {
+        return fs::path(std::wstring(L"\\\\?\\UNC\\") + native.substr(2));
+    }
+    return fs::path(std::wstring(L"\\\\?\\") + native);
+#else
+    return path;
+#endif
+}
+
+std::string DisplayFilesystemPath(const fs::path& path)
+{
+#ifdef _WIN32
+    const std::wstring native = path.native();
+    if (native.rfind(L"\\\\?\\UNC\\", 0) == 0)
+    {
+        return fs::path(std::wstring(L"\\\\") + native.substr(8)).string();
+    }
+    if (native.rfind(L"\\\\?\\", 0) == 0)
+    {
+        return fs::path(native.substr(4)).string();
+    }
+#endif
+    return path.string();
+}
+
 void WriteTextFile(const fs::path& path, const std::string& text)
 {
-    fs::create_directories(path.parent_path());
-    std::ofstream out(path, std::ios::binary);
+    const fs::path nativePath = NativeFilesystemPath(path);
+    fs::create_directories(nativePath.parent_path());
+    std::ofstream out(nativePath, std::ios::binary);
     if (!out)
     {
-        throw std::runtime_error("failed to open file for writing: " + path.string());
+        throw std::runtime_error("failed to open file for writing: " + DisplayFilesystemPath(path));
     }
     out << text;
 }
 
 std::string ReadTextFile(const fs::path& path)
 {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(NativeFilesystemPath(path), std::ios::binary);
     if (!in)
     {
-        throw std::runtime_error("failed to open recipe: " + path.string());
+        throw std::runtime_error("failed to open recipe: " + DisplayFilesystemPath(path));
     }
     std::ostringstream buffer;
     buffer << in.rdbuf();
@@ -2324,7 +2368,7 @@ void RequireSafeCaseId(const std::string& value)
 fs::path CaseDirectory(const fs::path& outRoot, const std::string& caseId)
 {
     RequireSafeCaseId(caseId);
-    const fs::path root = fs::absolute(outRoot).lexically_normal();
+    const fs::path root = NativeFilesystemPath(outRoot);
     const fs::path candidate = (root / caseId).lexically_normal();
     if (candidate.parent_path() != root)
     {
@@ -4173,16 +4217,17 @@ std::vector<sggk::BodyPtr> LoadSgtBodiesFromFile(const fs::path& sourceFile, con
         throw std::runtime_error(role + " requires source_file");
     }
 
+    const fs::path nativeSourceFile = NativeFilesystemPath(sourceFile);
     sggk::RapidTopoJsonDeserializer deserializer;
     std::vector<sggk::BodyPtr> bodies;
-    auto loadedBodies = deserializer.DeserializeBodiesFromFile(sourceFile.string().c_str());
+    auto loadedBodies = deserializer.DeserializeBodiesFromFile(nativeSourceFile.string().c_str());
     for (const auto& body : loadedBodies)
     {
         bodies.push_back(body);
     }
     if (bodies.empty())
     {
-        auto body = deserializer.DeserializeBodyFromFile(sourceFile.string().c_str());
+        auto body = deserializer.DeserializeBodyFromFile(nativeSourceFile.string().c_str());
         if (body)
         {
             bodies.push_back(body);
@@ -4190,7 +4235,7 @@ std::vector<sggk::BodyPtr> LoadSgtBodiesFromFile(const fs::path& sourceFile, con
     }
     if (bodies.empty())
     {
-        throw std::runtime_error(role + " produced no bodies: " + sourceFile.string());
+        throw std::runtime_error(role + " produced no bodies: " + DisplayFilesystemPath(sourceFile));
     }
     return bodies;
 }
@@ -4643,9 +4688,10 @@ void SerializeTopology(const sggk::TopologyPtr& topo, const fs::path& path)
     {
         return;
     }
-    fs::create_directories(path.parent_path());
+    const fs::path nativePath = NativeFilesystemPath(path);
+    fs::create_directories(nativePath.parent_path());
     sggk::RapidTopoJsonSerializer serializer;
-    serializer.Serialize(topo, path.string().c_str());
+    serializer.Serialize(topo, nativePath.string().c_str());
 }
 
 std::string SanitizeFileStem(const std::string& value)
@@ -7811,13 +7857,14 @@ void WriteSkippedTopoTrackSummary(const CaseRecipe& recipe, const fs::path& case
 
 void CopySourceFileIfPresent(const fs::path& sourceFile, const fs::path& caseDir)
 {
-    if (sourceFile.empty() || !fs::exists(sourceFile))
+    const fs::path nativeSourceFile = NativeFilesystemPath(sourceFile);
+    if (sourceFile.empty() || !fs::exists(nativeSourceFile))
     {
         return;
     }
     fs::create_directories(caseDir / "input");
     fs::copy_file(
-        sourceFile,
+        nativeSourceFile,
         caseDir / "input" / ("source" + sourceFile.extension().string()),
         fs::copy_options::overwrite_existing);
 }
@@ -8167,7 +8214,7 @@ int FinishCapturedBodies(
               << "succeeded=" << (apiSucceeded ? "true" : "false") << "\n"
               << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (apiSucceeded && topoOk && validationOk) ? 0 : 2;
 }
 
@@ -8234,7 +8281,7 @@ int FinishCapturedTopologies(
               << "succeeded=" << (apiSucceeded ? "true" : "false") << "\n"
               << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
               << "validation_ok=" << ((apiSucceeded && topoOk && !resultTopologies.empty()) ? "true" : "false") << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (apiSucceeded && topoOk && !resultTopologies.empty()) ? 0 : 2;
 }
 
@@ -8258,7 +8305,7 @@ int FinishRoundtripCapturedBodies(
               << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
               << "roundtrip_ok=" << (roundtripOk ? "true" : "false") << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (apiSucceeded && topoOk && validationOk && roundtripOk) ? 0 : 2;
 }
 
@@ -8329,7 +8376,7 @@ int RunApiOffsetBodyCase(const CliOptions& cli, const CaseRecipe& recipe)
               << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
               << "error_code=" << ret->Status().ErrorCode() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
 }
 
@@ -8346,6 +8393,7 @@ int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
     fs::create_directories(caseDir / "report");
     WriteManifest(recipe, cli, caseDir);
     CopySourceFileIfPresent(recipe.sourceFile, caseDir);
+    const fs::path nativeSourceFile = NativeFilesystemPath(recipe.sourceFile);
 
     std::vector<sggk::BodyPtr> resultBodies;
     std::vector<sggk::TopologyPtr> resultTopologies;
@@ -8355,14 +8403,14 @@ int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
     try
     {
         sggk::RapidTopoJsonDeserializer deserializer;
-        auto bodies = deserializer.DeserializeBodiesFromFile(recipe.sourceFile.string().c_str());
+        auto bodies = deserializer.DeserializeBodiesFromFile(nativeSourceFile.string().c_str());
         for (const auto& body : bodies)
         {
             resultBodies.push_back(body);
         }
         if (resultBodies.empty())
         {
-            auto body = deserializer.DeserializeBodyFromFile(recipe.sourceFile.string().c_str());
+            auto body = deserializer.DeserializeBodyFromFile(nativeSourceFile.string().c_str());
             if (body)
             {
                 resultBodies.push_back(body);
@@ -8371,7 +8419,7 @@ int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
         succeeded = !resultBodies.empty();
         if (!succeeded)
         {
-            auto topologies = deserializer.DeserializeFromFile(recipe.sourceFile.string().c_str());
+            auto topologies = deserializer.DeserializeFromFile(nativeSourceFile.string().c_str());
             for (const auto& topology : topologies)
             {
                 if (topology)
@@ -8401,7 +8449,7 @@ int RunSgtCase(const CliOptions& cli, const CaseRecipe& recipe)
         try
         {
             sggk::RapidTopoJsonDeserializer deserializer;
-            auto topologies = deserializer.DeserializeFromFile(recipe.sourceFile.string().c_str());
+            auto topologies = deserializer.DeserializeFromFile(nativeSourceFile.string().c_str());
             for (const auto& topology : topologies)
             {
                 if (topology)
@@ -8461,7 +8509,8 @@ int RunStepImportCase(const CliOptions& cli, const CaseRecipe& recipe)
     WriteManifest(recipe, cli, caseDir);
     CopySourceFileIfPresent(recipe.sourceFile, caseDir);
 
-    auto ret = sggk::api_step_import(recipe.sourceFile.string().c_str(), sggk::StepImportOpts());
+    const fs::path nativeSourceFile = NativeFilesystemPath(recipe.sourceFile);
+    auto ret = sggk::api_step_import(nativeSourceFile.string().c_str(), sggk::StepImportOpts());
     if (!ret)
     {
         throw std::runtime_error("api_step_import returned null");
@@ -8494,7 +8543,8 @@ int RunIgesImportCase(const CliOptions& cli, const CaseRecipe& recipe)
     WriteManifest(recipe, cli, caseDir);
     CopySourceFileIfPresent(recipe.sourceFile, caseDir);
 
-    auto ret = sggk::api_iges_import(recipe.sourceFile.string().c_str(), sggk::IgesImportOpts());
+    const fs::path nativeSourceFile = NativeFilesystemPath(recipe.sourceFile);
+    auto ret = sggk::api_iges_import(nativeSourceFile.string().c_str(), sggk::IgesImportOpts());
     if (!ret)
     {
         throw std::runtime_error("api_iges_import returned null");
@@ -8774,7 +8824,7 @@ int RunOffset2DCase(const CliOptions& cli, const CaseRecipe& recipe)
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
               << "offset2d_status=" << Offset2DStatusName(result.status) << "\n"
               << "result_path_count=" << result.resultPaths.size() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return validationOk ? 0 : 2;
 }
 
@@ -8866,7 +8916,7 @@ int RunBooleanSplitCase(const CliOptions& cli, const CaseRecipe& recipe)
               << "inner_body_count=" << innerBodies.size() << "\n"
               << "wire_body_count=" << wireBodies.size() << "\n"
               << "error_code=" << status.ErrorCode() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
 }
 
@@ -8929,7 +8979,7 @@ int RunBooleanSliceCase(const CliOptions& cli, const CaseRecipe& recipe)
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
               << "slice_body_count=" << resultBodies.size() << "\n"
               << "error_code=" << ret->Status().ErrorCode() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
 }
 
@@ -9021,7 +9071,7 @@ int RunTopologySectionCase(const CliOptions& cli, const CaseRecipe& recipe)
               << "section_edge_count=" << edgeCount << "\n"
               << "section_vertex_count=" << vertexCount << "\n"
               << "error_code=" << status.ErrorCode() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
 }
 
@@ -9167,7 +9217,7 @@ int RunCase(const CliOptions& cli, CaseRecipe recipe)
               << "topology_ok=" << (topoOk ? "true" : "false") << "\n"
               << "validation_ok=" << (validationOk ? "true" : "false") << "\n"
               << "error_code=" << ret->Status().ErrorCode() << "\n"
-              << "artifact_dir=" << fs::absolute(caseDir).string() << "\n";
+              << "artifact_dir=" << DisplayFilesystemPath(caseDir) << "\n";
     return (ret->Succeeded() && topoOk && validationOk) ? 0 : 2;
 }
 }

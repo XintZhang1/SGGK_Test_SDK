@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from classify_parasolid_divergence import classify_comparison
 from failure_predicate import build_failure_signature
 
 
@@ -840,6 +841,15 @@ def classify_case(
         result["corpus"] = corpus_record
     if isinstance(data_exchange, dict):
         result["data_exchange"] = data_exchange
+    comparison = load_json(case_dir / "comparison" / "comparison.json")
+    if isinstance(comparison, dict):
+        # Additive diagnostic metadata only: the Parasolid verdict/cause class
+        # never feeds reasons, failure signatures, or grouping.
+        parasolid_analysis = classify_comparison(case_id, comparison)
+        result["parasolid"] = {
+            "verdict": parasolid_analysis["verdict"],
+            "cause_class": parasolid_analysis["cause_class"],
+        }
     if result["failed"]:
         runner_record = corpus_record if isinstance(corpus_record, dict) else (run_state if isinstance(run_state, dict) else {})
         signature_status = dict(status) if isinstance(status, dict) else {}
@@ -1314,6 +1324,12 @@ def main() -> int:
         "failure_group_count": len(failure_groups),
         "warning_cases": len(warning_cases),
         "command_failures": len(command_failure_records),
+        "parasolid_compared_cases": sum(1 for case in cases if isinstance(case.get("parasolid"), dict)),
+        "parasolid_divergence_cases": sum(
+            1
+            for case in cases
+            if isinstance(case.get("parasolid"), dict) and case["parasolid"].get("cause_class") != "consistent"
+        ),
         "failures": failures,
         "failure_groups": failure_groups,
         "regression_seeds": regression_seeds,

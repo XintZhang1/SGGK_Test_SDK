@@ -36,6 +36,7 @@ from test_harness.authoring_gateway.client import (  # noqa: E402
     canonical_json_bytes,
 )
 from test_harness.authoring_gateway.config import (  # noqa: E402
+    DEFAULT_PROFILE,
     PROFILE_SPECS,
     ConfigError,
     GatewayConfig,
@@ -60,6 +61,7 @@ from test_harness.tools.generated_artifact_review import (  # noqa: E402
     verify_review_attestation,
     write_review_packet,
 )
+from test_harness.tools.model_fixed_gate_contracts import fixed_gate_contract_for_api  # noqa: E402
 
 
 class PipelineError(ValueError):
@@ -186,6 +188,16 @@ def _safe_id(value: str) -> str:
     return f"{safe[:80]}_{digest}"
 
 
+def _storage_id(value: str, namespace: str) -> str:
+    """Map long logical IDs to stable, bounded artifact path components."""
+
+    safe = _safe_id(value)
+    if len(safe) <= 32:
+        return safe
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}_{digest}"
+
+
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -201,7 +213,12 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         with tempfile.NamedTemporaryFile(
             mode="wb",
             dir=path.parent,
-            prefix=f".{path.name}.",
+            # Keep the temp name short: on Windows each path is capped at
+            # MAX_PATH (260), so embedding the full target name (e.g.
+            # ".candidate.json.output.<rand>.tmp") plus a deep staging dir can
+            # overflow. Use a minimal prefix/suffix; the parent dir already
+            # scopes the file and os.replace atomically promotes it.
+            prefix=".~",
             suffix=".tmp",
             delete=False,
         ) as handle:
@@ -604,7 +621,7 @@ class FixedGateRunner:
         elif kind == "cluster_seed":
             self._gate_cluster_seed(result, normalized_path, gate_root)
         elif kind == "needs_harness_extension":
-            self._gate_extension(result, normalized_path, gate_root)
+            self._gate_extension(result, normalized_path, gate_root, task)
         elif kind == "api_plugin_candidate":
             self._gate_plugin_candidate(result, normalized_path, task, gate_root)
         elif kind == "campaign_request":
@@ -741,6 +758,42 @@ class FixedGateRunner:
                     "Repair the DSL using the compiler's structured constraints.",
                 )
             )
+        self._gate_complexity(result, normalized_path, gate_root)
+
+    def _gate_complexity(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
+        report_path = gate_root / "complexity_report.json"
+        diagnostics_path = gate_root / "complexity_diagnostics.json"
+        command = self._run(
+            "score_case_complexity",
+            [
+                self.python_executable,
+                self._tool("score_case_complexity.py"),
+                str(normalized_path),
+                "--report",
+                str(report_path),
+                "--model-diagnostics",
+                str(diagnostics_path),
+            ],
+        )
+        result.commands.append(command)
+        result.artifacts.update(
+            {
+                "complexity_report": _relative(self.repo_root, report_path),
+                "complexity_diagnostics": _relative(self.repo_root, diagnostics_path),
+            }
+        )
+        result.diagnostics.extend(_load_diagnostics(diagnostics_path))
+        result.ok = result.ok and command.ok
+        if not command.ok and not _load_diagnostics(diagnostics_path):
+            result.diagnostics.append(
+                _diagnostic(
+                    "COMPLEXITY_GATE_FAILED",
+                    str(normalized_path),
+                    command.stderr_tail or command.stdout_tail or "complexity scoring failed",
+                    "Combine more complexity dimensions: generated topology chains, tolerance "
+                    "bands, large coordinates, degenerate inputs, and measurable oracles.",
+                )
+            )
 
     def _gate_recipe(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
         diagnostics_path = gate_root / "recipe_diagnostics.json"
@@ -769,6 +822,7 @@ class FixedGateRunner:
                     "Repair the recipe using only supported API fields and available input assets.",
                 )
             )
+        self._gate_complexity(result, normalized_path, gate_root)
 
     def _gate_cluster_seed(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
         expanded_path = gate_root / "expanded_cluster_dsl.json"
@@ -797,20 +851,29 @@ class FixedGateRunner:
             return
         self._gate_dsl(result, expanded_path, gate_root)
 
-    def _gate_extension(self, result: FixedGateResult, normalized_path: Path, gate_root: Path) -> None:
+    def _gate_extension(
+        self,
+        result: FixedGateResult,
+        normalized_path: Path,
+        gate_root: Path,
+        task: TaskSpec | None = None,
+    ) -> None:
         report_path = gate_root / "extension_report.json"
         diagnostics_path = gate_root / "extension_diagnostics.json"
+        argv = [
+            self.python_executable,
+            self._tool("validate_harness_extension.py"),
+            str(normalized_path),
+            "--report",
+            str(report_path),
+            "--model-diagnostics",
+            str(diagnostics_path),
+        ]
+        if task is not None and str(task.task_type) == "interface_dsl_design":
+            argv.append("--require-design")
         command = self._run(
             "validate_harness_extension",
-            [
-                self.python_executable,
-                self._tool("validate_harness_extension.py"),
-                str(normalized_path),
-                "--report",
-                str(report_path),
-                "--model-diagnostics",
-                str(diagnostics_path),
-            ],
+            argv,
         )
         result.commands.append(command)
         result.artifacts.update(
@@ -966,9 +1029,11 @@ class MessageHarnessPipeline:
         reduce_failure_candidates: bool = False,
         reduction_limit: int = 3,
         reduction_max_trials: int = 32,
+        sdk_dir: str | Path | None = None,
     ) -> None:
         self.config = config
         self.repo_root = Path(repo_root).resolve()
+        self.sdk_dir = Path(sdk_dir).expanduser().resolve() if sdk_dir else None
         if not self.repo_root.is_dir():
             raise PipelineError(f"repository root does not exist: {self.repo_root}")
         self.staging_root = _inside(self.repo_root, staging_root, label="staging_root")
@@ -1042,7 +1107,11 @@ class MessageHarnessPipeline:
         ]
         candidate_text = json.dumps(candidate, indent=2, ensure_ascii=False, sort_keys=True)
         diagnostics_text = json.dumps(diagnostics, indent=2, ensure_ascii=False, sort_keys=True)
-        suffix = f"""
+        target_api = str(task.metadata.get("target_api") or "")
+        contract_reminder = (
+            fixed_gate_contract_for_api(target_api) if gate.kind == "attack_dsl" else ""
+        )
+        fixed_context = f"""
 
 ## Automatic fixed-gate repair {iteration}
 
@@ -1058,16 +1127,77 @@ Structured diagnostics:
 {diagnostics_text}
 ```
 
-Previous candidate:
-```json
-{candidate_text}
-```
+{contract_reminder}
 """
-        if len(task.prompt) + len(suffix) <= self.max_repair_prompt_chars:
-            return task.prompt + suffix
-        fixed = suffix[-min(len(suffix), 120_000) :]
-        budget = max(0, self.max_repair_prompt_chars - len(fixed) - 64)
-        return task.prompt[:budget] + "\n<original-prompt-truncated>\n" + fixed
+        if len(fixed_context) > self.max_repair_prompt_chars:
+            raise PipelineError(
+                "max_repair_prompt_chars is too small for the fixed-gate repair "
+                "instructions, diagnostics, and contract"
+            )
+
+        original_header = "## Original task context\n\n"
+        candidate_header = "\n\n## Previous candidate\n\n```json\n"
+        candidate_footer = "\n```\n"
+        candidate_marker = "<previous-candidate-truncated-for-repair>"
+        original_marker = "\n<original-prompt-truncated-for-repair>\n"
+
+        def truncate_middle(text: str, limit: int, marker: str) -> str:
+            if limit <= 0:
+                return ""
+            if len(text) <= limit:
+                return text
+            if limit <= len(marker):
+                return marker[:limit]
+            retained = limit - len(marker)
+            prefix_length = (retained + 1) // 2
+            suffix_length = retained - prefix_length
+            suffix = text[-suffix_length:] if suffix_length else ""
+            return text[:prefix_length] + marker + suffix
+
+        original_section = original_header + task.prompt
+        candidate_frame_length = len(candidate_header) + len(candidate_footer)
+        full_length = (
+            len(original_section)
+            + candidate_frame_length
+            + len(candidate_text)
+            + len(fixed_context)
+        )
+        if full_length <= self.max_repair_prompt_chars:
+            return (
+                original_section
+                + candidate_header
+                + candidate_text
+                + candidate_footer
+                + fixed_context
+            )
+
+        variable_budget = self.max_repair_prompt_chars - len(fixed_context)
+        minimum_candidate = candidate_header + candidate_marker + candidate_footer
+        if len(original_section) + len(minimum_candidate) <= variable_budget:
+            candidate_budget = variable_budget - len(original_section) - candidate_frame_length
+            bounded_candidate = truncate_middle(
+                candidate_text,
+                candidate_budget,
+                candidate_marker,
+            )
+            return (
+                original_section
+                + candidate_header
+                + bounded_candidate
+                + candidate_footer
+                + fixed_context
+            )
+
+        if len(minimum_candidate) <= variable_budget:
+            original_budget = variable_budget - len(minimum_candidate)
+            bounded_original = truncate_middle(
+                original_section,
+                original_budget,
+                original_marker,
+            )
+            return bounded_original + minimum_candidate + fixed_context
+
+        return fixed_context
 
     def _accepted_pair_ok(self, task: TaskSpec, output_path: Path, provenance_path: Path) -> bool:
         pair_ok, _ = self.gateway._verify_existing_pair(task, output_path, provenance_path)  # noqa: SLF001
@@ -1296,9 +1426,15 @@ Previous candidate:
                     or decision.get("decision") != "approve"
                     or evidence.get("record_type") != "review_comment_decision"
                     or evidence.get("status") != "model_interpreted"
-                    or evidence.get("qwen_called") is not True
+                    or not (
+                        evidence.get("model_called") is True
+                        or (
+                            evidence.get("schema_version") == 1
+                            and evidence.get("qwen_called") is True
+                        )
+                    )
                 ):
-                    return "execution comment interpretation is not a validated Qwen approval decision"
+                    return "execution comment interpretation is not a validated model approval decision"
             else:
                 actual_evidence_hash = _sha256_bytes(evidence_path.read_bytes())
             if actual_evidence_hash != expected_evidence_hash:
@@ -2010,8 +2146,20 @@ Previous candidate:
             resolved_selection_goal = "must_pass_execution" if execute else "fixed_gate_only"
         target_signature = dict(target_failure_signature or {})
         run_id = _safe_id(run_id or self.new_run_id())
-        task_root = self.staging_root / run_id / _safe_id(task.task_id)
+        run_storage_id = _storage_id(run_id, "run")
+        task_storage_id = _storage_id(task.task_id, "task")
+        task_root = self.staging_root / run_storage_id / task_storage_id
         _, output_path, provenance_path = self.gateway._task_paths(task, run_id)  # noqa: SLF001
+        _write_json(
+            task_root / "path_identity.json",
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "run_storage_id": run_storage_id,
+                "task_id": task.task_id,
+                "task_storage_id": task_storage_id,
+            },
+        )
         result = PipelineTaskResult(
             False,
             task.task_id,
@@ -2163,7 +2311,11 @@ Previous candidate:
                 result.error = "existing formal output is not a verified fixed-gate accepted pair; use --overwrite"
                 return result
 
-        options = completion_options or CompletionOptions(response_mode="auto")
+        options = completion_options or CompletionOptions(
+            response_mode="auto",
+            thinking_mode=self.config.profile.default_thinking_mode,
+            stream=self.config.profile.default_stream,
+        )
         branches: list[CandidateBranchResult] = []
 
         def generate(index: int, role_id: str) -> CandidateBranchResult:
@@ -2694,6 +2846,17 @@ Previous candidate:
             )
         plugin_path = _inside(self.repo_root, materialized, label="materialized_plugin")
         build_root = execution_root / "plugin_build"
+        sdk_dir = self.sdk_dir
+        if sdk_dir is None and os.environ.get("SGGK_SDK_DIR"):
+            sdk_dir = Path(os.environ["SGGK_SDK_DIR"]).expanduser().resolve()
+        if sdk_dir is None or not sdk_dir.is_dir():
+            return ExecutionResult(
+                True,
+                False,
+                "plugin_build_sdk_missing",
+                error="isolated plugin build requires a configured SDK directory (sdk_dir / SGGK_SDK_DIR)",
+                candidate_cause="harness_adapter_candidate_requires_repair",
+            )
         command = self.gates._run(  # noqa: SLF001
             "build_api_plugin_candidate",
             [
@@ -2703,6 +2866,8 @@ Previous candidate:
                 str(plugin_path),
                 "--out",
                 str(build_root),
+                "--sdk-dir",
+                str(sdk_dir),
                 "--smoke-replays",
                 "3",
                 "--timeout",
@@ -2771,9 +2936,18 @@ Previous candidate:
                 "campaign_dataset_missing",
                 error="campaign_request execution requires --campaign-dataset",
             )
-        dataset_path = _inside(self.repo_root, campaign_dataset, label="campaign_dataset")
+        raw_dataset_path = Path(campaign_dataset).expanduser()
+        dataset_path = (
+            raw_dataset_path.resolve()
+            if raw_dataset_path.is_absolute()
+            else (self.repo_root / raw_dataset_path).resolve()
+        )
         if not dataset_path.exists():
             return ExecutionResult(True, False, "campaign_dataset_missing", error=str(dataset_path))
+        try:
+            dataset_binding = _relative(self.repo_root, dataset_path)
+        except ValueError:
+            dataset_binding = str(dataset_path)
         tools_path = str(self.gates.tool_repo_root / "test_harness" / "tools")
         if tools_path not in sys.path:
             sys.path.insert(0, tools_path)
@@ -2786,7 +2960,7 @@ Previous candidate:
                 allowed_profiles=dict(task.allowed_campaign_profiles),
                 bindings={
                     "runner": _relative(self.repo_root, runner_path),
-                    "dataset": _relative(self.repo_root, dataset_path),
+                    "dataset": dataset_binding,
                     "out": _relative(self.repo_root, execution_root / "campaign"),
                 },
             )
@@ -2826,7 +3000,16 @@ Previous candidate:
     ) -> PipelineBatchResult:
         resolved_manifest = _inside(self.repo_root, manifest_path, label="manifest_path")
         run_id = _safe_id(run_id or self.new_run_id())
-        run_root = self.staging_root / run_id
+        run_storage_id = _storage_id(run_id, "run")
+        run_root = self.staging_root / run_storage_id
+        _write_json(
+            run_root / "path_identity.json",
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "run_storage_id": run_storage_id,
+            },
+        )
         selected = {item for item in task_ids if item}
         errors: list[str] = []
         try:
@@ -2873,7 +3056,10 @@ Previous candidate:
                     False,
                     task.task_id,
                     run_id,
-                    staging_path=_relative(self.repo_root, run_root / _safe_id(task.task_id)),
+                    staging_path=_relative(
+                        self.repo_root,
+                        run_root / _storage_id(task.task_id, "task"),
+                    ),
                     error=str(exc),
                 )
             results.append(task_result)
@@ -2894,12 +3080,17 @@ Previous candidate:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="model_prompt_pack/model_task_manifest.json")
-    parser.add_argument("--profile", required=True, choices=sorted(PROFILE_SPECS))
+    parser.add_argument("--profile", default=DEFAULT_PROFILE, choices=sorted(PROFILE_SPECS))
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--run-id", default="")
     parser.add_argument("--staging-root", default="artifacts/message_harness_pipeline")
     parser.add_argument("--response-mode", choices=("auto", "json_schema", "json_object", "none"), default="auto")
-    parser.add_argument("--thinking-mode", choices=("omit", "enabled", "disabled"), default="omit")
+    parser.add_argument(
+        "--thinking-mode",
+        choices=("omit", "enabled", "disabled"),
+        default=None,
+        help="Thinking parameter; defaults to the selected provider profile policy",
+    )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument(
         "--max-tokens",
@@ -2956,7 +3147,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--analyze-bugs",
         action="store_true",
-        help="After qualification/replay, run parallel candidate-only Qwen investigators on eligible bundles",
+        help="After qualification/replay, run parallel candidate-only model investigators on eligible bundles",
     )
     parser.add_argument(
         "--bug-source-root",
@@ -3009,7 +3200,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             response_mode=args.response_mode,
             temperature=args.temperature,
             max_tokens=authoring_max_tokens,
-            thinking_mode=args.thinking_mode,
+            thinking_mode=args.thinking_mode or config.profile.default_thinking_mode,
+            stream=config.profile.default_stream,
             seed=args.seed,
         )
         candidate_count = args.candidate_count or 3

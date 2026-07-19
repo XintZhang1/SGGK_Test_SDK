@@ -34,12 +34,14 @@
         "archetype",
         "function_name",
         "sdk_header",
-        "sdk_modules",
-        "clone_field"
+        "sdk_modules"
       ],
       "properties": {
         "archetype": {
-          "const": "body_list_to_body"
+          "enum": [
+            "body_list_to_body",
+            "unary_body_to_bodies"
+          ]
         },
         "function_name": {
           "type": "string",
@@ -62,8 +64,90 @@
         "clone_field": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]{1,63}$"
+        },
+        "scalar_params": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "cpp_type",
+              "recipe_field",
+              "default"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+              },
+              "cpp_type": {
+                "enum": [
+                  "double",
+                  "float",
+                  "int",
+                  "bool",
+                  "std::string"
+                ]
+              },
+              "recipe_field": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{1,63}$"
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "number",
+                  "integer",
+                  "boolean"
+                ]
+              }
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "archetype": {
+                "const": "body_list_to_body"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "clone_field"
+            ],
+            "not": {
+              "required": [
+                "scalar_params"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "archetype": {
+                "const": "unary_body_to_bodies"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "scalar_params"
+            ],
+            "not": {
+              "required": [
+                "clone_field"
+              ]
+            }
+          }
+        }
+      ]
     },
     "recipe_schema": {
       "type": "object"

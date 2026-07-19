@@ -4,28 +4,32 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
+import statistics
 import subprocess
 import time
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
+from score_case_complexity import DIMENSIONS, MIN_FLAT_SCORE, evaluate_flat_recipe_candidate
 from validate_recipe import validate_recipe
-
 
 TOPO_TOL = 1e-2
 GEOM_TOL = 1e-5
 MAX_MODEL_SIZE = 5e5
 SUPPORTED_EXTENSIONS = {".sgt"}
+PROBE_CACHE_SCHEMA_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", action="append", default=[], help="SGT file or directory. Can be passed more than once.")
+    parser.add_argument(
+        "--dataset", action="append", default=[], help="SGT file or directory. Can be passed more than once."
+    )
     parser.add_argument(
         "--dataset-list",
         action="append",
@@ -57,12 +61,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-exact-bbox-probe",
         action="store_true",
-        help="Skip sources whose coordinate-plane distance probe fails instead of falling back to serialized estimates.",
+        help=(
+            "Skip sources whose coordinate-plane distance probe fails instead of falling back to serialized estimates."
+        ),
     )
     parser.add_argument("--probe-out", default="", help="Directory for temporary exact-bbox probe artifacts")
-    parser.add_argument("--probe-timeout", type=float, default=60.0, help="Seconds allowed for each exact-bbox probe run")
+    parser.add_argument(
+        "--probe-timeout", type=float, default=60.0, help="Seconds allowed for each exact-bbox probe run"
+    )
+    parser.add_argument(
+        "--probe-cache",
+        default="",
+        help="Persistent exact-bbox probe cache JSON; defaults to <probe-out>/exact_bbox_cache.json",
+    )
+    parser.add_argument(
+        "--no-probe-cache",
+        action="store_true",
+        help="Disable the persistent exact-bbox probe cache and probe every source",
+    )
+    parser.add_argument(
+        "--min-complexity-score",
+        type=int,
+        default=0,
+        help="Fail with a nonzero exit when any generated recipe scores below this floor; 0 only reports complexity",
+    )
     parser.add_argument("--no-validate", action="store_true", help="Skip recipe validation before writing")
-    parser.add_argument("--manifest", default="", help="Optional manifest path; defaults to a sibling <out>_manifest.json")
+    parser.add_argument(
+        "--manifest", default="", help="Optional manifest path; defaults to a sibling <out>_manifest.json"
+    )
     return parser.parse_args()
 
 
@@ -140,7 +166,9 @@ def collect_dataset_paths(args: argparse.Namespace) -> list[str]:
 def numeric_point(value: Any) -> list[float] | None:
     if not isinstance(value, list) or len(value) != 3:
         return None
-    if not all(isinstance(coord, (int, float)) and not isinstance(coord, bool) and math.isfinite(coord) for coord in value):
+    if not all(
+        isinstance(coord, int | float) and not isinstance(coord, bool) and math.isfinite(coord) for coord in value
+    ):
         return None
     return [float(coord) for coord in value]
 
@@ -278,7 +306,7 @@ def bbox_from_plane_extreme_records(records: Any) -> dict[str, Any]:
         actual = record.get("actual_extreme")
         if axis not in {"x", "y", "z"} or side not in {"min", "max"}:
             continue
-        if not isinstance(actual, (int, float)) or isinstance(actual, bool) or not math.isfinite(actual):
+        if not isinstance(actual, int | float) or isinstance(actual, bool) or not math.isfinite(actual):
             continue
         probe = record.get("probe")
         if not isinstance(probe, dict) or probe.get("success") is not True:
@@ -287,15 +315,32 @@ def bbox_from_plane_extreme_records(records: Any) -> dict[str, Any]:
 
     missing = [f"{axis}_{side}" for axis in ("x", "y", "z") for side in ("min", "max") if (axis, side) not in values]
     if missing:
-        return {"ok": False, "source": "plane_distance_extrema", "error": "missing exact extrema: " + ", ".join(missing)}
+        return {
+            "ok": False,
+            "source": "plane_distance_extrema",
+            "error": "missing exact extrema: " + ", ".join(missing),
+        }
 
     mins = [values[(axis, "min")] for axis in ("x", "y", "z")]
     maxs = [values[(axis, "max")] for axis in ("x", "y", "z")]
     if any(abs(coord) > MAX_MODEL_SIZE for point in (mins, maxs) for coord in point):
-        return {"ok": False, "source": "plane_distance_extrema", "error": "exact bbox exceeds max model size", "min": mins, "max": maxs}
+        return {
+            "ok": False,
+            "source": "plane_distance_extrema",
+            "error": "exact bbox exceeds max model size",
+            "min": mins,
+            "max": maxs,
+        }
     dims = [maxs[axis] - mins[axis] for axis in range(3)]
     if any(dim < -TOPO_TOL for dim in dims):
-        return {"ok": False, "source": "plane_distance_extrema", "error": "exact bbox min exceeds max", "min": mins, "max": maxs, "dims": dims}
+        return {
+            "ok": False,
+            "source": "plane_distance_extrema",
+            "error": "exact bbox min exceeds max",
+            "min": mins,
+            "max": maxs,
+            "dims": dims,
+        }
     dims = [max(0.0, dim) for dim in dims]
     center = [(mins[axis] + maxs[axis]) * 0.5 for axis in range(3)]
     return {
@@ -308,6 +353,98 @@ def bbox_from_plane_extreme_records(records: Any) -> dict[str, Any]:
     }
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as in_file:
+        for chunk in iter(lambda: in_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_probe_cache(path: Path) -> dict[str, Any]:
+    """Read the persistent probe cache; unreadable or stale files degrade to empty."""
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {"schema_version": PROBE_CACHE_SCHEMA_VERSION, "entries": {}}
+    if not isinstance(data, dict) or data.get("schema_version") != PROBE_CACHE_SCHEMA_VERSION:
+        return {"schema_version": PROBE_CACHE_SCHEMA_VERSION, "entries": {}}
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+    return {"schema_version": PROBE_CACHE_SCHEMA_VERSION, "entries": entries}
+
+
+def write_probe_cache(path: Path, cache: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def validated_cached_bbox(entry: Any) -> dict[str, Any] | None:
+    """Return a trusted cached bbox, or None; corrupt entries are ignored, never fatal."""
+
+    if not isinstance(entry, dict):
+        return None
+    bbox = entry.get("bbox")
+    if not isinstance(bbox, dict) or bbox.get("ok") is not True:
+        return None
+    source = bbox.get("source")
+    if not isinstance(source, str) or not source:
+        return None
+    result: dict[str, Any] = {"ok": True, "source": source}
+    for key in ("min", "max", "dims", "center"):
+        point = numeric_point(bbox.get(key))
+        if point is None:
+            return None
+        result[key] = point
+    return result
+
+
+class ExactBboxProbeCache:
+    """Content-keyed exact-bbox cache that skips runner processes on hits.
+
+    Entries are keyed by ``sha256(sgt bytes):sha256(runner bytes)`` so editing
+    either input invalidates the probe. Only successful probes are stored.
+    """
+
+    def __init__(self, path: Path, runner: Path) -> None:
+        self.path = path
+        self.runner_sha256 = file_sha256(runner)
+        self.state = load_probe_cache(path)
+        self.hits = 0
+
+    def key(self, source: Path) -> str:
+        return f"{file_sha256(source)}:{self.runner_sha256}"
+
+    def lookup(self, source: Path) -> dict[str, Any] | None:
+        entry = self.state["entries"].get(self.key(source))
+        bbox = validated_cached_bbox(entry)
+        if bbox is None:
+            return None
+        self.hits += 1
+        bbox["cache_hit"] = True
+        artifact_dir = str(entry.get("probe_artifact_dir") or "")
+        if artifact_dir and Path(artifact_dir).is_dir():
+            bbox["probe_artifact_dir"] = artifact_dir
+            case_id = str(entry.get("probe_case_id") or "")
+            if case_id:
+                bbox["probe_case_id"] = case_id
+        return bbox
+
+    def store(self, source: Path, *, probe_case_id: str, probe_artifact_dir: str, bbox: dict[str, Any]) -> None:
+        self.state["entries"][self.key(source)] = {
+            "source_file": str(source),
+            "probe_case_id": probe_case_id,
+            "probe_artifact_dir": probe_artifact_dir,
+            "cached_at": now_iso_like(),
+            "bbox": {key: bbox[key] for key in ("ok", "source", "min", "max", "dims", "center") if key in bbox},
+        }
+        write_probe_cache(self.path, self.state)
+
+
 def probe_exact_sgt_bbox(
     *,
     runner: Path,
@@ -315,7 +452,12 @@ def probe_exact_sgt_bbox(
     estimated_bbox: dict[str, Any],
     probe_root: Path,
     timeout: float,
+    cache: ExactBboxProbeCache | None = None,
 ) -> dict[str, Any]:
+    if cache is not None:
+        cached_bbox = cache.lookup(source)
+        if cached_bbox is not None:
+            return cached_bbox
     recipe = exact_bbox_probe_recipe(source, estimated_bbox)
     recipe_path = probe_root / "recipes" / f"{recipe['case_id']}.json"
     write_json(recipe_path, recipe)
@@ -358,6 +500,13 @@ def probe_exact_sgt_bbox(
     if not bbox.get("ok"):
         bbox["stdout"] = completed.stdout[-2000:]
         bbox["stderr"] = completed.stderr[-2000:]
+    elif cache is not None:
+        cache.store(
+            source,
+            probe_case_id=recipe["case_id"],
+            probe_artifact_dir=str(artifact_dir.resolve()),
+            bbox=bbox,
+        )
     return bbox
 
 
@@ -441,7 +590,9 @@ def sweep_tool(radius: float, height: float, x: float, y: float, z: float, label
     }
 
 
-def extrude_slab_tool(length: float, width: float, height: float, x: float, y: float, z: float, label: str) -> dict[str, Any]:
+def extrude_slab_tool(
+    length: float, width: float, height: float, x: float, y: float, z: float, label: str
+) -> dict[str, Any]:
     return {
         "tool_kind": "extrude_rect",
         "tool_length": length,
@@ -600,7 +751,9 @@ def make_cases_for_source(args: argparse.Namespace, path: Path, bbox: dict[str, 
                     )
                 if tool is None:
                     continue
-                case_hash = stable_hash({"source": str(path), "family": family, "boolean": boolean_type, "variant": suffix})
+                case_hash = stable_hash(
+                    {"source": str(path), "family": family, "boolean": boolean_type, "variant": suffix}
+                )
                 case_id = sanitize_id(f"{args.case_prefix}_{label}_{family}_{boolean_type}_{suffix}_{case_hash}")
                 cases.append(
                     case_recipe(
@@ -635,6 +788,67 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--body-index must be >= 0")
     if args.probe_timeout <= 0.0:
         raise ValueError("--probe-timeout must be > 0")
+    if args.probe_cache and args.no_probe_cache:
+        raise ValueError("--probe-cache cannot be combined with --no-probe-cache")
+    if args.min_complexity_score < 0:
+        raise ValueError("--min-complexity-score must be >= 0")
+
+
+def score_recipe_complexity(
+    recipes: list[dict[str, Any]],
+    out_dir: Path,
+    min_complexity_score: int,
+) -> dict[str, Any]:
+    """Score every generated recipe with the model-candidate complexity machinery.
+
+    Host-generated corpus lanes never pass through the fixed gate, so the same
+    scorer that floors model candidates is applied here as evidence plus an
+    optional hard gate. Recipes are never dropped; low scores are reported.
+    """
+
+    entries: list[dict[str, Any]] = []
+    histogram: Counter[str] = Counter()
+    for recipe in recipes:
+        recipe_path = out_dir / f"{recipe['case_id']}.json"
+        evaluation = evaluate_flat_recipe_candidate(recipe, str(recipe_path))
+        scored = evaluation["case_scores"][0]
+        for dimension, value in scored["dimensions"].items():
+            if value:
+                histogram[dimension] += 1
+        entries.append(
+            {
+                "case_id": scored["case_id"],
+                "path": str(recipe_path.resolve()),
+                "score": scored["score"],
+                "meets_model_flat_floor": scored["score"] >= MIN_FLAT_SCORE,
+                "dimensions": scored["dimensions"],
+                "dimensions_covered": evaluation["dimensions_covered"],
+                "oracle_families": scored["oracle_families"],
+            }
+        )
+    scores = [entry["score"] for entry in entries]
+    return {
+        "schema_version": 1,
+        "generated_at": now_iso_like(),
+        "tool": "generate_corpus_recut_matrix.py",
+        "scorer": "score_case_complexity.evaluate_flat_recipe_candidate",
+        "model_flat_floor": MIN_FLAT_SCORE,
+        "min_complexity_score": min_complexity_score,
+        "recipe_count": len(entries),
+        "aggregate": {
+            "min_score": min(scores) if scores else 0,
+            "median_score": statistics.median(scores) if scores else 0.0,
+            "floor_fraction": (
+                round(sum(1 for score in scores if score >= MIN_FLAT_SCORE) / len(scores), 4) if scores else 0.0
+            ),
+            "below_model_floor_count": sum(1 for score in scores if score < MIN_FLAT_SCORE),
+            "below_min_score_count": (
+                sum(1 for score in scores if score < min_complexity_score) if min_complexity_score else 0
+            ),
+        },
+        "dimension_histogram": {dimension: int(histogram.get(dimension, 0)) for dimension in DIMENSIONS},
+        "recipes": entries,
+    }
 
 
 def write_report(path: Path, manifest: dict[str, Any]) -> None:
@@ -652,6 +866,13 @@ def write_report(path: Path, manifest: dict[str, Any]) -> None:
         if isinstance(bbox_sources, dict) and bbox_sources:
             source_text = ", ".join(f"{key}={value}" for key, value in sorted(bbox_sources.items()))
             lines.append(f"- Bbox sources: `{source_text}`")
+    complexity = manifest.get("complexity", {})
+    aggregate = complexity.get("aggregate") if isinstance(complexity, dict) else {}
+    if isinstance(aggregate, dict) and aggregate:
+        lines.append(
+            f"- Complexity: min `{aggregate.get('min_score')}` median `{aggregate.get('median_score')}` "
+            f"at/above model floor fraction `{aggregate.get('floor_fraction')}`"
+        )
     lines.append("")
     lines.append("## Families")
     lines.append("")
@@ -693,6 +914,10 @@ def main() -> int:
         print("--require-exact-bbox-probe needs --runner or build/test_harness/Release/sggk_case_runner.exe")
         return 1
     probe_root = Path(args.probe_out) if args.probe_out else out_dir.with_name(out_dir.name + "_exact_bbox_probes")
+    probe_cache: ExactBboxProbeCache | None = None
+    if probe_runner is not None and not args.no_probe_cache:
+        cache_path = Path(args.probe_cache) if args.probe_cache else probe_root / "exact_bbox_cache.json"
+        probe_cache = ExactBboxProbeCache(cache_path, probe_runner)
 
     recipes: list[dict[str, Any]] = []
     source_records: list[dict[str, Any]] = []
@@ -706,7 +931,13 @@ def main() -> int:
             skipped_sources.append({"path": str(source), "reason": f"read_error: {exc}"})
             continue
         if not estimated_bbox.get("ok"):
-            skipped_sources.append({"path": str(source), "reason": str(estimated_bbox.get("error", "bbox unavailable")), "bbox": estimated_bbox})
+            skipped_sources.append(
+                {
+                    "path": str(source),
+                    "reason": str(estimated_bbox.get("error", "bbox unavailable")),
+                    "bbox": estimated_bbox,
+                }
+            )
             continue
 
         bbox = estimated_bbox
@@ -719,6 +950,7 @@ def main() -> int:
                     estimated_bbox=estimated_bbox,
                     probe_root=probe_root,
                     timeout=args.probe_timeout,
+                    cache=probe_cache,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 probe_bbox = {"ok": False, "source": "plane_distance_extrema", "error": f"probe_error: {exc}"}
@@ -765,7 +997,13 @@ def main() -> int:
     for recipe in recipes:
         write_json(out_dir / f"{recipe['case_id']}.json", recipe)
 
-    by_family = Counter(str(recipe.get("variant", "")).split("_subtraction_")[0].split("_intersection_")[0].split("_union_")[0] for recipe in recipes)
+    complexity_report_path = out_dir.with_name(out_dir.name + "_complexity_report.json")
+    complexity_report = score_recipe_complexity(recipes, out_dir, args.min_complexity_score)
+
+    by_family = Counter(
+        str(recipe.get("variant", "")).split("_subtraction_")[0].split("_intersection_")[0].split("_union_")[0]
+        for recipe in recipes
+    )
     manifest = {
         "generated_at": now_iso_like(),
         "tool": "generate_corpus_recut_matrix.py",
@@ -782,6 +1020,8 @@ def main() -> int:
             "timeout_seconds": args.probe_timeout,
             "failure_count": len(probe_failures),
             "bbox_sources": dict(sorted(bbox_sources.items())),
+            "cache_path": str(probe_cache.path) if probe_cache is not None else "",
+            "cache_hits": probe_cache.hits if probe_cache is not None else 0,
         },
         "dataset": args.dataset,
         "dataset_list": args.dataset_list,
@@ -796,15 +1036,31 @@ def main() -> int:
         "skipped_sources": skipped_sources,
         "probe_failures": probe_failures,
         "recipes": [str((out_dir / f"{recipe['case_id']}.json").resolve()) for recipe in recipes],
+        "complexity": {
+            "report": str(complexity_report_path),
+            "min_complexity_score": args.min_complexity_score,
+            "aggregate": complexity_report["aggregate"],
+        },
     }
     write_json(manifest_path, manifest)
     write_report(report_path, manifest)
+    write_json(complexity_report_path, complexity_report)
     print(f"recipes={out_dir}")
     print(f"manifest={manifest_path}")
     print(f"report={report_path}")
+    print(f"complexity_report={complexity_report_path}")
     print(f"sources={manifest['used_source_count']} skipped={len(skipped_sources)} recipes={len(recipes)}")
     if probe_runner is not None:
         print(f"exact_bbox_probe={probe_runner} failures={len(probe_failures)}")
+    if args.min_complexity_score > 0:
+        below = [entry for entry in complexity_report["recipes"] if entry["score"] < args.min_complexity_score]
+        if below:
+            preview = ", ".join(f"{entry['case_id']}={entry['score']}" for entry in below[:10])
+            print(
+                f"complexity gate failed: {len(below)} recipe(s) score below --min-complexity-score "
+                f"{args.min_complexity_score}: {preview}"
+            )
+            return 2
     return 0
 
 

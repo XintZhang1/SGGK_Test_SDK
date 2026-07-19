@@ -2,7 +2,8 @@
   "dsl_version": 1,
   "constants": {
     "topo_tol": 0.01,
-    "geom_tol": 0.00001
+    "geom_tol": 0.00001,
+    "max_model_size": 500000.0
   },
   "defaults": {
     "api": "api_boolean",
@@ -65,6 +66,83 @@
           }
         }
       ]
+    },
+    {
+      "case_id": "example_generated_sweep_cuts_extrude",
+      "hypothesis": "A generated swept cylinder cuts a generated extrusion cap through exact and tolerance-band placements, exercising generated topology on both roles.",
+      "target": {
+        "chain": [
+          {"id": "target_profile", "op": "rect_profile", "length": 260.0, "width": 180.0},
+          {"id": "target_extrude", "op": "extrude", "height": 220.0, "operation_tol": "topo_tol"},
+          {"id": "target_place", "op": "transform", "translate": [0.0, 0.0, 0.0]}
+        ]
+      },
+      "tool": {
+        "chain": [
+          {"id": "tool_profile", "op": "circle_profile", "radius": 40.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_sweep", "op": "sweep_line", "height": 260.0, "operation_tol": "topo_tol", "g1_tol": 0.1},
+          {"id": "tool_place", "op": "transform", "translate_x": 170.0, "translate_y": 0.0, "translate_z": -20.0}
+        ]
+      },
+      "paired_sweeps": [
+        {
+          "paths": ["options.boolean_type", "tool.chain.2.translate_x", "expectations.result_bodies.min"],
+          "values": [
+            {"suffix": "sub_overlap_topo", "values": ["SUBTRACTION", "170.0 - topo_tol", 1]},
+            {"suffix": "sub_exact", "values": ["SUBTRACTION", 170.0, 1]},
+            {"suffix": "int_gap_geom", "values": ["INTERSECTION", "170.0 + geom_tol", 0]}
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "example_large_coordinate_contact",
+      "hypothesis": "The same side-contact predicate is exercised near the SDK upper-coordinate operating range without exceeding max_model_size.",
+      "target": {
+        "kind": "solid_sphere",
+        "radius": 90.0,
+        "translate_x": 399800.0
+      },
+      "tool": {
+        "kind": "solid_cone",
+        "bottom_radius": 70.0,
+        "top_radius": 20.0,
+        "height": 240.0,
+        "angle": "tau",
+        "translate_x": "399800.0 + 100.0 - geom_tol",
+        "translate_z": -30.0
+      },
+      "expectations": {
+        "result_bodies": {"min": 1},
+        "require_property_calculations": true,
+        "require_finite_properties": true,
+        "require_nonnegative_volume": true
+      }
+    },
+    {
+      "case_id": "example_disjoint_intersection_empty",
+      "hypothesis": "A disjoint INTERSECTION must return an empty result rather than a spurious body, and the empty output is the oracle.",
+      "target": {
+        "kind": "solid_torus",
+        "long_radius": 120.0,
+        "short_radius": 30.0,
+        "angle": "tau"
+      },
+      "tool": {
+        "kind": "solid_sphere",
+        "radius": 40.0,
+        "translate_x": 400.0,
+        "translate_y": 400.0
+      },
+      "options": {
+        "boolean_type": "INTERSECTION"
+      },
+      "expectations": {
+        "result_bodies": {"min": 0, "max": 0},
+        "boolean_volume_relation": false,
+        "require_property_calculations": true,
+        "require_finite_properties": true
+      }
     }
   ]
 }

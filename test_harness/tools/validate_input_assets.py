@@ -506,7 +506,7 @@ def asset_source_path_findings(form_id: str, form_path: Path, asset: dict[str, A
             finding(
                 "blocker",
                 "ASSET_INPUT_SOURCE_PATH_OUTSIDE_REPO",
-                f"Exposed source_file candidates must be repo-local before they are shown to Qwen. path={raw_path}; examples={external}",
+                f"Exposed source_file candidates must be repo-local before they are shown to the model. path={raw_path}; examples={external}",
                 form_id=form_id,
                 path=form_path,
                 field=field,
@@ -649,7 +649,7 @@ def action_for_source_path_issue(record: dict[str, Any], asset: dict[str, Any], 
         "next_actions": [
             "Materialize or rewrite exposed source_file candidates to repo-relative paths under artifacts/ before building prompts.",
             "Keep external absolute corpus paths only in provenance fields such as materialized_from.",
-            "Rerun validate_input_assets.py and rebuild the prompt pack before handing tasks to Qwen.",
+            "Rerun validate_input_assets.py and rebuild the prompt pack before handing tasks to the model.",
         ],
         "boundary": fixed_boundary(),
     }

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sggk.local/schemas/external_chain_verification.schema.json",
+  "title": "SGGK external Harness chain verification",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "generated_at",
+    "ok",
+    "status",
+    "error_count",
+    "warning_count",
+    "inputs",
+    "lanes"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "sggk_external_chain_verification" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "ok": { "type": "boolean" },
+    "status": { "enum": ["passed", "failed"] },
+    "error_count": { "type": "integer", "minimum": 0 },
+    "warning_count": { "type": "integer", "minimum": 0 },
+    "inputs": {
+      "type": "object",
+      "required": [
+        "model_session",
+        "abc_corpus",
+        "nx_bundle",
+        "known_bug_campaign"
+      ],
+      "properties": {
+        "model_session": { "type": "string", "minLength": 1 },
+        "abc_corpus": { "type": "string", "minLength": 1 },
+        "nx_bundle": { "type": "string", "minLength": 1 },
+        "known_bug_campaign": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "lanes": {
+      "type": "object",
+      "required": ["model_harness", "abc_sggk", "nx_comparison", "known_bug"],
+      "properties": {
+        "model_harness": { "$ref": "#/$defs/lane" },
+        "abc_sggk": { "$ref": "#/$defs/lane" },
+        "nx_comparison": { "$ref": "#/$defs/lane" },
+        "known_bug": { "$ref": "#/$defs/lane" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "issue": {
+      "type": "object",
+      "required": ["code", "message", "path"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "message": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["code", "message", "value", "path", "sha256"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "message": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" },
+        "path": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^(|[0-9a-f]{64})$" }
+      },
+      "additionalProperties": false
+    },
+    "lane": {
+      "type": "object",
+      "required": [
+        "ok",
+        "status",
+        "error_count",
+        "warning_count",
+        "errors",
+        "warnings",
+        "evidence"
+      ],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "status": { "enum": ["passed", "failed"] },
+        "error_count": { "type": "integer", "minimum": 0 },
+        "warning_count": { "type": "integer", "minimum": 0 },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -7,16 +7,19 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from test_harness.msvc import detect_msvc_toolchain, find_cmake  # noqa: E402
 
 
 def _write(path: Path, value: Any) -> None:
@@ -49,8 +52,7 @@ def _run(
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
             check=False,
             shell=False,
@@ -148,6 +150,27 @@ def _sdk_identity(sdk_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _workspace_validate_argv(workspace: Path, recipe: Path) -> list[str]:
+    """Build the fixed recipe-validation command bound to the isolated workspace.
+
+    The offline embeddable runtime resolves imports from its own ``._pth``
+    entries (the checked-in repository), never from the validated script's
+    directory.  Without an explicit bootstrap the workspace copy of
+    ``validate_recipe.py`` would discover the checked-in plugin catalog
+    instead of the isolated one, so every not-yet-registered plugin API would
+    be rejected as unknown.  The command stays fixed and ``shell=False``; only
+    host-derived absolute paths enter the bootstrap.
+    """
+
+    tools_dir = workspace / "test_harness" / "tools"
+    bootstrap = (
+        f"import sys; sys.path.insert(0, {str(tools_dir)!r}); "
+        f"sys.argv = ['validate_recipe.py', {str(recipe)!r}, '--model-asset-policy']; "
+        "from validate_recipe import main; raise SystemExit(main())"
+    )
+    return [sys.executable, "-c", bootstrap]
+
+
 def build_candidate(
     *,
     plugin: Path,
@@ -178,6 +201,16 @@ def build_candidate(
     sdk_identity = _sdk_identity(sdk_dir, manifest)
     runner_sha256 = ""
     runtime_registry_sha256 = ""
+    cmake = find_cmake(REPO_ROOT)
+    if cmake is None:
+        raise ValueError("no complete CMake installation found")
+    toolchain = detect_msvc_toolchain(cmake)
+    if not toolchain.get("ok") or not toolchain.get("generator"):
+        raise ValueError(
+            "no CMake-compatible MSVC C++ toolchain found: "
+            + str(toolchain.get("detail") or "install VS 2022 or VS 2026 C++ workload")
+        )
+    cmake_generator = str(toolchain["generator"])
     with tempfile.TemporaryDirectory(prefix="sggk_plugin_build_") as temporary:
         workspace = Path(temporary) / "workspace"
         shutil.copytree(
@@ -210,13 +243,13 @@ def build_candidate(
         configure = _run(
             "cmake_configure",
             [
-                "cmake",
+                str(cmake),
                 "-S",
                 str(workspace / "test_harness"),
                 "-B",
                 str(build_root),
                 "-G",
-                "Visual Studio 18 2026",
+                cmake_generator,
                 "-A",
                 "x64",
                 f"-DSGGK_SDK_DIR={sdk_dir}",
@@ -230,7 +263,7 @@ def build_candidate(
                 _run(
                     "cmake_build",
                     [
-                        "cmake",
+                        str(cmake),
                         "--build",
                         str(build_root),
                         "--config",
@@ -248,24 +281,14 @@ def build_candidate(
             commands.append(
                 _run(
                     "validate_positive_recipe",
-                    [
-                        sys.executable,
-                        str(workspace / "test_harness/tools/validate_recipe.py"),
-                        str(smoke),
-                        "--model-asset-policy",
-                    ],
+                    _workspace_validate_argv(workspace, smoke),
                     cwd=workspace,
                     timeout=timeout,
                 )
             )
             negative_result = _run(
                 "validate_negative_recipe",
-                [
-                    sys.executable,
-                    str(workspace / "test_harness/tools/validate_recipe.py"),
-                    str(negative),
-                    "--model-asset-policy",
-                ],
+                _workspace_validate_argv(workspace, negative),
                 cwd=workspace,
                 timeout=timeout,
             )
@@ -340,6 +363,7 @@ def build_candidate(
         "sdk_identity": sdk_identity,
         "runner_sha256": runner_sha256,
         "runtime_registry_sha256": runtime_registry_sha256,
+        "cmake_generator": cmake_generator,
         "smoke_replays": smoke_replays,
         "stable_semantic_evidence": stable,
         "semantic_hashes": semantic_hashes,

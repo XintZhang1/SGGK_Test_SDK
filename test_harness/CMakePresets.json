@@ -14,8 +14,18 @@
     },
     {
       "name": "windows-local",
-      "displayName": "Windows local SGGK SDK",
+      "displayName": "Windows local SGGK SDK (VS 2022)",
       "inherits": "windows-base"
+    },
+    {
+      "name": "windows-vs2026",
+      "displayName": "Windows local SGGK SDK (VS 2026)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/../build/test_harness-vs2026",
+      "cacheVariables": {
+        "SGGK_SDK_DIR": "$env{SGGK_SDK_DIR}"
+      }
     }
   ],
   "buildPresets": [
@@ -27,6 +37,16 @@
     {
       "name": "windows-debug",
       "configurePreset": "windows-local",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-vs2026-release",
+      "configurePreset": "windows-vs2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-vs2026-debug",
+      "configurePreset": "windows-vs2026",
       "configuration": "Debug"
     }
   ]

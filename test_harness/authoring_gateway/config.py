@@ -15,6 +15,13 @@ class ConfigError(ValueError):
     """Raised when a provider profile is incomplete or unsafe."""
 
 
+DEFAULT_PROFILE = "siliconflow"
+SILICONFLOW_DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+SILICONFLOW_DEFAULT_MODEL = "zai-org/GLM-5.2"
+SILICONFLOW_VISION_DEFAULT_MODEL = "Qwen/Qwen3-VL-32B-Instruct"
+DEFAULT_STREAM_BYTES_LIMIT = 256 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class ProfileSpec:
     """Names of environment variables used by one explicit provider profile."""
@@ -27,6 +34,13 @@ class ProfileSpec:
     ca_bundle_env: str
     api_key_required: bool
     provenance_source_type: str
+    default_base_url: str = ""
+    default_model: str = ""
+    require_https: bool = False
+    base_url_locked: bool = False
+    model_locked: bool = False
+    default_thinking_mode: str = "omit"
+    default_stream: bool = False
 
 
 PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
@@ -40,6 +54,51 @@ PROFILE_SPECS: Mapping[str, ProfileSpec] = MappingProxyType(
             ca_bundle_env="SGGK_QWEN_CA_BUNDLE",
             api_key_required=False,
             provenance_source_type="intranet_message_api",
+        ),
+        "siliconflow": ProfileSpec(
+            name="siliconflow",
+            category="external",
+            base_url_env="SILICONFLOW_BASE_URL",
+            api_key_env="SILICONFLOW_API_KEY",
+            model_env="SILICONFLOW_MODEL",
+            ca_bundle_env="SILICONFLOW_CA_BUNDLE",
+            api_key_required=True,
+            provenance_source_type="siliconflow_message_api",
+            default_base_url=SILICONFLOW_DEFAULT_BASE_URL,
+            default_model=SILICONFLOW_DEFAULT_MODEL,
+            require_https=True,
+            base_url_locked=True,
+            model_locked=True,
+            # The complete External authoring prompt was verified against the
+            # real endpoint: streaming without thinking returned a strict
+            # candidate in ~40s, while thinking mode did not finish in 20m.
+            # Keep thinking available as an explicit opt-in, not the default.
+            default_thinking_mode="disabled",
+            default_stream=True,
+        ),
+        # Advisory vision review of host-rendered geometry previews. This
+        # profile is never used for authoring: its candidates carry no
+        # execution authority and the authoring `siliconflow` lock above is
+        # independent of it. Shares the SiliconFlow API key; base URL and
+        # model stay locked with their own env-var names so the authoring
+        # profile's env overrides cannot leak into vision calls.
+        "siliconflow_vision": ProfileSpec(
+            name="siliconflow_vision",
+            category="external",
+            base_url_env="SILICONFLOW_VISION_BASE_URL",
+            api_key_env="SILICONFLOW_API_KEY",
+            model_env="SILICONFLOW_VISION_MODEL",
+            ca_bundle_env="SILICONFLOW_VISION_CA_BUNDLE",
+            api_key_required=True,
+            provenance_source_type="siliconflow_vision_message_api",
+            default_base_url=SILICONFLOW_DEFAULT_BASE_URL,
+            default_model=SILICONFLOW_VISION_DEFAULT_MODEL,
+            require_https=True,
+            base_url_locked=True,
+            model_locked=True,
+            # Qwen2.5-VL has no enable_thinking switch; leave the field unsent.
+            default_thinking_mode="omit",
+            default_stream=True,
         ),
     }
 )
@@ -95,6 +154,7 @@ class GatewayConfig:
     backoff_base_seconds: float = 1.0
     max_retry_delay_seconds: float = 30.0
     response_bytes_limit: int = 16 * 1024 * 1024
+    stream_bytes_limit: int = DEFAULT_STREAM_BYTES_LIMIT
 
     @property
     def endpoint_url(self) -> str:
@@ -117,6 +177,10 @@ class GatewayConfig:
             "api_key_present": bool(self.api_key),
             "model": self.model,
             "model_env": self.profile.model_env,
+            "base_url_locked": self.profile.base_url_locked,
+            "model_locked": self.profile.model_locked,
+            "default_thinking_mode": self.profile.default_thinking_mode,
+            "default_stream": self.profile.default_stream,
             "ca_bundle_env": self.profile.ca_bundle_env,
             "ca_bundle_configured": bool(self.ca_bundle),
             "request_timeout_seconds": self.request_timeout_seconds,
@@ -124,11 +188,12 @@ class GatewayConfig:
             "backoff_base_seconds": self.backoff_base_seconds,
             "max_retry_delay_seconds": self.max_retry_delay_seconds,
             "response_bytes_limit": self.response_bytes_limit,
+            "stream_bytes_limit": self.stream_bytes_limit,
         }
 
 
 def load_gateway_config(
-    profile_name: str,
+    profile_name: str = DEFAULT_PROFILE,
     *,
     environ: Mapping[str, str] | None = None,
     request_timeout_seconds: float | None = None,
@@ -136,11 +201,14 @@ def load_gateway_config(
     backoff_base_seconds: float | None = None,
     max_retry_delay_seconds: float | None = None,
     response_bytes_limit: int | None = None,
+    stream_bytes_limit: int | None = None,
 ) -> GatewayConfig:
-    """Resolve a named profile exclusively from environment variables.
+    """Resolve a named profile from safe defaults plus environment overrides.
 
-    The intranet profile has no compiled-in endpoint or model name. Missing
-    configuration fails closed.
+    The production SiliconFlow profile pins the public endpoint and GLM-5.2
+    model as non-secret defaults. Credentials always come from the environment
+    (or an equivalent in-memory mapping supplied by the UI). The legacy
+    intranet profile remains fully explicit and fails closed when incomplete.
     """
 
     env = os.environ if environ is None else environ
@@ -149,14 +217,23 @@ def load_gateway_config(
     except KeyError as exc:
         raise ConfigError(f"unknown profile {profile_name!r}; choose one of {sorted(PROFILE_SPECS)}") from exc
 
+    configured_base_url = str(env.get(profile.base_url_env, "")).strip()
     base_url = _safe_base_url(
-        str(env.get(profile.base_url_env, "")),
+        configured_base_url or profile.default_base_url,
         profile.base_url_env,
-        require_https=profile.category == "explicit_external_test",
+        require_https=profile.require_https,
     )
-    model = str(env.get(profile.model_env, "")).strip()
+    if profile.base_url_locked and base_url != profile.default_base_url:
+        raise ConfigError(
+            f"{profile.base_url_env} must be {profile.default_base_url!r} for profile {profile.name!r}"
+        )
+    model = str(env.get(profile.model_env, "")).strip() or profile.default_model
     if not model:
         raise ConfigError(f"missing model: set {profile.model_env}")
+    if profile.model_locked and model != profile.default_model:
+        raise ConfigError(
+            f"{profile.model_env} must be {profile.default_model!r} for profile {profile.name!r}"
+        )
     api_key = str(env.get(profile.api_key_env, "")).strip()
     if profile.api_key_required and not api_key:
         raise ConfigError(f"missing API key for {profile.name}: set {profile.api_key_env}")
@@ -168,6 +245,13 @@ def load_gateway_config(
     byte_limit = _optional_nonnegative_int(response_bytes_limit, 16 * 1024 * 1024, "response byte limit")
     if byte_limit == 0:
         raise ConfigError("response byte limit must be positive")
+    stream_limit = _optional_nonnegative_int(
+        stream_bytes_limit,
+        DEFAULT_STREAM_BYTES_LIMIT,
+        "stream byte limit",
+    )
+    if stream_limit == 0:
+        raise ConfigError("stream byte limit must be positive")
     return GatewayConfig(
         profile=profile,
         base_url=base_url,
@@ -185,4 +269,5 @@ def load_gateway_config(
             max_retry_delay_seconds, 30.0, "maximum retry delay"
         ),
         response_bytes_limit=byte_limit,
+        stream_bytes_limit=stream_limit,
     )

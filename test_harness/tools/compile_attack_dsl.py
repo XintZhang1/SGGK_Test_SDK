@@ -125,6 +125,61 @@ PROVENANCE_FIELDS = {
     "source_risk_categories",
     "source_review",
 }
+# Case-level fields the compiler actually consumes. Anything else (for example
+# a case-level "chain" the model invented) must fail closed instead of being
+# silently dropped, which would compile a different test than the reviewed one.
+CASE_KNOWN_FIELDS = frozenset(
+    {
+        "case_id",
+        "id",
+        "target",
+        "tool",
+        "options",
+        "expectations",
+        "key_points",
+        "variants",
+        "sweeps",
+        "paired_sweeps",
+        "metadata",
+        "source_file",
+    }
+    | PROVENANCE_FIELDS
+)
+# Cluster bases are case-shaped but must not carry their own variation nodes:
+# the parameter cluster is the single source of variation so the per-cluster
+# case cap stays accountable.
+CLUSTER_BASE_FORBIDDEN_FIELDS = {"variants", "sweeps", "paired_sweeps", "case_id", "id"}
+# Option keys consumed outside flatten_options itself.
+OPTION_STRUCT_FIELDS = {"expectations", "metadata"}
+
+# Parameter-cluster contract (host-owned; see attack-dsl.md "Parameter Clusters").
+MAX_CLUSTER_CASES = 50
+MAX_CLUSTER_BASES_PER_DEF = 128
+MAX_GRIDS_PER_DEF = 32
+MAX_CLUSTER_DEFS = 4096
+MAX_CLUSTER_BASES = 1024
+MAX_CLUSTER_TOTAL_RECIPES = 2_000_000
+CLUSTER_SAMPLE_INDICES = 4
+CLUSTER_TYPES = frozenset(
+    {
+        "translate_axis",
+        "translate_line",
+        "scale_uniform",
+        "size_dimension",
+        "contact_band",
+        "tolerance_sweep",
+        "angle_sweep",
+        "large_coordinate_shift",
+        "boolean_type_cycle",
+        "option_toggle",
+        "mirror_sign",
+        "seeded_jitter",
+        "uv_domain",
+        "enum_cycle",
+    }
+)
+GRID_KINDS = frozenset({"linspace", "geomspace", "values"})
+CONTACT_BAND_TOLS = frozenset({"geom_tol", "topo_tol"})
 
 
 class DslError(ValueError):
@@ -465,6 +520,479 @@ def case_expansions(case: dict[str, Any]) -> list[Expansion]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Parameter clusters
+#
+# A parameter cluster transforms one base geometry over one varying parameter.
+# Fixed host code expands each (cluster definition, base, grid) triple into at
+# most MAX_CLUSTER_CASES deterministic expansions that lower onto the existing
+# sweep machinery, so a compact input JSON can describe 100k+ runnable cases
+# without the model enumerating them.
+# ---------------------------------------------------------------------------
+
+
+def _cluster_number(value: Any, scope: dict[str, float], field: str) -> float:
+    return resolve_number(value, scope, field)
+
+
+def resolve_cluster_grid(grid: Any, scope: dict[str, float], field: str) -> list[Any]:
+    """Resolve one grid spec into at most MAX_CLUSTER_CASES + 1 raw values.
+
+    The +1 headroom lets the caller report a precise over-cap error instead of
+    silently truncating the fiftieth value.
+    """
+
+    if not isinstance(grid, dict):
+        raise DslError(f"{field}: grid must be an object")
+    kind = grid.get("kind")
+    if kind not in GRID_KINDS:
+        raise DslError(f"{field}: grid.kind must be one of {sorted(GRID_KINDS)}")
+    if kind == "values":
+        values = grid.get("values")
+        if not isinstance(values, list) or not values:
+            raise DslError(f"{field}: values grid requires a non-empty values array")
+        if len(values) > MAX_CLUSTER_CASES + 1:
+            raise DslError(f"{field}: values grid exceeds the {MAX_CLUSTER_CASES}-case cluster cap")
+        return list(values)
+    count = grid.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise DslError(f"{field}: grid.count must be a positive integer")
+    if count > MAX_CLUSTER_CASES + 1:
+        raise DslError(f"{field}: grid.count exceeds the {MAX_CLUSTER_CASES}-case cluster cap")
+    low = _cluster_number(grid.get("min"), scope, f"{field}.min")
+    high = _cluster_number(grid.get("max"), scope, f"{field}.max")
+    if high < low:
+        raise DslError(f"{field}: grid.max must be >= grid.min")
+    if count == 1:
+        return [low]
+    if kind == "linspace":
+        step = (high - low) / (count - 1)
+        return [low + step * index for index in range(count)]
+    if low <= 0:
+        raise DslError(f"{field}: geomspace grid requires min > 0")
+    ratio = (high / low) ** (1.0 / (count - 1))
+    return [low * ratio**index for index in range(count)]
+
+
+def _lcg_jitter_values(seed: int, count: int, low: float, high: float) -> list[float]:
+    """Deterministic linear-congruential jitter; stable across Python versions."""
+
+    modulus = 2**32
+    state = seed % modulus
+    values: list[float] = []
+    for _ in range(count):
+        state = (1664525 * state + 1013904223) % modulus
+        values.append(low + (high - low) * (state / modulus))
+    return values
+
+
+def _cluster_vary(cluster: dict[str, Any], cluster_id: str) -> dict[str, Any]:
+    vary = cluster.get("vary")
+    if not isinstance(vary, dict):
+        raise DslError(f"{cluster_id}: parameter cluster requires a vary object")
+    return vary
+
+
+def _cluster_vary_path(vary: dict[str, Any], cluster_id: str) -> str:
+    path = vary.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise DslError(f"{cluster_id}: vary.path must be a non-empty patch path")
+    return path.strip()
+
+
+def _cluster_grids(cluster: dict[str, Any], cluster_id: str) -> list[dict[str, Any]]:
+    grids = cluster.get("grids")
+    if not isinstance(grids, list) or not grids:
+        raise DslError(f"{cluster_id}: parameter cluster requires a non-empty grids array")
+    if len(grids) > MAX_GRIDS_PER_DEF:
+        raise DslError(f"{cluster_id}: grids exceeds the {MAX_GRIDS_PER_DEF}-grid cluster cap")
+    return grids
+
+
+def _cap_cluster_expansions(expansions: list[Expansion], cluster_tag: str) -> list[Expansion]:
+    if len(expansions) > MAX_CLUSTER_CASES:
+        raise DslError(
+            f"{cluster_tag}: cluster expands to {len(expansions)} cases; "
+            f"the per-cluster cap is {MAX_CLUSTER_CASES} — split it into more cluster definitions"
+        )
+    return expansions
+
+
+def _grid_cluster_expansions(
+    cluster: dict[str, Any],
+    cluster_id: str,
+    scope: dict[str, float],
+) -> list[tuple[str, list[Expansion]]]:
+    """Expand a grid-driven single-path cluster into (tag, expansions) pairs."""
+
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    results: list[tuple[str, list[Expansion]]] = []
+    grids = _cluster_grids(cluster, cluster_id)
+    multi = len(grids) > 1
+    for grid_index, grid in enumerate(grids, start=1):
+        values = resolve_cluster_grid(grid, scope, f"{cluster_id}.grids[{grid_index - 1}]")
+        tag = f"{cluster_id}_g{grid_index}" if multi else cluster_id
+        expansions = [
+            Expansion(suffix=f"i{value_index:02d}", patch={path: value})
+            for value_index, value in enumerate(values, start=1)
+        ]
+        results.append((tag, _cap_cluster_expansions(expansions, tag)))
+    return results
+
+
+def _contact_band_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    center = _cluster_number(vary.get("center"), scope, f"{cluster_id}.vary.center")
+    bands_raw = vary.get("bands", ["exact", "geom_tol", "topo_tol"])
+    if not isinstance(bands_raw, list) or not bands_raw:
+        raise DslError(f"{cluster_id}: contact_band vary.bands must be a non-empty array")
+    bands: list[str] = []
+    for band in bands_raw:
+        if band == "exact" or band in CONTACT_BAND_TOLS:
+            if band not in bands:
+                bands.append(band)
+            continue
+        raise DslError(f"{cluster_id}: contact_band bands entries must be exact, geom_tol, or topo_tol")
+    steps = vary.get("steps_per_band", 4)
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise DslError(f"{cluster_id}: contact_band steps_per_band must be a positive integer")
+    direction = str(vary.get("direction", "both"))
+    if direction not in {"below", "above", "both"}:
+        raise DslError(f"{cluster_id}: contact_band direction must be below, above, or both")
+    expansions: list[Expansion] = []
+    if "exact" in bands:
+        expansions.append(Expansion(suffix="exact", patch={path: center}))
+    for band in bands:
+        if band == "exact":
+            continue
+        tol = _cluster_number(band, scope, f"{cluster_id}.constants.{band}")
+        short = "geom" if band == "geom_tol" else "topo"
+        for step_index in range(1, steps + 1):
+            offset = tol * step_index / steps
+            if direction in {"below", "both"}:
+                expansions.append(
+                    Expansion(suffix=f"{short}_dn{step_index:02d}", patch={path: center - offset})
+                )
+            if direction in {"above", "both"}:
+                expansions.append(
+                    Expansion(suffix=f"{short}_up{step_index:02d}", patch={path: center + offset})
+                )
+    return [(cluster_id, _cap_cluster_expansions(expansions, cluster_id))]
+
+
+def _paired_cycle_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    """boolean_type_cycle / option_toggle / enum_cycle: one categorical parameter."""
+
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    cluster_type = str(cluster.get("type"))
+    if cluster_type == "option_toggle":
+        raw_values: list[Any] = vary.get("values", [False, True])
+        if raw_values != [False, True] and raw_values != [True, False]:
+            raise DslError(f"{cluster_id}: option_toggle values must be [false, true] when supplied")
+    else:
+        raw_values = vary.get("values")
+    if not isinstance(raw_values, list) or not raw_values:
+        raise DslError(f"{cluster_id}: {cluster_type} vary.values must be a non-empty array")
+    expansions: list[Expansion] = []
+    for value_index, raw in enumerate(raw_values, start=1):
+        overrides: dict[str, Any] = {}
+        value = raw
+        if isinstance(raw, dict):
+            if "value" not in raw:
+                raise DslError(f"{cluster_id}: cycle value objects require a value field")
+            value = raw["value"]
+            extra = raw.get("set", {})
+            if not isinstance(extra, dict):
+                raise DslError(f"{cluster_id}: cycle value set must be an object")
+            overrides = dict(extra)
+        if cluster_type == "option_toggle" and not isinstance(value, bool):
+            raise DslError(f"{cluster_id}: option_toggle values must be boolean")
+        suffix = sanitize_id(str(raw.get("suffix")) if isinstance(raw, dict) and raw.get("suffix") else f"{cluster_type}_{value_index:02d}")
+        patch = {path: value}
+        patch.update(overrides)
+        expansions.append(Expansion(suffix=suffix, patch=patch))
+    return [(cluster_id, _cap_cluster_expansions(expansions, cluster_id))]
+
+
+def _translate_line_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    prefix = _cluster_vary_path(vary, cluster_id)
+    direction = vary.get("direction")
+    center = vary.get("center", [0.0, 0.0, 0.0])
+    if not isinstance(direction, list) or len(direction) != 3:
+        raise DslError(f"{cluster_id}: translate_line vary.direction must be a 3-vector")
+    if not isinstance(center, list) or len(center) != 3:
+        raise DslError(f"{cluster_id}: translate_line vary.center must be a 3-vector")
+    dir_xyz = [_cluster_number(component, scope, f"{cluster_id}.vary.direction") for component in direction]
+    center_xyz = [_cluster_number(component, scope, f"{cluster_id}.vary.center") for component in center]
+    norm = math.sqrt(sum(component * component for component in dir_xyz))
+    if norm <= 0:
+        raise DslError(f"{cluster_id}: translate_line direction must be non-zero")
+    unit = [component / norm for component in dir_xyz]
+    results: list[tuple[str, list[Expansion]]] = []
+    grids = _cluster_grids(cluster, cluster_id)
+    multi = len(grids) > 1
+    for grid_index, grid in enumerate(grids, start=1):
+        values = resolve_cluster_grid(grid, scope, f"{cluster_id}.grids[{grid_index - 1}]")
+        tag = f"{cluster_id}_g{grid_index}" if multi else cluster_id
+        expansions = []
+        for value_index, distance in enumerate(values, start=1):
+            point = [center_xyz[axis] + float(distance) * unit[axis] for axis in range(3)]
+            expansions.append(
+                Expansion(
+                    suffix=f"i{value_index:02d}",
+                    patch={f"{prefix}.0": point[0], f"{prefix}.1": point[1], f"{prefix}.2": point[2]},
+                )
+            )
+        results.append((tag, _cap_cluster_expansions(expansions, tag)))
+    return results
+
+
+def _large_coordinate_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    max_model_size = _cluster_number(
+        vary.get("max_model_size", scope.get("max_model_size", 500000.0)),
+        scope,
+        f"{cluster_id}.vary.max_model_size",
+    )
+    sign = str(vary.get("sign", "positive"))
+    if sign not in {"positive", "negative", "both"}:
+        raise DslError(f"{cluster_id}: large_coordinate_shift sign must be positive, negative, or both")
+    fractions = vary.get("fractions", [0.5, 0.7, 0.8, 0.9, 0.95, 0.99])
+    if not isinstance(fractions, list) or not fractions:
+        raise DslError(f"{cluster_id}: large_coordinate_shift fractions must be a non-empty array")
+    resolved = [
+        _cluster_number(fraction, scope, f"{cluster_id}.vary.fractions") for fraction in fractions
+    ]
+    if any(fraction <= 0 or fraction >= 1 for fraction in resolved):
+        raise DslError(f"{cluster_id}: large_coordinate_shift fractions must stay within (0, 1)")
+    expansions: list[Expansion] = []
+    signs = [-1.0, 1.0] if sign == "both" else ([1.0] if sign == "positive" else [-1.0])
+    for fraction in resolved:
+        for sign_value in signs:
+            label = f"{'p' if sign_value > 0 else 'n'}{int(round(fraction * 100)):02d}"
+            expansions.append(
+                Expansion(suffix=label, patch={path: sign_value * fraction * max_model_size})
+            )
+    return [(cluster_id, _cap_cluster_expansions(expansions, cluster_id))]
+
+
+def _mirror_sign_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    magnitudes = vary.get("magnitudes", vary.get("magnitude"))
+    if magnitudes is None:
+        raise DslError(f"{cluster_id}: mirror_sign requires vary.magnitude or vary.magnitudes")
+    if isinstance(magnitudes, list):
+        values = [_cluster_number(item, scope, f"{cluster_id}.vary.magnitudes") for item in magnitudes]
+    else:
+        values = [_cluster_number(magnitudes, scope, f"{cluster_id}.vary.magnitude")]
+    if any(value == 0 for value in values):
+        raise DslError(f"{cluster_id}: mirror_sign magnitudes must be non-zero")
+    expansions: list[Expansion] = []
+    for index, magnitude in enumerate(values, start=1):
+        expansions.append(Expansion(suffix=f"m{index:02d}_pos", patch={path: abs(magnitude)}))
+        expansions.append(Expansion(suffix=f"m{index:02d}_neg", patch={path: -abs(magnitude)}))
+    return [(cluster_id, _cap_cluster_expansions(expansions, cluster_id))]
+
+
+def _seeded_jitter_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    path = _cluster_vary_path(vary, cluster_id)
+    low = _cluster_number(vary.get("min"), scope, f"{cluster_id}.vary.min")
+    high = _cluster_number(vary.get("max"), scope, f"{cluster_id}.vary.max")
+    if high < low:
+        raise DslError(f"{cluster_id}: seeded_jitter max must be >= min")
+    count = vary.get("count", 10)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise DslError(f"{cluster_id}: seeded_jitter count must be a positive integer")
+    seed = vary.get("seed", 1)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise DslError(f"{cluster_id}: seeded_jitter seed must be an integer")
+    values = _lcg_jitter_values(seed, count, low, high)
+    expansions = [
+        Expansion(suffix=f"j{index:02d}", patch={path: value})
+        for index, value in enumerate(values, start=1)
+    ]
+    return [(cluster_id, _cap_cluster_expansions(expansions, cluster_id))]
+
+
+def _uv_domain_expansions(
+    cluster: dict[str, Any], cluster_id: str, scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    vary = _cluster_vary(cluster, cluster_id)
+    paths = vary.get("paths")
+    if not isinstance(paths, list) or len(paths) != 2 or any(not isinstance(p, str) or not p for p in paths):
+        raise DslError(f"{cluster_id}: uv_domain vary.paths must be two patch paths")
+    results: list[tuple[str, list[Expansion]]] = []
+    grids = _cluster_grids(cluster, cluster_id)
+    multi = len(grids) > 1
+    for grid_index, grid in enumerate(grids, start=1):
+        values = resolve_cluster_grid(grid, scope, f"{cluster_id}.grids[{grid_index - 1}]")
+        for value in values:
+            numeric = float(value)
+            if numeric < 0.0 or numeric > 1.0:
+                raise DslError(f"{cluster_id}: uv_domain grid values must stay within [0, 1]")
+        tag = f"{cluster_id}_g{grid_index}" if multi else cluster_id
+        expansions = [
+            Expansion(
+                suffix=f"uv{index:02d}",
+                patch={paths[0]: float(value), paths[1]: float(value)},
+            )
+            for index, value in enumerate(values, start=1)
+        ]
+        results.append((tag, _cap_cluster_expansions(expansions, tag)))
+    return results
+
+
+def cluster_type_expansions(
+    cluster: dict[str, Any], scope: dict[str, float]
+) -> list[tuple[str, list[Expansion]]]:
+    """Expand one cluster definition into (cluster_tag, expansions) pairs.
+
+    Each pair represents one concrete cluster (one base geometry varied over
+    one parameter grid) and is capped at MAX_CLUSTER_CASES expansions.
+    """
+
+    if not isinstance(cluster, dict):
+        raise DslError("parameter_clusters entries must be objects")
+    cluster_id = sanitize_id(resolve_string(cluster.get("cluster_id"), "parameter_clusters.cluster_id"))
+    cluster_type = str(cluster.get("type") or "")
+    if cluster_type not in CLUSTER_TYPES:
+        raise DslError(
+            f"{cluster_id}: unknown parameter cluster type {cluster_type!r}; "
+            f"use one of {sorted(CLUSTER_TYPES)}"
+        )
+    if cluster_type == "contact_band":
+        return _contact_band_expansions(cluster, cluster_id, scope)
+    if cluster_type in {"boolean_type_cycle", "option_toggle", "enum_cycle"}:
+        return _paired_cycle_expansions(cluster, cluster_id, scope)
+    if cluster_type == "translate_line":
+        return _translate_line_expansions(cluster, cluster_id, scope)
+    if cluster_type == "large_coordinate_shift":
+        return _large_coordinate_expansions(cluster, cluster_id, scope)
+    if cluster_type == "mirror_sign":
+        return _mirror_sign_expansions(cluster, cluster_id, scope)
+    if cluster_type == "seeded_jitter":
+        return _seeded_jitter_expansions(cluster, cluster_id, scope)
+    if cluster_type == "uv_domain":
+        return _uv_domain_expansions(cluster, cluster_id, scope)
+    # translate_axis, scale_uniform, size_dimension, tolerance_sweep,
+    # angle_sweep: single numeric path over one or more grids.
+    return _grid_cluster_expansions(cluster, cluster_id, scope)
+
+
+def validate_cluster_bases(raw_bases: Any) -> dict[str, dict[str, Any]]:
+    if raw_bases is None:
+        return {}
+    if not isinstance(raw_bases, dict):
+        raise DslError("cluster_bases must be an object mapping base ids to base cases")
+    if len(raw_bases) > MAX_CLUSTER_BASES:
+        raise DslError(f"cluster_bases exceeds the {MAX_CLUSTER_BASES}-base cap")
+    bases: dict[str, dict[str, Any]] = {}
+    for raw_id, raw_base in raw_bases.items():
+        base_id = sanitize_id(resolve_string(raw_id, "cluster_bases key"))
+        if not isinstance(raw_base, dict):
+            raise DslError(f"cluster_bases.{base_id}: base must be an object")
+        forbidden = sorted(key for key in raw_base if key in CLUSTER_BASE_FORBIDDEN_FIELDS)
+        if forbidden:
+            raise DslError(
+                f"cluster_bases.{base_id}: base must not carry {forbidden}; "
+                "parameter clusters are the only variation source inside cluster_bases"
+            )
+        unknown = sorted(key for key in raw_base if key not in CASE_KNOWN_FIELDS)
+        if unknown:
+            raise DslError(f"cluster_bases.{base_id}: unsupported base fields {unknown}")
+        bases[base_id] = raw_base
+    return bases
+
+
+def cluster_base_ids(cluster: dict[str, Any], cluster_id: str, bases: dict[str, Any]) -> list[str]:
+    raw = cluster.get("bases")
+    if not isinstance(raw, list) or not raw:
+        raise DslError(f"{cluster_id}: parameter cluster requires a non-empty bases array")
+    if len(raw) > MAX_CLUSTER_BASES_PER_DEF:
+        raise DslError(f"{cluster_id}: bases exceeds the {MAX_CLUSTER_BASES_PER_DEF}-base cap")
+    resolved: list[str] = []
+    for item in raw:
+        base_id = sanitize_id(resolve_string(item, f"{cluster_id}.bases"))
+        if base_id not in bases:
+            raise DslError(f"{cluster_id}: unknown cluster base {base_id!r}")
+        if base_id not in resolved:
+            resolved.append(base_id)
+    return resolved
+
+
+def cluster_sample_expansions(expansions: list[Expansion]) -> list[Expansion]:
+    """Deterministic first/two/middle/last sample used by --check."""
+
+    if len(expansions) <= CLUSTER_SAMPLE_INDICES:
+        return list(expansions)
+    picked = [expansions[0], expansions[1], expansions[len(expansions) // 2], expansions[-1]]
+    result: list[Expansion] = []
+    for item in picked:
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def assert_cluster_paths_resolvable(base_case: dict[str, Any], expansions: list[Expansion], cluster_tag: str) -> None:
+    """Fail closed when a cluster patch path traverses missing structure.
+
+    Unlike legacy case sweeps (which may add new leaves to existing steps), a
+    parameter cluster must address geometry that actually exists in its base;
+    otherwise a mistyped path would silently emit dozens of identical recipes.
+    """
+
+    checked: set[str] = set()
+    for expansion in expansions:
+        for path in expansion.patch:
+            if path in checked:
+                continue
+            checked.add(path)
+            parts = path.split(".")
+            target: Any = base_case
+            resolved = True
+            for depth, part in enumerate(parts):
+                is_leaf = depth == len(parts) - 1
+                if isinstance(target, list):
+                    if not part.isdigit() or int(part) >= len(target):
+                        resolved = False
+                        break
+                    target = target[int(part)]
+                elif isinstance(target, dict):
+                    if part not in target:
+                        # Adding a new leaf field to an existing step is allowed;
+                        # traversing through a missing intermediate segment is not.
+                        resolved = is_leaf
+                        break
+                    target = target[part]
+                else:
+                    resolved = False
+                    break
+            if not resolved:
+                raise DslError(
+                    f"{cluster_tag}: vary path {path!r} does not resolve in the cluster base; "
+                    "every intermediate segment must exist and list leaves must stay in bounds"
+                )
+
+
 def normalize_case(raw_case: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_case, dict):
         raise DslError("cases entries must be objects")
@@ -477,6 +1005,12 @@ def normalize_case(raw_case: dict[str, Any], defaults: dict[str, Any]) -> dict[s
 
 def flatten_options(options: dict[str, Any], scope: dict[str, float]) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    unknown = sorted(key for key in options if key not in OPTION_FIELDS and key not in OPTION_STRUCT_FIELDS)
+    if unknown:
+        raise DslError(
+            f"options: unsupported fields {unknown}; the runner has no such option and "
+            "silently dropping it would compile a different test than reviewed"
+        )
     for key, value in options.items():
         if key not in OPTION_FIELDS:
             continue
@@ -1089,18 +1623,17 @@ def flatten_body(prefix: str, body: dict[str, Any], scope: dict[str, float]) -> 
     return result
 
 
-def compile_one_case(
-    raw_case: dict[str, Any],
-    defaults: dict[str, Any],
+def recipes_from_expansions(
+    base_case: dict[str, Any],
+    base_id: str,
+    expansions: list[Expansion],
     scope: dict[str, float],
     source_path: Path,
     global_key_points: dict[str, list[float]],
+    *,
+    provenance: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    base_case = normalize_case(raw_case, defaults)
-    base_id = sanitize_id(resolve_string(base_case.get("case_id", base_case.get("id")), "case.case_id"))
-    expansions = case_expansions(base_case)
     recipes: list[dict[str, Any]] = []
-
     for expansion in expansions:
         concrete = deepcopy(base_case)
         for path, value in expansion.patch.items():
@@ -1151,6 +1684,8 @@ def compile_one_case(
                 recipe[key] = concrete[key]
             elif isinstance(metadata, dict) and key in metadata:
                 recipe[key] = metadata[key]
+        if provenance:
+            recipe.update(provenance)
         # Defaults are shared across DSL APIs, but flat recipes are strict and
         # must not carry options that the selected runner adapter ignores.
         allowed = allowed_recipe_keys(recipe)
@@ -1161,7 +1696,104 @@ def compile_one_case(
     return recipes
 
 
-def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
+def compile_one_case(
+    raw_case: dict[str, Any],
+    defaults: dict[str, Any],
+    scope: dict[str, float],
+    source_path: Path,
+    global_key_points: dict[str, list[float]],
+) -> list[dict[str, Any]]:
+    base_case = normalize_case(raw_case, defaults)
+    base_id = sanitize_id(resolve_string(base_case.get("case_id", base_case.get("id")), "case.case_id"))
+    unknown_fields = sorted(key for key in base_case if key not in CASE_KNOWN_FIELDS)
+    if unknown_fields:
+        raise DslError(
+            f"{base_id}: unsupported case fields {unknown_fields}; move operation chains "
+            "into target.chain/tool.chain or drop the fields instead of letting them be "
+            "silently ignored"
+        )
+    expansions = case_expansions(base_case)
+    return recipes_from_expansions(base_case, base_id, expansions, scope, source_path, global_key_points)
+
+
+def compile_cluster_cases(
+    clusters: list[Any],
+    bases: dict[str, dict[str, Any]],
+    defaults: dict[str, Any],
+    scope: dict[str, float],
+    source_path: Path,
+    global_key_points: dict[str, list[float]],
+    *,
+    sample: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Compile parameter clusters into recipes plus a deterministic plan report.
+
+    With ``sample=True`` only a small deterministic sample per concrete cluster
+    is materialized (used by --check so the review gate stays fast); the
+    report always carries the theoretical expansion totals.
+    """
+
+    if len(clusters) > MAX_CLUSTER_DEFS:
+        raise DslError(f"parameter_clusters exceeds the {MAX_CLUSTER_DEFS}-definition cap")
+    recipes: list[dict[str, Any]] = []
+    plan_entries: list[dict[str, Any]] = []
+    total_theoretical = 0
+    for raw_cluster in clusters:
+        if not isinstance(raw_cluster, dict):
+            raise DslError("parameter_clusters entries must be objects")
+        cluster_id = sanitize_id(resolve_string(raw_cluster.get("cluster_id"), "parameter_clusters.cluster_id"))
+        base_ids = cluster_base_ids(raw_cluster, cluster_id, bases)
+        tagged = cluster_type_expansions(raw_cluster, scope)
+        for tag, expansions in tagged:
+            total_theoretical += len(expansions) * len(base_ids)
+            if total_theoretical > MAX_CLUSTER_TOTAL_RECIPES:
+                raise DslError(
+                    f"parameter_clusters expand beyond the {MAX_CLUSTER_TOTAL_RECIPES}-recipe host cap; "
+                    "reduce bases, grids, or values per cluster"
+                )
+            materialized = cluster_sample_expansions(expansions) if sample else expansions
+            for base_id in base_ids:
+                base_case = normalize_case({**bases[base_id], "case_id": f"{base_id}__{tag}"}, defaults)
+                assert_cluster_paths_resolvable(base_case, expansions, tag)
+                provenance = {
+                    "dsl_cluster_id": cluster_id,
+                    "dsl_cluster_type": str(raw_cluster.get("type")),
+                    "dsl_cluster_base": base_id,
+                }
+                recipes.extend(
+                    recipes_from_expansions(
+                        base_case,
+                        f"{base_id}__{tag}",
+                        materialized,
+                        scope,
+                        source_path,
+                        global_key_points,
+                        provenance=provenance,
+                    )
+                )
+            plan_entries.append(
+                {
+                    "cluster_id": cluster_id,
+                    "cluster_tag": tag,
+                    "type": str(raw_cluster.get("type")),
+                    "bases": base_ids,
+                    "cases_per_cluster": len(expansions),
+                    "materialized_per_cluster": len(materialized),
+                    "recipe_count": len(expansions) * len(base_ids),
+                }
+            )
+    plan = {
+        "cluster_definition_count": len(clusters),
+        "concrete_cluster_count": len(plan_entries),
+        "theoretical_recipe_count": total_theoretical,
+        "materialized_recipe_count": len(recipes),
+        "sampled": sample,
+        "entries": plan_entries,
+    }
+    return recipes, plan
+
+
+def compile_dsl_file_with_plan(path: Path, *, cluster_sample: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     dsl = load_json(path)
     if dsl.get("dsl_version") not in (1, "1", None):
         raise DslError(f"{path}: unsupported dsl_version {dsl.get('dsl_version')!r}")
@@ -1176,12 +1808,39 @@ def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
             raise DslError(f"{path}: source_review must be an object")
         defaults = merge_dicts({"metadata": {"source_review": source_review}}, defaults)
     cases = dsl.get("cases")
-    if not isinstance(cases, list) or not cases:
-        raise DslError(f"{path}: cases must be a non-empty array")
+    clusters = dsl.get("parameter_clusters")
+    bases = validate_cluster_bases(dsl.get("cluster_bases"))
+    if clusters is not None and not isinstance(clusters, list):
+        raise DslError(f"{path}: parameter_clusters must be an array")
+    if clusters and not bases:
+        raise DslError(f"{path}: parameter_clusters requires a non-empty cluster_bases object")
+    if (not isinstance(cases, list) or not cases) and not clusters:
+        raise DslError(f"{path}: cases must be a non-empty array unless parameter_clusters is present")
+    if isinstance(cases, list) and not cases and clusters:
+        cases = []
 
     recipes: list[dict[str, Any]] = []
-    for raw_case in cases:
+    for raw_case in cases or []:
         recipes.extend(compile_one_case(raw_case, defaults, scope, path, global_key_points))
+    cluster_plan: dict[str, Any] = {}
+    if clusters:
+        cluster_recipes, cluster_plan = compile_cluster_cases(
+            clusters,
+            bases,
+            defaults,
+            scope,
+            path,
+            global_key_points,
+            sample=cluster_sample,
+        )
+        recipes.extend(cluster_recipes)
+    return recipes, cluster_plan
+
+
+def compile_dsl_file(path: Path) -> list[dict[str, Any]]:
+    """Compile a DSL file into flat recipes (full cluster expansion)."""
+
+    recipes, _plan = compile_dsl_file_with_plan(path)
     return recipes
 
 
@@ -1205,6 +1864,7 @@ def check_dsl_file(
     validate: bool,
     *,
     asset_policy: str = "trusted",
+    cluster_sample: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     record: dict[str, Any] = {
         "path": str(path),
@@ -1223,10 +1883,13 @@ def check_dsl_file(
         return record, []
 
     try:
-        recipes = compile_dsl_file(path)
+        recipes, cluster_plan = compile_dsl_file_with_plan(path, cluster_sample=cluster_sample)
     except DslError as exc:
         record["compile_error"] = str(exc)
         return record, []
+    if cluster_plan:
+        record["cluster_plan"] = cluster_plan
+        record["cluster_recipe_count"] = int(cluster_plan.get("theoretical_recipe_count") or 0)
 
     valid_recipes: list[dict[str, Any]] = []
     for recipe in recipes:
@@ -1315,6 +1978,40 @@ def diagnostic_from_compile_error(path: str, message: str) -> dict[str, Any]:
                 "total_volume, point_relations, face_point_relations, clash_checks, distance_checks, "
                 "or plane_extreme_checks. Do not emit an expectations.properties array."
             ),
+            "expected_shape": {
+                "point_relations": [
+                    {
+                        "role": "result|target|tool",
+                        "point": ["x", "y", "z"],
+                        "expected": "Inside|Outside|OnBoundary|OnModel",
+                    }
+                ],
+                "face_point_relations": [
+                    {
+                        "role": "result|target|tool",
+                        "face_index": "int >= 0",
+                        "uv_fraction": [0.5, 0.5],
+                        "expected": "Inside|Outside|OnBoundary|OnFace",
+                    }
+                ],
+                "clash_checks": [
+                    {
+                        "role_a": "target|tool|result",
+                        "role_b": "target|tool|result",
+                        "expected": "NoClash|AnyClash",
+                    }
+                ],
+                "plane_extreme_checks": [
+                    {
+                        "role": "result|target|tool",
+                        "axis": "x|y|z",
+                        "side": "min|max",
+                        "expected": "number",
+                        "tolerance": "number > 0",
+                    }
+                ],
+                "topocheck": "not an expectation field; use check_valid=true",
+            },
         }
     if "unsupported op" in lower:
         return {
@@ -1439,6 +2136,7 @@ def main() -> int:
                 dsl_path,
                 not args.no_validate,
                 asset_policy="model" if args.model_asset_policy else "trusted",
+                cluster_sample=bool(args.check),
             )
             file_records.append(record)
             if record.get("skipped"):
@@ -1472,6 +2170,7 @@ def main() -> int:
             "ok": compile_failures == 0 and validation_failures == 0,
             "file_count": len(file_records),
             "recipe_count": sum(int(record.get("recipe_count") or 0) for record in file_records),
+            "cluster_recipe_count": sum(int(record.get("cluster_recipe_count") or 0) for record in file_records),
             "compiled_count": len(all_paths),
             "compile_failure_count": compile_failures,
             "validation_failure_count": validation_failures,

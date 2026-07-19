@@ -223,7 +223,7 @@ def test_message_pipeline_fixed_gate_materializes_plugin_candidate(tmp_path: Pat
     config = GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="plugin-test-key",
         request_timeout_seconds=1,
         max_retries=0,
@@ -275,7 +275,7 @@ def test_pipeline_rejects_valid_plugin_for_a_different_trusted_api(tmp_path: Pat
     config = GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="plugin-test-key",
         request_timeout_seconds=1,
         max_retries=0,
@@ -317,7 +317,7 @@ def test_existing_plugin_build_revalidation_requires_host_approval(
     config = GatewayConfig(
         profile=PROFILE_SPECS["intranet"],
         base_url="https://message-api.invalid/v1",
-        model="Qwen3.6-35B-A3B",
+        model="zai-org/GLM-5.2",
         api_key="plugin-test-key",
         request_timeout_seconds=1,
         max_retries=0,

@@ -14,3 +14,10 @@ Rules:
   tolerance/contact classification.
 - Include property/result-body expectations and at least one metric oracle when
   the geometry has an analytic relation.
+- Simple primitive pairs are only smoke anchors: the candidate as a whole must
+  also combine generated-topology chains, large-coordinate placements, and at
+  least one degenerate or empty-result case. The fixed complexity gate rejects
+  candidates that stay simple.
+- For mass coverage, do not enumerate cases: declare `cluster_bases` plus
+  `parameter_clusters` (at most 50 cases per cluster) and let fixed code expand
+  them deterministically.

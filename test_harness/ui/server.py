@@ -8,6 +8,7 @@ import secrets
 import threading
 import webbrowser
 from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,10 +20,32 @@ from .application import HarnessUiApplication
 MAX_REQUEST_BYTES = 64 * 1024
 
 
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return None
+
+
 class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._state: dict[str, Any] = {"status": "idle", "operation": "", "error": ""}
+        self._state: dict[str, Any] = {
+            "status": "idle",
+            "operation": "",
+            "error": "",
+            "started_at": None,
+        }
+        self._thread: threading.Thread | None = None
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -32,24 +55,50 @@ class JobManager:
         with self._lock:
             if self._state["status"] == "running":
                 raise RuntimeError("another Harness operation is already running")
-            self._state = {"status": "running", "operation": operation, "error": ""}
+            self._state = {
+                "status": "running",
+                "operation": operation,
+                "error": "",
+                "started_at": _utc_now(),
+            }
 
         def run() -> None:
             try:
                 callback()
             except Exception as exc:  # surfaced to the local UI
-                result = {"status": "failed", "operation": operation, "error": str(exc)}
+                result = {
+                    "status": "failed",
+                    "operation": operation,
+                    "error": str(exc),
+                    "started_at": None,
+                }
             else:
-                result = {"status": "completed", "operation": operation, "error": ""}
+                result = {
+                    "status": "completed",
+                    "operation": operation,
+                    "error": "",
+                    "started_at": None,
+                }
             with self._lock:
                 self._state = result
 
-        threading.Thread(target=run, name=f"harness-ui-{operation}", daemon=True).start()
+        thread = threading.Thread(target=run, name=f"harness-ui-{operation}", daemon=False)
+        with self._lock:
+            self._thread = thread
+        thread.start()
+
+    def wait(self, timeout: float | None = None) -> None:
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
 
 class HarnessUiServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Bind exclusively: on Windows SO_REUSEADDR lets a second UI process share
+    # the port silently, splitting requests across different code versions.
+    allow_reuse_address = False
 
     def __init__(self, address: tuple[str, int], repo_root: Path) -> None:
         self.app = HarnessUiApplication(repo_root)
@@ -102,7 +151,15 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             raise ValueError("request root must be an object")
         return value
 
+    def _trusted_host(self) -> bool:
+        port = int(self.server.server_address[1])
+        host = self.headers.get("Host", "").strip().casefold()
+        return host in {f"127.0.0.1:{port}", f"localhost:{port}"}
+
     def do_GET(self) -> None:
+        if not self._trusted_host():
+            self._error(HTTPStatus.FORBIDDEN, "untrusted Host header")
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/api/state":
             try:
@@ -116,6 +173,12 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._json({"ok": True})
             return
+        if parsed.path == "/api/abc/status":
+            self._json({"ok": True, "abc": self.server.app.abc.snapshot()})
+            return
+        if parsed.path == "/api/nx/environment":
+            self._json({"ok": True, "nx": self.server.app.nx_state(refresh=True)})
+            return
         if parsed.path == "/api/artifact":
             relative = parse_qs(parsed.query).get("path", [""])[0]
             try:
@@ -123,7 +186,14 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as exc:
                 self._error(HTTPStatus.NOT_FOUND, str(exc))
             return
-        names = {"/": "index.html", "/app.js": "app.js", "/styles.css": "styles.css"}
+        names = {
+            "/": "index.html",
+            "/app.js": "app.js",
+            "/job-status.js": "job-status.js",
+            "/markdown-preview.js": "markdown-preview.js",
+            "/styles.css": "styles.css",
+            "/job-status.css": "job-status.css",
+        }
         name = names.get(parsed.path)
         if name is None:
             self._error(HTTPStatus.NOT_FOUND, "not found")
@@ -138,6 +208,9 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self) -> None:
+        if not self._trusted_host():
+            self._error(HTTPStatus.FORBIDDEN, "untrusted Host header")
+            return
         if not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), self.server.csrf_token):
             self._error(HTTPStatus.FORBIDDEN, "invalid CSRF token")
             return
@@ -147,8 +220,31 @@ class HarnessUiHandler(BaseHTTPRequestHandler):
             if path == "/api/settings":
                 self._json({"ok": True, "settings": self.server.app.save_settings(payload)})
                 return
+            if path == "/api/abc/fetch":
+                result = self.server.app.abc.start_fetch(payload)
+                self._json({"ok": True, "abc": result}, HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/abc/cancel":
+                self._json({"ok": True, "abc": self.server.app.abc.cancel()}, HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/abc/validate":
+                self._json({"ok": True, "inspection": self.server.app.inspect_abc(str(payload.get("path") or ""))})
+                return
+            if path == "/api/abc/use-existing":
+                self._json({"ok": True, **self.server.app.use_existing_abc(str(payload.get("path") or ""))})
+                return
+            if path == "/api/nx/probe":
+                self.server.jobs.submit("nx_probe", self.server.app.probe_nx)
+                self._json({"ok": True, "job": self.server.jobs.snapshot()}, HTTPStatus.ACCEPTED)
+                return
             operations: dict[str, tuple[str, Callable[[], Any]]] = {
-                "/api/start": ("start", lambda: self.server.app.start(str(payload.get("public_function") or ""))),
+                "/api/start": (
+                    "start",
+                    lambda: self.server.app.start(
+                        str(payload.get("public_function") or ""),
+                        use_memory=_optional_bool(payload.get("use_memory")),
+                    ),
+                ),
                 "/api/comment": ("comment", lambda: self.server.app.comment(str(payload.get("comment") or ""))),
                 "/api/approve": ("approve", self.server.app.approve),
                 "/api/retry": ("retry", self.server.app.retry),
@@ -176,6 +272,7 @@ def run_server(*, repo_root: str | Path, port: int = 8765, open_browser: bool = 
         pass
     finally:
         server.server_close()
+        server.jobs.wait()
 
 
 __all__ = ["HarnessUiApplication", "HarnessUiServer", "run_server"]

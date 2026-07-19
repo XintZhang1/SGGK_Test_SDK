@@ -3,7 +3,7 @@
 This is the first standalone harness layer for SDK-driven tests. It intentionally avoids the vendor sample layout and writes an artifact capsule for each case.
 
 For the Message API-only trust boundary, parallel candidate selection, new-API
-plugins, failure qualification, paired TopoTrack capture, and Qwen investigation
+plugins, failure qualification, paired TopoTrack capture, and GLM-5.2 investigation
 flow, read `test_harness/HARNESS_ARCHITECTURE.md` first.
 
 ## Primary User Workflow
@@ -22,13 +22,13 @@ Harness 会通过 Message API 自动解析接口、生成候选和固定门禁�
 .\harness.ps1 comment "增加退化输入、近容差相交和空结果检查"
 ```
 
-每条 comment 都被原样保存为不可变事件，Qwen 必须输出中文理解并判断其语义。涉及代码、用例、参数、Oracle 或范围修改时，Harness 才生成新的不可变候选/审查轮次，并列出采纳项、未采纳原因和相对上一轮的变化；问题在当前轮回答，拒绝终止任务。满意后批准当前最新轮次：
+每条 comment 都被原样保存为不可变事件，GLM-5.2 必须输出中文理解并判断其语义。涉及代码、用例、参数、Oracle 或范围修改时，Harness 才生成新的不可变候选/审查轮次，并列出采纳项、未采纳原因和相对上一轮的变化；问题在当前轮回答，拒绝终止任务。满意后批准当前最新轮次：
 
 ```powershell
 .\harness.ps1 comment "这一版可以开始执行真实测试。"
 ```
 
-明确批准的 comment 不生成新候选轮；Qwen 先解释其语义，固定宿主再验证明确执行同意并绑定当前最新轮次及其内部哈希链，然后自动执行真实 SGGK SDK 测试；完成后生成 `final_report.zh-CN.md`。辅助命令：
+明确批准的 comment 不生成新候选轮；GLM-5.2 先解释其语义，固定宿主再验证明确执行同意并绑定当前最新轮次及其内部哈希链，然后自动执行真实 SGGK SDK 测试；完成后生成 `final_report.zh-CN.md`。辅助命令：
 
 ```powershell
 .\harness.ps1 status
@@ -48,8 +48,13 @@ cmake --build --preset windows-release --parallel
 Pop-Location
 ```
 
+`windows-local` / `windows-release` target Visual Studio 2022. On a Visual
+Studio 2026 machine, use `windows-vs2026` / `windows-vs2026-release` instead.
+The Harness UI detects the installed C++ workload and matching CMake generator
+automatically, so it does not require one fixed Visual Studio version.
+
 The build copies runtime DLLs and `sggk.lic` next to `sggk_case_runner.exe`.
-It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index.
+It also builds `sggk_topology_extract.exe`, a small GUI-handoff helper that reopens an input `.sgt` and exports a selected Body/Face/Edge/Vertex/Wire/Shell/Lump/Coedge by topology type plus ID and/or local index, and `sggk_mesh_dump.exe` (`--out <dir> --body <name=path.sgt>...`), which tessellates every face of the given `.sgt` bodies into one bounded `mesh.json` (≤ 30k triangles, deterministic stride decimation) for the failure-showcase real-geometry renderings.
 
 ## Advanced Runner Maintenance: Direct Case Run
 
@@ -294,6 +299,36 @@ uses the raw Message pipeline internally for normalization, fixed gates,
 selection, and provenance, and withholds real SDK execution until the latest
 immutable review round is approved.
 
+When the requested public function is not a supported runner API, the session
+routes to the interface-design subagent (`interface_dsl_design` task type): a
+dedicated GLM-5.2 role that runs with thinking enabled and a long generation
+budget (65,536 max tokens, 3,600-second request timeout, single candidate) to
+design complete harness support from SDK header evidence. Its output is a
+structured `needs_harness_extension` design — `interface_signature`,
+`builder_requirements`, `archetype_match`, `parameter_cluster_plan`,
+`complexity_plan`, plus the usual recipe fields, oracle, smoke case, and patch
+plan — validated by the fixed extension gate (`validate_harness_extension.py
+--require-design`) and reviewed like any other candidate. The design lands as a
+machine-checkable extension backlog; it never writes runner code. Registered
+adapter archetype vocabulary lives in `test_harness/tools/plugin_catalog.py`
+(including `binary_geometry_intersection` for the GeomInt intersection family).
+
+When the unknown API's parsed header declaration matches a registered fixed
+archetype, the session instead emits an `api_adaptation` task
+(`test_harness/tools/api_archetype_mapping.py` performs the conservative
+host-local mapping; raw header text never enters the prompt). The manifest
+carries a hash-bound adaptation contract, the model returns one bounded
+`api_plugin_candidate` adapter spec, and the fixed gate
+(`materialize_api_plugin_candidate.py`) expands it into a fixed-template
+plugin that the approval-bound execution proves in isolation
+(`build_api_plugin_candidate.py`: CMake build, positive/negative validation,
+three identical smoke replays). A passing build is registered by
+`test_harness/tools/promote_api_plugin.py`, which re-verifies the attestation
+and copies the plugin into `test_harness/api_plugins/` plus merges its
+capability into `test_harness/interface_capabilities.json`; the C++ registry
+refreshes at the next CMake configure. Unmappable or ambiguous signatures keep
+the interface-design backlog path above.
+
 ## Advanced Internal Appendix: API Forms and Raw Message Pipeline
 
 This section is for Harness maintainers and fixed-gate diagnostics. It is not a
@@ -331,7 +366,7 @@ python .\test_harness\tools\build_model_prompt_pack.py `
   --max-prompt-chars 60000
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
+  --profile siliconflow `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
@@ -342,8 +377,9 @@ The review-session layer owns approval and starts real SDK execution only after
 the current round is approved. There is no human-authored, fixture-seeding, or
 standalone gateway CLI production path.
 
-The configured intranet Qwen Message API is the only model provider. There is
-no external simulator, implicit fallback, or separate authoring workflow.
+The configured SiliconFlow `zai-org/GLM-5.2` Message API is the external build's
+default production model provider. There is no implicit fallback or separate
+authoring workflow.
 See `test_harness/MESSAGE_API_ENDPOINTS.md` for endpoint compatibility
 testing and failure semantics.
 
@@ -399,7 +435,7 @@ python .\test_harness\tools\build_model_prompt_pack.py `
   --out .\artifacts\model_prompt_pack
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
-  --profile intranet `
+  --profile siliconflow `
   .\artifacts\model_prompt_pack\model_task_manifest.json
 ```
 
@@ -549,7 +585,8 @@ python .\test_harness\tools\build_source_attack_tasks.py `
 
 python .\test_harness\tools\build_model_prompt_pack.py `
   --source-task-dir .\artifacts\sdk_include_source_attack_tasks `
-  --out .\artifacts\source_model_prompt_pack
+  --out .\artifacts\source_model_prompt_pack `
+  --profile intranet
 
 python .\test_harness\tools\run_message_harness_pipeline.py `
   --profile intranet `
@@ -562,7 +599,7 @@ The task builder writes `source_attack_tasks.json`,
 includes a wider source excerpt, the scanner finding, required output contract,
 harness constants, fixed post-generation checks, and optional seed context.
 
-Seed drafts are prompt context, not runnable tests or bug reports. Qwen must
+Seed drafts are prompt context, not runnable tests or bug reports. The model must
 return a fresh candidate through the Message API; the raw pipeline performs the
 pre-review DSL check and expansion, while `sggk_harness.py` gates execution on
 the approved latest round. A developer may invoke the
@@ -624,6 +661,33 @@ python .\test_harness\tools\compile_attack_dsl.py `
 ```
 
 The cluster wrapper emits exact contact, `+/- geom_tol`, `+/- topo_tol`, source-literal bands when present, a generated-topology sibling, and an optional large-coordinate sibling. Keep randomized and broad coverage lanes in the same campaign through `generate_boolean_matrix.py`, `generate_corpus_recut_matrix.py`, `run_campaign.py`, or `plan_large_campaign.py`.
+
+For model-authored mass coverage, the attack DSL also supports `cluster_bases`
+plus `parameter_clusters`: each parameter cluster transforms one base geometry
+over one varying parameter and fixed code expands it deterministically into at
+most 50 cases, so a compact DSL describes 100k+ runnable recipes. Fourteen
+cluster types are registered (`translate_axis`, `translate_line`,
+`scale_uniform`, `size_dimension`, `contact_band`, `tolerance_sweep`,
+`angle_sweep`, `large_coordinate_shift`, `boolean_type_cycle`, `option_toggle`,
+`mirror_sign`, `seeded_jitter`, `uv_domain`, `enum_cycle`); see
+`test_harness/skills/sggk-source-attack/references/attack-dsl.md` and the
+checked-in fixture `test_harness/dsl/parameter_cluster_smoke.json`. `--check`
+validates cluster definitions and compiles a deterministic sample per cluster
+while reporting the theoretical expansion total; `--out` materializes the full
+expansion:
+
+```powershell
+python .\test_harness\tools\compile_attack_dsl.py `
+  .\test_harness\dsl\parameter_cluster_smoke.json `
+  --check `
+  --report .\artifacts\parameter_cluster_check.json
+```
+
+Model candidates are additionally scored by the fixed complexity gate
+(`test_harness/tools/score_case_complexity.py`): attack_dsl and flat_recipe
+candidates that stay simple (default-placed primitive pairs, no tolerance
+bands, no generated topology, status-only oracles) are rejected with repair
+diagnostics before review.
 
 ## Generated Recipe Lanes
 
@@ -982,13 +1046,84 @@ python .\test_harness\tools\export_failure_bundles.py `
 ```
 
 Only verified `stable_same_failure` groups receive a formal bundle,
-`reproduce.ps1`, draft, registry entry, or Qwen root-cause investigation.
+`reproduce.ps1`, draft, registry entry, or model-assisted root-cause investigation.
 Flaky, changed, unverified, unavailable, and TopoTrack-only-success cases are
 recorded under `inconclusive_triage` without a formal reproducer. Each stable
 bundle contains `bug_report.md`, `bundle_manifest.json`,
 `localization_summary.json`, recipes, copied inputs, key reports, paired
 TopoTrack capture evidence, and an optional preview PNG. With `--zip`, a sibling
 archive is written for handoff.
+
+Run deterministic failure pre-analysis over any executed case root (also run
+automatically by the session workflow's failure-showcase hook):
+
+```powershell
+python .\test_harness\tools\analyze_failure_cases.py `
+  --cases-root .\artifacts\some_run\cases `
+  --out .\artifacts\some_run\pre_analysis `
+  --max-cases 64 `
+  --with-visual --profile siliconflow_vision
+```
+
+For each failed case (triage reasons or nonzero runner return code) the tool
+writes `<case>/pre_analysis.json` plus an annotated `<case>_analysis.png`
+overlay (the standard preview with markers for the failing oracle's geometric
+focus; it degrades to the plain preview when no coordinates exist), and a
+`pre_analysis_summary.json` with counts by `fault_domain` and `fault_module`.
+The deterministic rules assign one of `test_expectation_suspect` (point relation
+outside every bbox, distance expectation incompatible with the bbox gap,
+disjoint-input union expecting fewer bodies), `transport_suspect` (Parasolid
+`transport_export_suspect` cause or SGGK self-reported vs NX-measured drift
+beyond the comparison tolerance), `oracle_tooling_suspect` (contradictory,
+non-finite, or unit-inconsistent oracle actuals), `geometry_result_suspect`
+(topo-check or remaining oracle failures), or `inconclusive` (including
+corrupt inputs, which never crash the tool). On top of that, every case gets a
+module-level attribution `fault_module`
+(`distance_oracle`/`point_relation_oracle`/`clash_oracle`/
+`plane_extreme_oracle`/`step_import`/`step_export`/`api_under_test`/
+`test_authoring`/`unclassified`): when NX is available and the case's
+`parasolid_compare/<case>/export/` STEPs are locatable, the allowlisted
+journal `nx_journals/oracle_recheck.py` re-measures each failed oracle check
+inside Parasolid (distance via `MeasureManager.NewDistance`, point-vs-body via
+surface distance + probe-sphere Intersect containment, clash via Intersect
+volume, plane extreme via `NewRectangularExtreme`, import integrity via the
+seam-aware free-edge counter), and the three-way rule attributes the case —
+SGGK oracle ≈ Parasolid ≠ expectation → `test_authoring`; SGGK oracle ≠
+Parasolid → the oracle's own module; transport evidence → `step_import`
+(NX-side input-STEP limits, e.g. coordinates beyond 1e5) or `step_export`
+(result STEP unusable/drift); geometry invariants violated with everything
+else cleared → `api_under_test`; cross-kernel divergence with self-consistent
+Parasolid evidence → `unclassified` (never brute-attributed to boolean). When
+NX or STEPs are unavailable the recheck is skipped with a note and the
+deterministic evidence alone decides (`--skip-recheck` forces this).
+`--with-visual` additionally
+asks the advisory vision model for a per-case `fault_hint`
+(`test_expectation|geometry|transport|tooling|unclear`) on the overlay
+images; the hint is merged as `visual_fault_hint`/`visual_notes` and never
+overrides the deterministic `fault_domain` — disagreement is reported as
+`visual_disagrees`. All output is diagnostic evidence only, not an SDK defect
+verdict. The session workflow hook copies each failed case's capsule (`.sgt`
+inputs/outputs, reports, comparison evidence; never STEP) to
+`artifacts/<api>/round_<NNNN>_<sessionts>/<case_id>/` with a fixed-content
+`reproduce.ps1`, a generated google-test repro TU `<case>_repro.cpp`
+(`tools/export_failure_gtest.py`: 输入构造/被测接口调用/EXPECT 校验 sections
+mirroring the runner's Make* builders and the recipe's exact parameters; when
+`fault_module` is a tooling/transport module and geometry invariants passed,
+the 裁剪版 comments the construction chain out and loads the copied `.sgt`
+instead), a real shaded mesh rendering `<case>_mesh.png`
+(`src/sggk_mesh_dump.exe` tessellates the `.sgt` bodies into a bounded mesh
+JSON — ≤ 30k triangles per invocation — and `tools/render_mesh_views.py`
+draws painter's-algorithm ISO/XY/XZ/YZ panels with Chinese role labels; the
+mesh image becomes the card's primary `<case>_analysis.png`, with the bbox
+overlay as fallback) and an optional red-tinted `<case>_suspect_mesh.png`
+when debug-geometry evidence exists, plus a Chinese `analysis.md`, and
+appends bounded records (including `fault_module`) to
+the durable failure database `artifacts/failure_analysis_db.json` (atomic,
+capped at 500 records); the local UI shows them under the 失败分析 tab.
+All Chinese token maps (triage reasons, signature kinds/phases, oracle
+failure strings, value glosses, module labels) live in
+`tools/oracle_text_zh.py` and are projected by `ui/state.py`; raw tokens stay
+available in a muted 原始标记 line for grepability.
 
 For a lighter GUI-oriented handoff, build debug SGT packs directly from a registry or triage summary:
 

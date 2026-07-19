@@ -1,4 +1,4 @@
-"""Strict read-only evidence tools available to Qwen investigation roles."""
+"""Strict read-only evidence tools available to model investigation roles."""
 
 from __future__ import annotations
 
@@ -136,6 +136,11 @@ class InvestigationToolRegistry:
             if path is not None:
                 report_id = _safe_id(f"topotrack_probe_{name}")
                 self.report_paths[report_id] = path
+        for name, raw in _dict(copied.get("comparison")).items():
+            path = _inside(self.bundle_dir, raw)
+            if path is not None:
+                report_id = _safe_id(f"comparison_{name}")
+                self.report_paths[report_id] = path
         replay = _dict(self.manifest.get("replay"))
         self.replay_status = str(replay.get("status") or bundle_record.get("replay_status") or "")
         stable_attempts = replay.get("stable_attempts", bundle_record.get("stable_attempts", 0))
@@ -214,6 +219,13 @@ class InvestigationToolRegistry:
                     "properties": {"report_id": {"type": "string", "maxLength": 96}},
                 },
                 self._read_report,
+            ),
+            "comparison.get_verdict": ToolSpec(
+                "comparison.get_verdict",
+                "Return the bundle's copied NX/Parasolid comparison verdict, validity signals, "
+                "measurements, tolerances, and divergence cause class when derivable.",
+                {"type": "object", "additionalProperties": False},
+                self._comparison_verdict,
             ),
             "source.search_literal": ToolSpec(
                 "source.search_literal",
@@ -359,6 +371,102 @@ class InvestigationToolRegistry:
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
         return {"report_id": report_id, "available": True, "content": _read(path)}
+
+    @staticmethod
+    def _derive_cause_class(comparison: dict[str, Any]) -> str:
+        try:
+            from test_harness.tools.classify_parasolid_divergence import classify_comparison
+        except Exception:  # noqa: BLE001 - tools package layout varies by launch mode
+            try:
+                from classify_parasolid_divergence import classify_comparison
+            except Exception:  # noqa: BLE001 - classification helper is optional here
+                return ""
+        try:
+            entry = classify_comparison("bundle_case", comparison)
+        except Exception:  # noqa: BLE001 - cause classification is best-effort diagnostics
+            return ""
+        return str(entry.get("cause_class") or "")
+
+    def _comparison_verdict(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._require_empty(args)
+        path = self.report_paths.get("comparison_comparison_json")
+        if path is None:
+            return {
+                "available": False,
+                "reason": "bundle has no copied Parasolid comparison evidence",
+            }
+        comparison = _dict(_read(path))
+        if not comparison:
+            return {
+                "available": False,
+                "reason": "copied Parasolid comparison evidence is unreadable",
+            }
+        sggk = _dict(comparison.get("sggk"))
+        parasolid = _dict(comparison.get("parasolid"))
+        sggk_result = _dict(comparison.get("sggk_result_nx"))
+        free_edges = 0
+        for body in _list(sggk_result.get("bodies"))[:512]:
+            count = _dict(body).get("free_edge_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                free_edges += count
+        cause_class = comparison.get("cause_class")
+        if not isinstance(cause_class, str) or not cause_class:
+            cause_class = self._derive_cause_class(comparison)
+        error_message = str(parasolid.get("error_message") or "")[:240]
+        return {
+            "available": True,
+            "verdict": str(comparison.get("verdict") or ""),
+            "cause_class": cause_class,
+            "reasons": [str(item)[:240] for item in _list(comparison.get("reasons"))[:8]],
+            "signals": _dict(comparison.get("signals")),
+            "checks": _dict(comparison.get("checks")),
+            "tolerances": _dict(comparison.get("tolerances")),
+            "sggk": {
+                key: sggk.get(key)
+                for key in (
+                    "api_ok",
+                    "result_body_count",
+                    "self_measurement_ok",
+                    "self_total_area",
+                    "self_total_abs_volume",
+                    "validation_ok",
+                )
+                if key in sggk
+            },
+            "parasolid": {
+                key: parasolid.get(key)
+                for key in (
+                    "status",
+                    "import_ok",
+                    "boolean_ok",
+                    "operation",
+                    "measurement_ok",
+                    "body_count",
+                    "total_area",
+                    "total_abs_volume",
+                    "all_solid_closed",
+                )
+                if key in parasolid
+            },
+            "parasolid_error_message": error_message,
+            "sggk_result_nx": {
+                **{
+                    key: sggk_result.get(key)
+                    for key in (
+                        "available",
+                        "import_ok",
+                        "measurement_ok",
+                        "body_count",
+                        "total_area",
+                        "total_abs_volume",
+                        "all_solid_closed",
+                    )
+                    if key in sggk_result
+                },
+                "free_edge_total": free_edges,
+            },
+            "evidence_quality": "diagnostic_not_causal_proof",
+        }
 
     def _source_search(self, args: dict[str, Any]) -> dict[str, Any]:
         errors = validate_tool_args(args, required={"query": str}, optional={"max_results": int})

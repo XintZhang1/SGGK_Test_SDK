@@ -7,6 +7,7 @@ import argparse
 from collections import Counter, defaultdict
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 
@@ -21,6 +22,8 @@ EXTENSION_TO_API = {
     ".iges": "iges_import",
     ".igs": "iges_import",
 }
+SHA1_RE = re.compile(r"[0-9a-fA-F]{40}")
+SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +32,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", default="artifacts/dataset_audit", help="Output directory for dataset_audit.json/.md")
     parser.add_argument("--min-files", type=int, default=1, help="Minimum referenced files required")
     parser.add_argument("--warn-tiny-bytes", type=int, default=0, help="Warn for nonempty files smaller than this size; 0 disables")
-    parser.add_argument("--require-hashes", action="store_true", help="Treat missing per-file sha1 hashes as an error")
+    parser.add_argument(
+        "--require-hashes",
+        action="store_true",
+        help=(
+            "Require a valid per-file SHA-256 content binding; "
+            "SHA-1-only legacy indexes do not satisfy this gate"
+        ),
+    )
     parser.add_argument(
         "--fail-duplicate-ratio",
         type=float,
@@ -109,6 +119,7 @@ def normalize_entry(raw: Any, dataset_path: Path, index: int) -> dict[str, Any]:
             "api": infer_api(extension),
             "root": "",
             "sha1": "",
+            "sha256": "",
             "declared_size_bytes": None,
         }
     if isinstance(raw, dict):
@@ -121,6 +132,7 @@ def normalize_entry(raw: Any, dataset_path: Path, index: int) -> dict[str, Any]:
             "api": as_str(raw.get("api")) or infer_api(extension),
             "root": as_str(raw.get("root")),
             "sha1": as_str(raw.get("sha1")),
+            "sha256": as_str(raw.get("sha256")),
             "declared_size_bytes": raw.get("size_bytes"),
         }
     return {
@@ -130,6 +142,7 @@ def normalize_entry(raw: Any, dataset_path: Path, index: int) -> dict[str, Any]:
         "api": "unknown",
         "root": "",
         "sha1": "",
+        "sha256": "",
         "declared_size_bytes": None,
     }
 
@@ -193,7 +206,7 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
     by_api: Counter[str] = Counter()
     by_root: Counter[str] = Counter()
     path_counts: Counter[str] = Counter()
-    sha_to_paths: dict[str, list[str]] = defaultdict(list)
+    hash_to_paths: dict[tuple[str, str], list[str]] = defaultdict(list)
     entries_out: list[dict[str, Any]] = []
     existing_count = 0
     missing_count = 0
@@ -202,6 +215,9 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
     total_bytes = 0
     hash_present_count = 0
     hash_missing_count = 0
+    sha1_present_count = 0
+    sha256_present_count = 0
+    sha256_invalid_count = 0
 
     for dataset in datasets:
         dataset_path = as_str(dataset.get("path"))
@@ -227,7 +243,10 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
             extension = as_str(entry.get("extension")).lower() or resolved.suffix.lower()
             api = as_str(entry.get("api")) or infer_api(extension)
             root = as_str(entry.get("root")) or str(resolved.parent)
-            sha1 = as_str(entry.get("sha1"))
+            sha1 = as_str(entry.get("sha1")).strip().lower()
+            sha256 = as_str(entry.get("sha256")).strip().lower()
+            valid_sha1 = SHA1_RE.fullmatch(sha1) is not None
+            valid_sha256 = SHA256_RE.fullmatch(sha256) is not None
             size = -1
             exists = resolved.is_file()
             if exists:
@@ -245,11 +264,22 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
                 add_issue(issues, "error", "missing_file", "referenced corpus file is missing", resolved, dataset_path)
             if extension not in EXTENSION_TO_API:
                 add_issue(issues, "warning", "unsupported_extension", f"unsupported extension `{extension}`", resolved, dataset_path)
-            if sha1:
+            if valid_sha1:
+                sha1_present_count += 1
+            if valid_sha256:
+                sha256_present_count += 1
+            elif sha256:
+                sha256_invalid_count += 1
+            if valid_sha256 or valid_sha1:
                 hash_present_count += 1
-                sha_to_paths[sha1].append(str(resolved))
             else:
                 hash_missing_count += 1
+            # Prefer SHA-1 for duplicate grouping when both are present so
+            # modern indexes remain comparable with legacy SHA-1 indexes.
+            if valid_sha1:
+                hash_to_paths[("sha1", sha1)].append(str(resolved))
+            elif valid_sha256:
+                hash_to_paths[("sha256", sha256)].append(str(resolved))
             by_extension[extension or "<none>"] += 1
             by_api[api or "unknown"] += 1
             by_root[root] += 1
@@ -271,11 +301,19 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
     if duplicate_path_count:
         add_issue(issues, "warning", "duplicate_paths", f"duplicate referenced paths={duplicate_path_count}")
 
-    duplicate_groups = [
-        {"sha1": sha1, "count": len(paths), "paths": sorted(paths)}
-        for sha1, paths in sorted(sha_to_paths.items())
-        if len(paths) > 1
-    ]
+    duplicate_groups = []
+    for (algorithm, digest), paths in sorted(hash_to_paths.items()):
+        if len(paths) <= 1:
+            continue
+        group = {
+            "algorithm": algorithm,
+            "digest": digest,
+            "count": len(paths),
+            "paths": sorted(paths),
+        }
+        # Preserve the legacy field for consumers that inspect SHA-1 groups.
+        group[algorithm] = digest
+        duplicate_groups.append(group)
     duplicate_file_count = sum(group["count"] for group in duplicate_groups)
     duplicate_ratio = (duplicate_file_count / total_files) if total_files else 0.0
     if duplicate_groups:
@@ -290,9 +328,26 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
         )
     if total_files < args.min_files:
         add_issue(issues, "error", "too_few_files", f"dataset has files={total_files}, min_files={args.min_files}")
-    if hash_missing_count:
+    sha256_missing_count = total_files - sha256_present_count
+    if sha256_missing_count:
         severity = "error" if args.require_hashes else "warning"
-        add_issue(issues, severity, "missing_hashes", f"files without sha1={hash_missing_count}; duplicate-content audit is incomplete")
+        invalid_detail = f" (invalid sha256={sha256_invalid_count})" if sha256_invalid_count else ""
+        add_issue(
+            issues,
+            severity,
+            "missing_sha256",
+            (
+                f"files without valid sha256={sha256_missing_count}{invalid_detail}; "
+                "SHA-256 content binding is required for UI/campaign use"
+            ),
+        )
+    if hash_missing_count:
+        add_issue(
+            issues,
+            "warning",
+            "missing_content_hashes",
+            f"files without a valid sha1 or sha256={hash_missing_count}; duplicate-content audit is incomplete",
+        )
     if total_files > 0 and len(by_extension) <= 1:
         add_issue(issues, "warning", "single_extension", f"dataset has one extension family: {', '.join(by_extension)}")
     if total_files > 0 and len(by_api) <= 1:
@@ -315,6 +370,11 @@ def audit_datasets(args: argparse.Namespace) -> dict[str, Any]:
         "hash_present_count": hash_present_count,
         "hash_missing_count": hash_missing_count,
         "hash_coverage_ratio": (hash_present_count / total_files) if total_files else 0.0,
+        "sha1_present_count": sha1_present_count,
+        "sha256_present_count": sha256_present_count,
+        "sha256_missing_count": sha256_missing_count,
+        "sha256_invalid_count": sha256_invalid_count,
+        "sha256_coverage_ratio": (sha256_present_count / total_files) if total_files else 0.0,
         "duplicate_path_count": duplicate_path_count,
         "duplicate_content_group_count": len(duplicate_groups),
         "duplicate_file_count": duplicate_file_count,
@@ -341,7 +401,8 @@ def markdown_report(summary: dict[str, Any]) -> str:
         f"- Empty: `{summary.get('empty_files')}`",
         f"- Errors: `{summary.get('error_count')}`",
         f"- Warnings: `{summary.get('warning_count')}`",
-        f"- Hash coverage: `{summary.get('hash_present_count')}/{summary.get('total_files')}`",
+        f"- Content-hash coverage (SHA-1 or SHA-256): `{summary.get('hash_present_count')}/{summary.get('total_files')}`",
+        f"- SHA-256 campaign-binding coverage: `{summary.get('sha256_present_count')}/{summary.get('total_files')}`",
         f"- Duplicate content groups: `{summary.get('duplicate_content_group_count')}`",
         "",
         "## By Extension",
@@ -366,12 +427,22 @@ def markdown_report(summary: dict[str, Any]) -> str:
             )
         )
     if summary.get("duplicate_content_groups"):
-        lines.extend(["", "## Duplicate Content", "", "| sha1 | count | first paths |", "| --- | ---: | --- |"])
+        lines.extend(
+            [
+                "",
+                "## Duplicate Content",
+                "",
+                "| algorithm | digest | count | first paths |",
+                "| --- | --- | ---: | --- |",
+            ]
+        )
         for group in summary.get("duplicate_content_groups", [])[:20]:
             if not isinstance(group, dict):
                 continue
             paths = ", ".join(f"`{path}`" for path in group.get("paths", [])[:3])
-            lines.append(f"| `{group.get('sha1')}` | {group.get('count')} | {paths} |")
+            lines.append(
+                f"| `{group.get('algorithm')}` | `{group.get('digest')}` | {group.get('count')} | {paths} |"
+            )
     lines.append("")
     return "\n".join(lines)
 

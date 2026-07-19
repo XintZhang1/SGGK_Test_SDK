@@ -18,14 +18,15 @@ following:
   qualification while SDK status/crash and ambiguous oracles remain candidates;
 - eligible candidates complete three-attempt replay, signature-preserving
   reduction, and paired isolated TopoTrack capture/control;
-- at least one real Qwen investigation returns a schema-valid candidate-only
+- at least one real GLM-5.2 investigation returns a schema-valid candidate-only
   report with multiple hypotheses, evidence/counter-evidence, possible source
   locations or `source_unavailable`, registered falsification tools, and a
   stable reproduction reference.
 
-All runs use the single intranet provider, the same profile-bound manifest schema,
-and the same fixed gates. Each run generates its own immutable manifest instead
-of replaying an artifact across sessions.
+External public-interface runs use the single locked SiliconFlow GLM-5.2 profile,
+the same profile-bound manifest schema, and the same fixed gates. Protected-source
+diagnostics remain an explicitly selected intranet-only workflow. Each run generates
+its own immutable manifest instead of replaying an artifact across sessions.
 
 Scale in explicit stages: one Message task, all API smokes, 100 cases, 1,000
 cases in one shard, multi-shard merge/resume, then 100k+. Each stage requires
@@ -75,6 +76,53 @@ Use `test_harness/tools/fetch_abc_dataset.py` to fetch official ABC chunks into 
 It downloads the official manifests, verifies archive size and MD5, extracts samples or full chunks,
 and can immediately run discovery plus CAD feature profiling.
 It also writes `abc_fetch_plan.json`, `abc_fetch_plan.csv`, and `abc_fetch_plan.md` before downloading.
+
+For the external UI, `--full-dataset` is the canonical full-v00 mode. It selects every
+official STEP and metadata chunk, fully extracts them, verifies archive size and MD5,
+and builds `dataset_index.json` for the campaign harness. Plan first, then start the
+large transfer after confirming disk capacity:
+
+```powershell
+python .\test_harness\tools\fetch_abc_dataset.py `
+  --out D:\datasets\abc_v00 `
+  --download-root D:\datasets\abc_archive_cache `
+  --full-dataset `
+  --plan-only
+
+python .\test_harness\tools\fetch_abc_dataset.py `
+  --out D:\datasets\abc_v00 `
+  --download-root D:\datasets\abc_archive_cache `
+  --full-dataset
+```
+
+The helper writes polling-safe status to `abc_fetch_progress.json`. Archives are
+downloaded as `*.part`, resumed when the server supports byte ranges, verified, and
+atomically moved to the final `.7z` name. Completed extraction markers allow a rerun
+to skip already verified archive/extraction units. Only one fetch process may mutate a
+given download cache at a time.
+
+Full discovery also writes `dataset_index.paths.txt` and the compact
+`dataset_index.meta.json`. The metadata binds the index with SHA-256 and lets the UI
+inspect very large indexes without loading the complete JSON document into memory.
+Each campaign-ready file entry contains its own SHA-256; a missing digest, a changed
+STEP file, a shortened selection, or failed triage makes the fixed `abc_step_import`
+lane fail closed.
+
+The UI may also select an existing fetch root or `dataset_index.json`. A raw directory
+containing STEP files is detected but is not campaign-ready until a dataset index has
+been generated; this keeps million-file discovery out of the HTTP request thread.
+
+### Harness STEP import lane
+
+When the UI binds a ready ABC `dataset_index.json`, starting the public function
+`step_import` enables the fixed `abc_step_import` campaign profile. The model can
+choose only bounded case, shard, job, timeout, and resume values. Host code binds the
+actual external index path and expands the request to `run_corpus.py --dataset-list`;
+the absolute dataset path is never included in the model prompt. This lane preserves
+index order, supports stable shards/resume, verifies input hashes and requested case
+coverage immediately before execution, and writes deterministic triage artifacts.
+The existing `abc_boolean_mass_recut` profile remains for imported
+SGT outputs rather than raw STEP indexes.
 
 Smallest-chunk sample:
 

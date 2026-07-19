@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sggk.local/schemas/nx_environment_report.schema.json",
+  "title": "SGGK NX environment report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "operation",
+    "ok",
+    "status",
+    "platform",
+    "supported_platform",
+    "checked_sources",
+    "selected_root",
+    "installations",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "operation": { "const": "detect" },
+    "ok": { "type": "boolean" },
+    "status": {
+      "enum": ["unsupported_platform", "not_found", "incomplete", "ready_for_probe"]
+    },
+    "platform": { "type": "string" },
+    "supported_platform": { "type": "boolean" },
+    "checked_sources": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "selected_root": { "type": "string" },
+    "installations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/installation" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "diagnostic": {
+      "type": "object",
+      "required": ["code", "severity", "message", "remediation"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^NX_[A-Z0-9_]+$" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "message": { "type": "string", "minLength": 1 },
+        "remediation": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "installation": {
+      "type": "object",
+      "required": [
+        "root",
+        "sources",
+        "version_hint",
+        "status",
+        "paths",
+        "python_evidence",
+        "capabilities",
+        "diagnostics"
+      ],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "sources": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "version_hint": { "type": "string" },
+        "status": { "enum": ["invalid_candidate", "incomplete", "ready_for_probe"] },
+        "paths": {
+          "type": "object",
+          "required": ["bin_dir", "ugraf", "run_journal"],
+          "properties": {
+            "bin_dir": { "type": "string" },
+            "ugraf": { "type": "string" },
+            "run_journal": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "python_evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "nx_installed",
+            "gui_executable",
+            "journal_runner",
+            "python_runtime_evidence",
+            "python_api_verified"
+          ],
+          "properties": {
+            "nx_installed": { "type": "boolean" },
+            "gui_executable": { "type": "boolean" },
+            "journal_runner": { "type": "boolean" },
+            "python_runtime_evidence": { "type": "boolean" },
+            "python_api_verified": { "const": false }
+          },
+          "additionalProperties": false
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnostic" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

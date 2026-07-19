@@ -122,7 +122,8 @@
     "campaign_profile": {
       "type": "string",
       "enum": [
-        "abc_boolean_mass_recut"
+        "abc_boolean_mass_recut",
+        "abc_step_import"
       ],
       "description": "Optional typed large-campaign profile. The model may select only this id and bounded args; local code owns tool/path bindings."
     },
@@ -143,6 +144,15 @@
       "default": {}
     },
     "notes": {
+      "type": "string",
+      "default": ""
+    },
+    "prior_review_memory": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Bounded host-collected review feedback from past sessions for the same public function. Injected only at round 1 when memory is enabled."
+    },
+    "memory_note": {
       "type": "string",
       "default": ""
     }

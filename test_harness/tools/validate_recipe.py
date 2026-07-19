@@ -76,6 +76,9 @@ PROVENANCE_RECIPE_KEYS = {
     "dsl_source",
     "dsl_case_id",
     "dsl_variant",
+    "dsl_cluster_id",
+    "dsl_cluster_type",
+    "dsl_cluster_base",
     "family",
     "variant",
     "hypothesis",
@@ -1454,6 +1457,72 @@ def diagnostic_path(file_path: str, field_path: str) -> str:
 
 
 def expected_shape_for_field(field: str) -> Any | None:
+    if "point_relations[" in field:
+        return {
+            "point_relations": [
+                {
+                    "id": "point_check_id",
+                    "role": "result|target|tool",
+                    "body_index": "int >= 0",
+                    "point": ["x", "y", "z"],
+                    "expected": "Inside|Outside|OnBoundary|OnModel|OnVertex|OnEdge|OnFace|Unknown",
+                    "tolerance": "number > 0",
+                }
+            ]
+        }
+    if "face_point_relations[" in field:
+        return {
+            "face_point_relations": [
+                {
+                    "id": "face_point_check_id",
+                    "role": "result|target|tool",
+                    "body_index": "int >= 0",
+                    "face_index": "int >= 0",
+                    "uv_fraction": [0.5, 0.5],
+                    "expected": "Inside|Outside|OnBoundary|OnFace|OnVertex|OnEdge|Unknown",
+                    "tolerance": "number > 0",
+                }
+            ]
+        }
+    if "clash_checks[" in field:
+        return {
+            "clash_checks": [
+                {
+                    "id": "clash_check_id",
+                    "role_a": "target|tool|result",
+                    "role_b": "target|tool|result",
+                    "expected": "NoClash|AnyClash",
+                    "mode": "ClashExistenceOnly|ClashClassify|ClashClassifySubEntities",
+                    "tolerance": "number > 0",
+                }
+            ]
+        }
+    if "distance_checks[" in field:
+        return {
+            "distance_checks": [
+                {
+                    "id": "distance_check_id",
+                    "role_a": "target|tool|result",
+                    "role_b": "target|tool|result",
+                    "kind": "minimum|maximum",
+                    "distance": {"expected": "number", "abs_tol": "number"},
+                }
+            ]
+        }
+    if "plane_extreme_checks[" in field:
+        return {
+            "plane_extreme_checks": [
+                {
+                    "id": "plane_extreme_check_id",
+                    "role": "result|target|tool",
+                    "body_index": "int >= 0",
+                    "axis": "x|y|z",
+                    "side": "min|max",
+                    "expected": "number",
+                    "tolerance": "number > 0",
+                }
+            ]
+        }
     if field == "api":
         return {"api": sorted(SUPPORTED_APIS)}
     if field == "case_id":
@@ -1470,6 +1539,19 @@ def expected_shape_for_field(field: str) -> Any | None:
         return {field: sorted(BODY_KINDS)}
     if field in {"target_kind", "tool_kind"}:
         return {field: sorted(BODY_KINDS)}
+    leaf = field.rsplit(".", 1)[-1]
+    if leaf.endswith(
+        (
+            "_radius",
+            "_height",
+            "_length",
+            "_width",
+            "_scale",
+            "_operation_tol",
+            "_g1_tol",
+        )
+    ):
+        return {leaf: "number > 0"}
     return None
 
 
@@ -1566,6 +1648,7 @@ def diagnostic_from_validation_error(file_path: str, error: str) -> dict[str, An
                 "Remove the field or correct its spelling to an allowlisted field for this API; "
                 "fixed harness code never guesses unknown model-authored keys."
             ),
+            expected_shape,
         )
     if field == "api" and "must be one of" in lower:
         return diagnostic(

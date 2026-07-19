@@ -1,6 +1,6 @@
 # SGGK Message API Harness Architecture
 
-This document is the architecture source of truth for Qwen3.6-35B-A3B test
+This document is the architecture source of truth for SiliconFlow GLM-5.2 test
 authoring, new-API adaptation, SDK execution, and candidate bug localization.
 
 ## Non-negotiable boundaries
@@ -8,7 +8,8 @@ authoring, new-API adaptation, SDK execution, and candidate bug localization.
 - Production authoring and comment interpretation are Message API only. There
   is no human-authored, clipboard, UI, or checked-in-fixture path that can
   publish a model output. The user supplies only a function name and comments.
-- The configured intranet Qwen endpoint is the only authoring provider. It uses
+- The configured SiliconFlow `zai-org/GLM-5.2` endpoint is the default production
+  authoring provider for the external build. It uses
   the profile-bound manifest schema, `message.content` JSON contract, fixed
   gates, execution code, and deterministic selection policy.
 - A model response is always an untrusted candidate. Only the host can
@@ -25,7 +26,7 @@ flowchart LR
     G --> D["Canonical SHA-256 de-duplication"]
     D --> W["Immutable Chinese review round"]
     W --> C["Natural-language comment"]
-    C --> QW["Qwen typed interpretation"]
+    C --> QW["GLM-5.2 typed interpretation"]
     QW -->|"revise"| M
     QW -->|"explicit approval comment"| AP["Host approval attestation"]
     AP --> E["Exact-candidate SDK execution or isolated plugin build"]
@@ -37,7 +38,7 @@ flowchart LR
     V -->|"yes"| D2["Signature-bound reduction"]
     D2 --> B["Failure bundle + failure registry"]
     V -->|"no"| IC["Inconclusive triage; no reproducer"]
-    B --> I["Parallel tool-bounded Qwen investigators"]
+    B --> I["Parallel tool-bounded model investigators"]
     I --> H["Candidate-only multi-hypothesis report"]
 ```
 
@@ -91,7 +92,7 @@ reviewed through the same immutable `start` / `comment` session. The low-level
 pipeline cannot generate and execute an adapter in one command; execution still
 requires the host approval attestation for the unchanged reviewed candidate.
 
-Qwen returns `api_plugin_candidate` JSON containing only a registered adapter
+GLM-5.2 returns `api_plugin_candidate` JSON containing only a registered adapter
 archetype, recipe schema, positive/negative recipes, capability metadata, and a
 TopoTrack declaration. It cannot author C++, CMake, commands, link flags, or
 paths. `materialize_api_plugin_candidate.py` applies a fixed C++ template.
@@ -138,7 +139,7 @@ Only groups whose every replay attempt matches the immutable signature receive:
 2. fixed greedy recipe reduction, bounded by failure count and trial count;
 3. a canonical reduced recipe only when the final signature still matches;
 4. a failure bundle, bug-record draft, `failure_registry` entry, and optional
-   Qwen root-cause investigation.
+   model-assisted root-cause investigation.
 
 Changed, flaky, unverified, unavailable, or `topotrack_only_modeling_ok`
 results stay in a separate inconclusive-triage lane and cannot create a formal
@@ -170,7 +171,7 @@ The investigation registry exposes the isolated capture's bounded tracking
 items and ancestor mappings through allowlisted report IDs; it does not mistake
 the safe main-run skipped summary for the available paired capture.
 
-## Tool-bounded Qwen bug investigation
+## Tool-bounded model bug investigation
 
 `run_bug_investigation.py` runs independent investigators for reproduction,
 topology, source, and skeptical-oracle analysis. The protocol is JSON in
@@ -196,7 +197,7 @@ reference. Unknown evidence/source/tool IDs, mismatched signatures, and any
 ## Using abundant local tokens safely
 
 Every endpoint profile defaults candidate and investigation outputs to 32,768
-tokens. Local Qwen can use still larger `--max-tokens`, more bounded
+tokens. GLM-5.2 can use a larger explicit `--max-tokens`, more bounded
 repair/investigation rounds, several
 independent roles, and repeated candidate generation. Host
 budgets remain finite: response bytes, candidates (maximum eight), parallelism,
@@ -217,7 +218,7 @@ Start staged large-scale tests only after all of these are green:
 - new-API discovery-to-plugin proof with three identical semantic hashes;
 - known bad generated cases excluded by qualification;
 - stable replay, signature-preserving reduction, and paired TopoTrack evidence;
-- at least one schema-valid real Qwen multi-hypothesis investigation without
+- at least one schema-valid real GLM-5.2 multi-hypothesis investigation without
   fabricated evidence/source/tool IDs.
 
 Then increase load in stages: one task, all API smokes, 100 cases, 1,000 cases,

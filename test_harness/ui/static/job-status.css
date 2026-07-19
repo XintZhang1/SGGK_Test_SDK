@@ -1,0 +1,72 @@
+.job-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 17px 20px;
+  overflow: hidden;
+  border: 1px solid #477ca9;
+  border-radius: var(--radius);
+  background:
+    radial-gradient(circle at 100% 0, #214b69 0, transparent 42%),
+    linear-gradient(112deg, #102b38, #102027);
+  box-shadow: 0 16px 42px #00000042, inset 0 0 0 1px #7bb7ff1f;
+}
+
+.job-progress[hidden] { display: none; }
+
+.job-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #7bb7ff3d;
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: job-spin .9s linear infinite;
+}
+
+.job-progress-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.job-progress-kicker {
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+}
+
+.job-progress-copy h2 { margin: 0; font-size: 17px; }
+.job-progress-copy p { color: #b6cbd0; font-size: 12px; line-height: 1.5; }
+
+.job-timer {
+  display: grid;
+  min-width: 88px;
+  gap: 5px;
+  justify-items: end;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .5px;
+}
+
+.job-timer strong {
+  color: #b9d9ff;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+@keyframes job-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .job-spinner { animation: none; }
+}
+
+@media (max-width: 720px) {
+  .job-progress { grid-template-columns: auto minmax(0, 1fr); padding-inline: 15px; }
+  .job-timer { grid-column: 2; justify-items: start; }
+}
