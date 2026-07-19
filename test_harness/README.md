@@ -1054,6 +1054,42 @@ bundle contains `bug_report.md`, `bundle_manifest.json`,
 TopoTrack capture evidence, and an optional preview PNG. With `--zip`, a sibling
 archive is written for handoff.
 
+Run deterministic failure pre-analysis over any executed case root (also run
+automatically by the session workflow's failure-showcase hook):
+
+```powershell
+python .\test_harness\tools\analyze_failure_cases.py `
+  --cases-root .\artifacts\some_run\cases `
+  --out .\artifacts\some_run\pre_analysis `
+  --max-cases 64 `
+  --with-visual --profile siliconflow_vision
+```
+
+For each failed case (triage reasons or nonzero runner return code) the tool
+writes `<case>/pre_analysis.json` plus an annotated `<case>_analysis.png`
+overlay (the standard preview with markers for the failing oracle's geometric
+focus; it degrades to the plain preview when no coordinates exist), and a
+`pre_analysis_summary.json` with counts by `fault_domain`. The deterministic
+rules assign one of `test_expectation_suspect` (point relation outside every
+bbox, distance expectation incompatible with the bbox gap, disjoint-input
+union expecting fewer bodies), `transport_suspect` (Parasolid
+`transport_export_suspect` cause or SGGK self-reported vs NX-measured drift
+beyond the comparison tolerance), `oracle_tooling_suspect` (contradictory,
+non-finite, or unit-inconsistent oracle actuals), `geometry_result_suspect`
+(topo-check or remaining oracle failures), or `inconclusive` (including
+corrupt inputs, which never crash the tool). `--with-visual` additionally
+asks the advisory vision model for a per-case `fault_hint`
+(`test_expectation|geometry|transport|tooling|unclear`) on the overlay
+images; the hint is merged as `visual_fault_hint`/`visual_notes` and never
+overrides the deterministic `fault_domain` — disagreement is reported as
+`visual_disagrees`. All output is diagnostic evidence only, not an SDK defect
+verdict. The session workflow hook copies each failed case's capsule (`.sgt`
+inputs/outputs, reports, comparison evidence; never STEP) to
+`artifacts/<api>/round_<NNNN>_<sessionts>/<case_id>/` with a fixed-content
+`reproduce.ps1` and a Chinese `analysis.md`, and appends bounded records to
+the durable failure database `artifacts/failure_analysis_db.json` (atomic,
+capped at 500 records); the local UI shows them under the 失败分析 tab.
+
 For a lighter GUI-oriented handoff, build debug SGT packs directly from a registry or triage summary:
 
 ```powershell

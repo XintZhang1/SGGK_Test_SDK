@@ -29,8 +29,17 @@ VISUAL_REVIEW_TOP_LEVEL_FIELDS = frozenset(
     {"kind", "schema_version", "case_reviews", "overall_notes_zh_cn"}
 )
 VISUAL_REVIEW_CASE_FIELDS = frozenset(
-    {"case_id", "geometry_plausibility", "view_consistency", "misuse_flags", "confidence", "notes_zh_cn"}
+    {
+        "case_id",
+        "geometry_plausibility",
+        "view_consistency",
+        "misuse_flags",
+        "confidence",
+        "notes_zh_cn",
+        "fault_hint",
+    }
 )
+VISUAL_REVIEW_FAULT_HINTS = frozenset({"test_expectation", "geometry", "transport", "tooling", "unclear"})
 # Advisory output must never smuggle execution authority into the harness.
 VISUAL_REVIEW_AUTHORITY_FIELDS = frozenset(
     {
@@ -540,7 +549,8 @@ def _validate_visual_review_report(
                     "VISUAL_REVIEW_CASE_FIELDS_UNKNOWN",
                     path,
                     f"Case review contains forbidden or unknown fields: {unknown_fields}.",
-                    "Use only case_id, geometry_plausibility, view_consistency, misuse_flags, confidence, notes_zh_cn.",
+                    "Use only case_id, geometry_plausibility, view_consistency, misuse_flags, confidence, "
+                    "notes_zh_cn, fault_hint.",
                 )
             )
         case_authority = sorted(str(key) for key in review if str(key) in VISUAL_REVIEW_AUTHORITY_FIELDS)
@@ -640,6 +650,17 @@ def _validate_visual_review_report(
                     f"{path}.notes_zh_cn",
                     f"notes_zh_cn must be a string of at most {VISUAL_REVIEW_MAX_CASE_NOTES_CHARS} characters.",
                     "Keep the per-case Chinese note within the bound.",
+                )
+            )
+        fault_hint = review.get("fault_hint")
+        if fault_hint is not None and fault_hint not in VISUAL_REVIEW_FAULT_HINTS:
+            diagnostics.append(
+                _error(
+                    "VISUAL_REVIEW_FAULT_HINT_INVALID",
+                    f"{path}.fault_hint",
+                    "fault_hint must be test_expectation, geometry, transport, tooling, or unclear when present.",
+                    "Choose one of the declared fault hint values or omit the field.",
+                    sorted(VISUAL_REVIEW_FAULT_HINTS),
                 )
             )
     overall = candidate.get("overall_notes_zh_cn")

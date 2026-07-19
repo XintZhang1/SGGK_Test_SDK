@@ -17,10 +17,18 @@ Rules:
 - Valid chain patterns include `rect_profile -> extrude`,
   `circle_profile -> extrude`, `rect_profile -> thicken`,
   `circle_profile -> sweep_line`, and `line_profile/radial_rect_profile -> revolve`.
+- Chain-op field requirements (the fixed compiler rejects anything else):
+  - `rect_profile`: numeric `length` and `width`; `extrude` step then requires numeric `height`.
+  - `circle_profile`: numeric `radius`; `extrude` or `sweep_line` step then requires numeric `height`.
+  - `thicken` after `rect_profile`: use `thickness` (thickens `[0, thickness]`) or explicit
+    `min_dist`/`max_dist`.
+  - `line_profile -> revolve`: profile requires numeric `bottom_radius`, `top_radius`, and
+    `height`; do not use a free-form `points` array. `revolve` takes optional `angle` (default `"tau"`).
+  - `radial_rect_profile -> revolve`: profile requires numeric `inner_radius`, `outer_radius`
+    (`outer_radius > inner_radius`), and `height`; do NOT emit `radius`/`length`/`width` there.
+    `revolve` takes optional `angle` (default `"tau"`).
 - For `support_sweep` / `support_sweep_bspline_surface`, provide numeric
   `path_radius`, `profile_radius`, and `height`.
-- For `line_profile -> revolve`, provide `bottom_radius`, `top_radius`, and
-  `height`; do not use a free-form `points` array.
 - Use `distance_checks`, not `expectations.distance`.
 - Do not invent chain ops such as `boolean_subtract`; use supported `boolean`
   chain patterns or return `needs_harness_extension`.

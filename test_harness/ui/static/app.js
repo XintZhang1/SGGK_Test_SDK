@@ -466,8 +466,168 @@ function renderExecutionOverview(overview) {
   if (actions.childNodes.length) root.append(actions);
 }
 
-function renderArtifacts(items, summary = {}) {
-  const root = $("artifactList");
+const FAULT_DOMAIN_LABELS = {
+  test_expectation_suspect: "疑似测试预期问题",
+  oracle_tooling_suspect: "疑似 Oracle 工具链问题",
+  transport_suspect: "疑似传输/导出环节问题",
+  geometry_result_suspect: "疑似 SDK 几何结果问题",
+  inconclusive: "证据不足无法归因",
+};
+const VISUAL_HINT_LABELS = {
+  test_expectation: "疑似测试预期",
+  geometry: "疑似几何结果",
+  transport: "疑似传输环节",
+  tooling: "疑似工具链",
+  unclear: "无法判断",
+};
+
+function switchTab(name) {
+  const overview = name !== "failure";
+  $("overviewTab").hidden = !overview;
+  $("failureTab").hidden = overview;
+  $("tabOverviewButton").classList.toggle("active", overview);
+  $("tabFailureButton").classList.toggle("active", !overview);
+}
+
+function openLightbox(src, alt) {
+  const image = $("lightboxImage");
+  image.src = src;
+  image.alt = alt || "失败用例分析图放大预览";
+  $("lightbox").hidden = false;
+}
+
+async function loadFailureImage(path, container) {
+  try {
+    const value = await request(`/api/artifact?path=${encodeURIComponent(path)}`);
+    if (value.kind !== "image" || !value.content_base64) {
+      container.textContent = "分析图不可用。";
+      return;
+    }
+    const img = document.createElement("img");
+    img.className = "failure-case-image";
+    img.src = `data:${value.mime || "image/png"};base64,${value.content_base64}`;
+    img.alt = "失败用例分析图";
+    img.title = "点击放大";
+    img.addEventListener("click", () => openLightbox(img.src, img.alt));
+    container.replaceChildren(img);
+  } catch (_error) {
+    container.textContent = "分析图加载失败。";
+  }
+}
+
+function renderFailureAnalysis(value) {
+  const data = value || {};
+  const root = $("failureAnalysisCases");
+  root.replaceChildren();
+  const badge = $("failureCountBadge");
+  const cases = Array.isArray(data.cases) ? data.cases : [];
+  badge.hidden = !cases.length;
+  badge.textContent = String(cases.length);
+  $("failureAnalysisNote").textContent = data.available
+    ? (data.note || "诊断性证据，不构成 SDK 缺陷定论")
+    : "";
+  const head = $("failureAnalysisRoot");
+  if (!data.available) {
+    head.textContent = "当前会话还没有失败用例分析产物；执行真实 SDK 测试后，失败用例会自动出现在这里。";
+    return;
+  }
+  head.textContent = [
+    data.root ? `showcase 目录：${data.root}` : "",
+    data.db ? `全局失败用例数据库：${data.db}` : "",
+  ].filter(Boolean).join(" · ") || "失败用例分析产物已生成。";
+  if (!cases.length) {
+    root.append(text("p", "本次执行没有失败用例。", "muted-text"));
+    return;
+  }
+  cases.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "failure-case";
+    const head2 = document.createElement("div");
+    head2.className = "failure-case-head";
+    head2.append(text("strong", item.case_id || "未命名用例", "failure-case-id"));
+    const chips = document.createElement("div");
+    chips.className = "round-overview-chips";
+    const addChip = (label, className) => {
+      if (label) chips.append(text("span", label, className || "round-chip"));
+    };
+    const signature = item.signature || {};
+    if (item.outcome) addChip(item.outcome === "timeout" ? "超时" : "失败", "round-chip exec-chip-fail");
+    if (signature.kind) addChip(`kind ${signature.kind}`);
+    if (signature.phase) addChip(`阶段 ${signature.phase}`);
+    if (signature.sdk_error_code !== null && signature.sdk_error_code !== undefined) {
+      addChip(`SDK 错误码 ${signature.sdk_error_code}`);
+    }
+    if (chips.childNodes.length) head2.append(chips);
+    card.append(head2);
+
+    const reasons = item.triage_reasons || [];
+    if (reasons.length) {
+      card.append(text("div", `Triage 原因：${reasons.join("、")}`, "failure-case-line"));
+    }
+    const oracleFailures = item.oracle_failures || [];
+    if (oracleFailures.length) {
+      const list = document.createElement("div");
+      list.className = "failure-case-oracles";
+      list.append(text("div", "主要 Oracle 失败", "failure-case-label"));
+      oracleFailures.slice(0, 4).forEach((failure) => {
+        list.append(text("div", failure, "failure-case-oracle"));
+      });
+      card.append(list);
+    }
+    const parasolid = item.parasolid || {};
+    if (parasolid.verdict || parasolid.cause_class) {
+      card.append(text(
+        "div",
+        `Parasolid 对比（诊断线索）：verdict=${parasolid.verdict || "—"} · cause_class=${parasolid.cause_class || "—"}`,
+        "failure-case-line",
+      ));
+    }
+
+    const domain = item.fault_domain || "inconclusive";
+    const domainRow = document.createElement("div");
+    domainRow.className = "failure-case-domain";
+    const confidence = item.confidence === null || item.confidence === undefined
+      ? "—"
+      : Number(item.confidence).toFixed(2);
+    domainRow.append(text(
+      "span",
+      `确定性预分析：${FAULT_DOMAIN_LABELS[domain] || domain}（${domain}，置信度 ${confidence}）`,
+      "failure-domain-chip",
+    ));
+    if (item.visual_fault_hint) {
+      domainRow.append(text(
+        "span",
+        `视觉提示：${VISUAL_HINT_LABELS[item.visual_fault_hint] || item.visual_fault_hint}（咨询性）`,
+        "failure-visual-chip",
+      ));
+      if (item.visual_disagrees) {
+        domainRow.append(text("span", "与确定性结论不一致", "failure-disagree-chip"));
+      }
+    }
+    card.append(domainRow);
+    (item.evidence || []).slice(0, 4).forEach((line) => {
+      card.append(text("div", line, "failure-case-evidence"));
+    });
+    if (item.notes) card.append(text("div", item.notes, "failure-case-note"));
+
+    if (item.analysis_png) {
+      const imageWrap = document.createElement("div");
+      imageWrap.className = "failure-case-image-wrap";
+      imageWrap.textContent = "分析图加载中…";
+      card.append(imageWrap);
+      loadFailureImage(item.analysis_png, imageWrap);
+    }
+    if (item.showcase_dir) {
+      card.append(text("div", `showcase：${item.showcase_dir}`, "failure-case-path"));
+    }
+    if (item.reproduction_note) {
+      card.append(text("div", item.reproduction_note, "failure-case-note"));
+    }
+    root.append(card);
+  });
+}
+
+function renderArtifacts(items, summary = {}) {  const root = $("artifactList");
   const scrollTop = root.scrollTop;
   root.replaceChildren();
   renderArtifactSummary(summary, items);
@@ -727,6 +887,7 @@ function render(next) {
   renderEvents(next.events);
   renderRoundOverview(next.round_overview);
   renderExecutionOverview(next.execution_overview);
+  renderFailureAnalysis(next.failure_analysis);
   renderArtifacts(next.artifacts, next.artifact_summary);
   renderABC(next.abc);
   renderNX(next.nx);
@@ -765,11 +926,23 @@ async function loadArtifact(path) {
     selectedArtifact = path;
     $("previewTitle").textContent = item?.label || item?.name || path;
     $("previewPath").textContent = path;
-    $("previewDescription").textContent = [
-      item?.description || "当前会话中的文本产物。",
-      `${item?.kind || "文本"} · ${formatBytes(value.bytes)}`,
-    ].join(" · ");
-    renderArtifactContent(item, value.content);
+    if (value.kind === "image" && value.content_base64) {
+      $("previewDescription").textContent = `PNG 图像 · ${formatBytes(value.bytes)} · 点击图可放大`;
+      const preview = $("artifactPreview");
+      preview.classList.remove("is-markdown");
+      const img = document.createElement("img");
+      img.className = "artifact-image-preview";
+      img.src = `data:${value.mime || "image/png"};base64,${value.content_base64}`;
+      img.alt = path;
+      img.addEventListener("click", () => openLightbox(img.src, img.alt));
+      preview.replaceChildren(img);
+    } else {
+      $("previewDescription").textContent = [
+        item?.description || "当前会话中的文本产物。",
+        `${item?.kind || "文本"} · ${formatBytes(value.bytes)}`,
+      ].join(" · ");
+      renderArtifactContent(item, value.content);
+    }
     $("copyArtifactPath").classList.remove("hidden");
     updateArtifactSelection();
   } catch (error) {
@@ -868,6 +1041,12 @@ $("buildButton").addEventListener("click", () => action("/api/build", {}, "已�
 $("refreshButton").addEventListener("click", refresh);
 $("copyArtifactPath").addEventListener("click", copySelectedArtifactPath);
 $("settingsToggle").addEventListener("click", () => $("settingsPanel").classList.toggle("hidden"));
+$("tabOverviewButton").addEventListener("click", () => switchTab("overview"));
+$("tabFailureButton").addEventListener("click", () => switchTab("failure"));
+$("lightbox").addEventListener("click", () => {
+  $("lightbox").hidden = true;
+  $("lightboxImage").src = "";
+});
 
 $("abcPlanButton").addEventListener("click", () => startABC("plan"));
 $("abcSampleButton").addEventListener("click", () => startABC("sample"));

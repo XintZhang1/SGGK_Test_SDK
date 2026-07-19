@@ -32,9 +32,17 @@ DEFAULT_MAX_CASES = 4
 HARD_MAX_CASES = 8
 RENDER_TIMEOUT_SECONDS = 300
 ADVISORY_NOTE = "咨询性意见，仅供参考；不参与门禁、批准、执行或失败归因"
+FAULT_HINT_VALUES = ("test_expectation", "geometry", "transport", "tooling", "unclear")
 
 PLAUSIBILITY_ZH = {"plausible": "合理", "suspect": "存疑", "implausible": "不合理"}
 CONSISTENCY_ZH = {"consistent": "一致", "inconsistent": "不一致", "unclear": "不明确"}
+FAULT_HINT_ZH = {
+    "test_expectation": "疑似测试预期",
+    "geometry": "疑似几何结果",
+    "transport": "疑似传输环节",
+    "tooling": "疑似工具链",
+    "unclear": "无法判断",
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -62,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--render-missing",
         action="store_true",
         help="Render report/preview.png via render_case_preview.py for cases missing it",
+    )
+    parser.add_argument(
+        "--fault-hints",
+        action="store_true",
+        help="Also ask the vision model for an advisory per-case fault_hint (failure pre-analysis mode)",
     )
     args = parser.parse_args(argv)
     if not 1 <= args.max_cases <= HARD_MAX_CASES:
@@ -126,10 +139,19 @@ def render_missing_previews(case_dirs: list[Path]) -> list[str]:
     return notes
 
 
-def build_prompt(images: list[tuple[str, Path]]) -> str:
+def build_prompt(images: list[tuple[str, Path]], *, fault_hints: bool = False) -> str:
     """The fixed bounded Chinese instruction; case order matches image order."""
 
     listing = "\n".join(f"{index}. case_id = \"{case_id}\"" for index, (case_id, _) in enumerate(images, 1))
+    fault_hint_block = ""
+    fault_hint_field = ""
+    if fault_hints:
+        fault_hint_block = """
+- fault_hint：对每个失败用例的责任域初步猜测，只能取自
+  test_expectation（测试预期可能不合理）/ geometry（疑似 SDK 几何结果问题）/
+  transport（疑似 STEP 导出/传输环节问题）/ tooling（疑似 oracle/测量工具问题）/
+  unclear（无法判断）；无法判断时必须返回 unclear。"""
+        fault_hint_field = '"fault_hint":"test_expectation|geometry|transport|tooling|unclear",'
     return f"""你是 SGGK 几何内核测试 Harness 的视觉复核助手。随后是 {len(images)} 张测试用例几何预览图，
 顺序与下面用例清单一一对应。每张图包含 ISO 与 XY/XZ/YZ 三个正交视图：
 蓝色=target，橙色=tool，绿色=result，并打印了 bbox 数值与校验状态。
@@ -141,12 +163,12 @@ def build_prompt(images: list[tuple[str, Path]]) -> str:
 - geometry_plausibility：target/tool/result 的位置、尺寸与数量关系在几何上是否符合建模/布尔操作直觉；
 - view_consistency：ISO 与三个正交视图是否描绘同一几何，并与打印的 bbox 数值相符；
 - misuse_flags：明显误用，只能取自 tool_misplaced / scale_suspect / empty_result / view_mismatch / other，
-  无则空数组；数组元素只能是字符串，禁止 null。
+  无则空数组；数组元素只能是字符串，禁止 null。{fault_hint_block}
 
 只返回一个 JSON 对象（不要 markdown 代码块或多余文字），结构严格为：
 {{"kind":"visual_review_report","schema_version":1,
 "case_reviews":[{{"case_id":"…","geometry_plausibility":"plausible|suspect|implausible",
-"view_consistency":"consistent|inconsistent|unclear","misuse_flags":["…"],"confidence":0.0,
+"view_consistency":"consistent|inconsistent|unclear","misuse_flags":["…"],{fault_hint_field}"confidence":0.0,
 "notes_zh_cn":"≤500字中文说明"}}],"overall_notes_zh_cn":"≤1000字中文总体说明"}}
 
 case_reviews 必须覆盖清单中的每一个 case_id，不多不少，且不得包含其他字段。
@@ -206,6 +228,14 @@ def render_markdown(report: dict[str, Any], profile: str) -> str:
                 "",
             ]
         )
+        hint = review.get("fault_hint")
+        if isinstance(hint, str) and hint in FAULT_HINT_VALUES:
+            lines.extend(
+                [
+                    f"- 责任域提示（咨询性，不构成定论）：**{FAULT_HINT_ZH.get(hint, hint)}** (`{hint}`)",
+                    "",
+                ]
+            )
     lines.extend(["## 总体说明", "", str(report.get("overall_notes_zh_cn") or "（无）"), ""])
     return "\n".join(lines)
 
@@ -254,7 +284,7 @@ def run(args: argparse.Namespace, *, gateway: AuthoringGateway) -> int:
     task = TaskSpec(
         task_id="visual_review",
         task_type="visual_review",
-        prompt=build_prompt(images),
+        prompt=build_prompt(images, fault_hints=bool(getattr(args, "fault_hints", False))),
         expected_output_path=out_dir / "visual_review_report.json",
         output_contract={
             "type": "json_object",
@@ -304,6 +334,89 @@ def run(args: argparse.Namespace, *, gateway: AuthoringGateway) -> int:
         f"（{ADVISORY_NOTE}）→ {result.promoted_path}"
     )
     return 0
+
+
+def run_fault_hint_review(
+    images: list[tuple[str, Path]],
+    out_dir: Path,
+    *,
+    profile: str = DEFAULT_PROFILE,
+    gateway: AuthoringGateway | None = None,
+) -> dict[str, Any]:
+    """Advisory fault-domain hints for failed-case analysis overlays.
+
+    Never raises and never overrides any deterministic classification: the
+    returned ``hints`` map (case_id → fault_hint/notes) is advisory evidence
+    only and carries no execution, gating, or approval authority.
+    """
+
+    result: dict[str, Any] = {"ran": False, "ok": False, "note": "", "hints": {}, "report_path": ""}
+    if not images:
+        result["note"] = "无可发送的失败用例分析图"
+        return result
+    if gateway is None:
+        try:
+            config = load_gateway_config(profile)
+        except ConfigError as exc:
+            result["note"] = f"视觉模型未配置（{exc}）"
+            return result
+        gateway = AuthoringGateway(config, repo_root=REPO_ROOT)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    task = TaskSpec(
+        task_id="visual_fault_hints",
+        task_type="visual_review",
+        prompt=build_prompt(images, fault_hints=True),
+        expected_output_path=out_dir / "visual_fault_hints.json",
+        output_contract={
+            "type": "json_object",
+            "kind_field": "kind",
+            "allowed_kinds": ["visual_review_report"],
+        },
+        image_paths=tuple(str(path) for _, path in images),
+        metadata={
+            "provider_profile": profile,
+            "provider_profile_category": "external",
+            "data_classification": "public_interface",
+            "allowed_profile_categories": ["external"],
+        },
+    )
+    try:
+        run_result = gateway.run_task(task, max_repairs=1, overwrite=True)
+    except (GatewayError, ClientError, OSError) as exc:
+        result["note"] = f"视觉 fault-hint 任务无法执行：{exc}"
+        return result
+    if not run_result.ok:
+        detail = "；".join(
+            str(item.get("message", "")) for item in run_result.diagnostics[:3] if isinstance(item, dict)
+        )
+        result["note"] = f"视觉 fault-hint 未通过固定契约：{run_result.error or detail}"
+        return result
+    report_path = gateway.repo_root / run_result.promoted_path
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        result["note"] = "视觉 fault-hint 报告不可解析"
+        return result
+    hints: dict[str, dict[str, str]] = {}
+    reviews = report.get("case_reviews")
+    for item in reviews if isinstance(reviews, list) else []:
+        if not isinstance(item, dict):
+            continue
+        case_id = str(item.get("case_id") or "")
+        hint = item.get("fault_hint")
+        if case_id and isinstance(hint, str) and hint in FAULT_HINT_VALUES:
+            hints[case_id] = {
+                "fault_hint": hint,
+                "notes": str(item.get("notes_zh_cn") or "")[:500],
+            }
+    result.update(
+        ran=True,
+        ok=True,
+        hints=hints,
+        report_path=str(report_path),
+        note=f"视觉 fault-hint 复核完成：{len(hints)} 例（{ADVISORY_NOTE}）",
+    )
+    return result
 
 
 def main(argv: list[str] | None = None, *, gateway: AuthoringGateway | None = None) -> int:

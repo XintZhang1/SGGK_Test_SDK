@@ -29,6 +29,14 @@ API_ADAPTATION_TASK_TYPE = "api_adaptation"
 # default authoring lane keeps thinking disabled because it did not finish in
 # 20 minutes for full code generation).
 LONG_GENERATION_TASK_TYPES = frozenset({INTERFACE_DESIGN_TASK_TYPE, API_ADAPTATION_TASK_TYPE})
+# attack_dsl interface tasks (e.g. api_boolean) are the hardest generation
+# shape the harness asks for: dozens of interlocking DSL rules across many
+# cases.  Live evidence (2026-07-18) showed three parallel short-lane
+# candidates plus repairs all failing fixed gates with disjoint DSL rule
+# violations while every long-lane task passed, so attack_dsl-heavy interface
+# tasks join the thinking lane too.
+DSL_HEAVY_TASK_TYPE = "interface_form"
+DSL_HEAVY_KIND = "attack_dsl"
 INTERFACE_DESIGN_MAX_TOKENS = 65_536
 INTERFACE_DESIGN_TIMEOUT_SECONDS = 3_600.0
 
@@ -88,8 +96,8 @@ class MessageApiRuntime:
             sdk_dir=self.sdk_dir,
         )
 
-    def _authoring_options(self, task_type: str = "") -> CompletionOptions:
-        if task_type in LONG_GENERATION_TASK_TYPES:
+    def _authoring_options(self, task_type: str = "", *, dsl_heavy: bool = False) -> CompletionOptions:
+        if task_type in LONG_GENERATION_TASK_TYPES or dsl_heavy:
             return CompletionOptions(
                 response_mode="auto",
                 temperature=0.1,
@@ -108,13 +116,25 @@ class MessageApiRuntime:
 
     @staticmethod
     def _manifest_task_type(manifest_path: Path) -> str:
+        task = MessageApiRuntime._manifest_task(manifest_path)
+        return str(task.get("task_type") or "")
+
+    @staticmethod
+    def _manifest_allowed_kinds(manifest_path: Path) -> list[str]:
+        task = MessageApiRuntime._manifest_task(manifest_path)
+        contract = task.get("output_contract") if isinstance(task.get("output_contract"), dict) else {}
+        kinds = contract.get("allowed_kinds")
+        return [str(item) for item in kinds] if isinstance(kinds, list) else []
+
+    @staticmethod
+    def _manifest_task(manifest_path: Path) -> Mapping[str, Any]:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
-            return ""
+            return {}
         tasks = manifest.get("tasks") if isinstance(manifest, dict) else None
         task = tasks[0] if isinstance(tasks, list) and tasks and isinstance(tasks[0], dict) else {}
-        return str(task.get("task_type") or "")
+        return task
 
     def generate(
         self,
@@ -124,11 +144,15 @@ class MessageApiRuntime:
         staging_root: Path,
     ) -> Mapping[str, Any]:
         task_type = self._manifest_task_type(manifest_path)
-        candidate_count = 1 if task_type in LONG_GENERATION_TASK_TYPES else self.candidate_count
+        dsl_heavy = task_type == DSL_HEAVY_TASK_TYPE and DSL_HEAVY_KIND in self._manifest_allowed_kinds(
+            manifest_path
+        )
+        long_lane = task_type in LONG_GENERATION_TASK_TYPES or dsl_heavy
+        candidate_count = 1 if long_lane else self.candidate_count
         result = self._pipeline(staging_root).run_manifest(
             manifest_path,
             run_id=run_id,
-            completion_options=self._authoring_options(task_type),
+            completion_options=self._authoring_options(task_type, dsl_heavy=dsl_heavy),
             max_contract_repairs=1,
             max_gate_repairs=2,
             candidate_count=candidate_count,

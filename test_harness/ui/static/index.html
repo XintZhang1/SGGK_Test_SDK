@@ -20,6 +20,13 @@
   </header>
 
   <main>
+    <nav class="app-nav" aria-label="主视图切换">
+      <button id="tabOverviewButton" class="app-nav-tab active" type="button">总览</button>
+      <button id="tabFailureButton" class="app-nav-tab" type="button">
+        失败分析 <span id="failureCountBadge" class="badge muted" hidden>0</span>
+      </button>
+    </nav>
+    <div id="overviewTab">
     <section
       id="jobProgress"
       class="job-progress"
@@ -220,7 +227,22 @@
         </section>
       </aside>
     </section>
+    </div>
+
+    <section id="failureTab" class="panel failure-panel" hidden>
+      <div class="section-head">
+        <div><p class="section-label">FAILURE ANALYSIS</p><h2>失败分析</h2></div>
+        <span id="failureAnalysisNote" class="muted-text"></span>
+      </div>
+      <p class="muted-text">
+        以下为失败用例的确定性预分析与诊断性证据，不构成 SDK 缺陷定论；视觉模型提示仅为咨询性参考。
+        每个用例的完整 capsule、固定内容复现脚本（reproduce.ps1）与分析图已复制到 showcase 目录。
+      </p>
+      <div id="failureAnalysisRoot" class="failure-root muted-text"></div>
+      <div id="failureAnalysisCases" class="failure-cases"></div>
+    </section>
   </main>
+  <div id="lightbox" class="lightbox" hidden><img id="lightboxImage" alt="失败用例分析图放大预览"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/markdown-preview.js" defer></script>
   <script src="/job-status.js" defer></script>

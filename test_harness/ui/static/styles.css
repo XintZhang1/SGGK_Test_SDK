@@ -231,13 +231,13 @@ progress { width: 100%; height: 12px; margin: 11px 0 7px; accent-color: var(--ac
 .execution-group { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid #3a2a2a; border-radius: 8px; background: #1c1518; }
 .execution-group-title { color: #ffcfcf; font-size: 12px; }
 .execution-group-detail { color: #d9b8b8; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.execution-table-wrap { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
-.execution-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.execution-table th { position: sticky; top: 0; padding: 6px 8px; color: var(--muted); background: #0e1d23; font-weight: 600; text-align: left; }
+.execution-table-wrap { max-height: 320px; overflow-x: auto; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.execution-table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: 12px; }
+.execution-table th { position: sticky; top: 0; padding: 6px 8px; color: var(--muted); background: #0e1d23; font-weight: 600; text-align: left; white-space: nowrap; }
 .execution-table td { padding: 5px 8px; border-top: 1px solid #1c2c33; color: #cfe3e0; vertical-align: top; }
 .exec-row-fail { background: #1f1416; }
 .exec-row-timeout { background: #1f1a12; }
-.execution-case-id { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.execution-case-id { min-width: 200px; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; word-break: break-all; }
 .execution-reason { max-width: 280px; overflow-wrap: anywhere; }
 .execution-path { max-width: 220px; overflow: hidden; color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-list { overflow: auto; border-right: 1px solid var(--line); }
@@ -325,6 +325,36 @@ progress { width: 100%; height: 12px; margin: 11px 0 7px; accent-color: var(--ac
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 480px; padding: 13px 16px; border: 1px solid #405e65; border-radius: 10px; background: #183039; box-shadow: 0 12px 40px #0009; opacity: 0; transform: translateY(10px); transition: 180ms; pointer-events: none; }
 .toast.show { opacity: 1; transform: none; }
 .toast.error { color: #ffd2d2; border-color: var(--danger); }
+
+.app-nav { display: flex; gap: 8px; margin: 0 0 14px; }
+.app-nav-tab { padding: 8px 18px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #0c1b21; font-size: 13px; }
+.app-nav-tab.active { color: #effbf8; border-color: var(--accent); background: #143129; }
+.app-nav-tab .badge { margin-left: 6px; }
+
+.failure-panel { margin: 0 0 14px; }
+.failure-root { margin: 8px 0 10px; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.failure-cases { display: grid; gap: 12px; }
+.failure-case { display: grid; gap: 7px; padding: 12px 14px; border: 1px solid #3a2a2a; border-radius: 10px; background: #171215; }
+.failure-case-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.failure-case-id { color: #ffcfcf; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; word-break: break-all; }
+.failure-case-line { color: #d9b8b8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.failure-case-label { color: var(--muted); font-size: 11px; }
+.failure-case-oracles { display: grid; gap: 2px; }
+.failure-case-oracle { color: #ffcfcf; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.failure-case-domain { display: flex; flex-wrap: wrap; gap: 6px; }
+.failure-domain-chip { padding: 2px 8px; border-radius: 999px; color: #ffd27f; background: #3d3118; font-size: 11px; line-height: 1.6; }
+.failure-visual-chip { padding: 2px 8px; border-radius: 999px; color: #9fc4e8; background: #1d2f3d; font-size: 11px; line-height: 1.6; }
+.failure-disagree-chip { padding: 2px 8px; border-radius: 999px; color: #ff9d9d; background: #3d1d1f; font-size: 11px; line-height: 1.6; }
+.failure-case-evidence { color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; }
+.failure-case-note { color: #b7d8d3; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.failure-case-path { color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; word-break: break-all; }
+.failure-case-image-wrap { min-height: 40px; color: var(--muted); font-size: 11px; }
+.failure-case-image { display: block; max-width: 720px; width: 100%; border: 1px solid var(--line); border-radius: 8px; cursor: zoom-in; }
+.artifact-image-preview { display: block; max-width: 100%; max-height: 100%; margin: auto; cursor: zoom-in; }
+
+.lightbox { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 24px; background: #000c; cursor: zoom-out; }
+.lightbox[hidden] { display: none; }
+.lightbox img { max-width: 96vw; max-height: 96vh; border: 1px solid #405e65; border-radius: 8px; background: #fff; }
 
 @media (max-width: 1120px) {
   .layout, .hero, .feature-grid { grid-template-columns: 1fr; }

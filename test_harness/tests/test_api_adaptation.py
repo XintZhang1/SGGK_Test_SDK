@@ -558,6 +558,59 @@ def test_api_adaptation_runtime_options_share_long_generation_lane(tmp_path: Pat
     assert runtime._manifest_task_type(manifest) == "api_adaptation"
 
 
+def test_dsl_heavy_interface_form_joins_long_generation_lane(tmp_path: Path) -> None:
+    from test_harness.authoring_gateway.config import PROFILE_SPECS, GatewayConfig
+    from test_harness.orchestration.runtime import (
+        INTERFACE_DESIGN_MAX_TOKENS,
+        INTERFACE_DESIGN_TIMEOUT_SECONDS,
+        MessageApiRuntime,
+    )
+
+    config = GatewayConfig(
+        profile=PROFILE_SPECS["intranet"],
+        base_url="https://message-api.invalid/v1",
+        model="zai-org/GLM-5.2",
+        api_key="test-key",
+        max_retries=0,
+    )
+    runtime = MessageApiRuntime(
+        repo_root=tmp_path,
+        profile="intranet",
+        config=config,
+        candidate_count=3,
+        candidate_parallelism=3,
+    )
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_type": "interface_form",
+                        "output_contract": {"allowed_kinds": ["attack_dsl", "needs_harness_extension"]},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert runtime._manifest_allowed_kinds(manifest) == ["attack_dsl", "needs_harness_extension"]
+    options = runtime._authoring_options("interface_form", dsl_heavy=True)
+    assert options.thinking_mode == "enabled"
+    assert options.max_tokens == INTERFACE_DESIGN_MAX_TOKENS
+    assert options.request_timeout_seconds == INTERFACE_DESIGN_TIMEOUT_SECONDS
+
+    flat_manifest = tmp_path / "flat.json"
+    flat_manifest.write_text(
+        json.dumps({"tasks": [{"task_type": "interface_form", "output_contract": {"allowed_kinds": ["flat_recipe"]}}]}),
+        encoding="utf-8",
+    )
+    assert "attack_dsl" not in runtime._manifest_allowed_kinds(flat_manifest)
+    short_options = runtime._authoring_options("interface_form")
+    assert short_options.thinking_mode != "enabled"
+
+
 # --- promotion -------------------------------------------------------------
 
 BUILTIN_RUNNER_APIS = (

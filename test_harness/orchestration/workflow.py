@@ -334,6 +334,183 @@ def _safe_id(value: str) -> str:
     return safe.strip("._-") or "task"
 
 
+FAILURE_SHOWCASE_MAX_CASES = 64
+FAILURE_SHOWCASE_MAX_FILE_BYTES = 32 * 1024 * 1024
+FAILURE_SHOWCASE_MAX_REASONS = 8
+FAILURE_SHOWCASE_MAX_VALIDATION_FAILURES = 4
+FAILURE_SHOWCASE_VISUAL_MAX_CASES = 4
+FAILURE_ANALYSIS_DB_MAX_RECORDS = 500
+SHOWCASE_SKIP_SUFFIXES = frozenset({".step", ".stp"})
+SHOWCASE_SESSION_TS_RE = re.compile(r"\d{8}T\d{6}Z")
+
+
+def _showcase_timestamp_prefix(session_id: str) -> str:
+    head = str(session_id or "").split("_", 1)[0]
+    if SHOWCASE_SESSION_TS_RE.fullmatch(head):
+        return head
+    return _safe_id(head) or "session"
+
+
+def _showcase_bounded_strings(value: Any, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _copy_showcase_capsule(case_dir: Path, dest: Path) -> dict[str, int]:
+    """Copy the deterministic showcase subset of one case capsule.
+
+    Only ``input/recipe.json``, ``input/*.sgt``, ``output/*.sgt``,
+    ``report/*.json``, ``run_state.json``, ``manifest.json``, and
+    ``comparison/*.json|*.md`` are copied.  Files above the size cap are
+    skipped and STEP never circulates here (it is NX-only transport).
+    """
+
+    stats = {"copied": 0, "skipped": 0}
+
+    def copy_one(source: Path, relative: str) -> None:
+        try:
+            if not source.is_file() or source.suffix.lower() in SHOWCASE_SKIP_SUFFIXES:
+                return
+            if source.stat().st_size > FAILURE_SHOWCASE_MAX_FILE_BYTES:
+                stats["skipped"] += 1
+                return
+            target = dest / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            stats["copied"] += 1
+        except OSError:
+            stats["skipped"] += 1
+
+    input_dir = case_dir / "input"
+    copy_one(input_dir / "recipe.json", "input/recipe.json")
+    for source in sorted(input_dir.glob("*.sgt"), key=lambda item: item.name):
+        copy_one(source, f"input/{source.name}")
+    for source in sorted((case_dir / "output").glob("*.sgt"), key=lambda item: item.name):
+        copy_one(source, f"output/{source.name}")
+    for source in sorted((case_dir / "report").glob("*.json"), key=lambda item: item.name):
+        copy_one(source, f"report/{source.name}")
+    copy_one(case_dir / "run_state.json", "run_state.json")
+    copy_one(case_dir / "manifest.json", "manifest.json")
+    comparison_dir = case_dir / "comparison"
+    if comparison_dir.is_dir():
+        for source in sorted(comparison_dir.iterdir(), key=lambda item: item.name):
+            if source.suffix.lower() in {".json", ".md"}:
+                copy_one(source, f"comparison/{source.name}")
+    return stats
+
+
+def _rewrite_showcase_recipe_inputs(showcase_case_dir: Path) -> None:
+    """Point copied loaded_sgt recipe inputs at the showcase copies (absolute paths)."""
+
+    recipe_path = showcase_case_dir / "input" / "recipe.json"
+    if not recipe_path.is_file():
+        return
+    try:
+        recipe = _read_json(recipe_path)
+    except (OSError, json.JSONDecodeError, WorkflowError):
+        return
+    changed = False
+    for key in ("target_source_file", "tool_source_file", "source_file"):
+        raw = recipe.get(key)
+        if not isinstance(raw, str) or not raw:
+            continue
+        candidate = showcase_case_dir / "input" / Path(raw).name
+        if candidate.is_file() and candidate.suffix.lower() == ".sgt":
+            recipe[key] = str(candidate.resolve())
+            changed = True
+    if changed:
+        _write_json(recipe_path, recipe)
+
+
+def _showcase_ps_quote(path: Path) -> str:
+    return str(path).replace("'", "''")
+
+
+def _write_showcase_reproduce(showcase_case_dir: Path, runner: Path, recipe: Path) -> str:
+    """Write the fixed-content reproduce.ps1; returns the file name (or '' when skipped)."""
+
+    if not recipe.is_file():
+        return ""
+    out_dir = showcase_case_dir / "repro"
+    content = (
+        "# SGGK failure-case reproduction (fixed host-generated content).\r\n"
+        "# Reruns the exact copied recipe with the same runner used by the session.\r\n"
+        f"& '{_showcase_ps_quote(runner)}' --recipe '{_showcase_ps_quote(recipe)}' "
+        f"--out '{_showcase_ps_quote(out_dir)}'\r\n"
+        "exit $LASTEXITCODE\r\n"
+    )
+    _write_text(showcase_case_dir / "reproduce.ps1", content)
+    return "reproduce.ps1"
+
+
+def _render_showcase_analysis_md(
+    *,
+    case_id: str,
+    session_id: str,
+    api: str,
+    round_number: int,
+    outcome: str,
+    signature: Mapping[str, Any],
+    reasons: list[str],
+    validation_failures: list[str],
+    parasolid: Mapping[str, Any],
+    analysis: Mapping[str, Any],
+    domain_labels: Mapping[str, str],
+    visual_case: Mapping[str, Any],
+) -> str:
+    fault_domain = str(analysis.get("fault_domain") or "inconclusive")
+    lines = [
+        f"# 失败用例分析：`{case_id}`",
+        "",
+        "> 本文件全部内容均为诊断性证据，不构成 SDK 缺陷定论；视觉模型结论仅为咨询性参考，"
+        "不参与门禁、批准、执行或失败归因。",
+        "",
+        f"- 会话：`{session_id}` · 第 `{round_number}` 轮 · API `{api}`",
+        f"- 用例结果：`{outcome}`",
+    ]
+    kind = str(signature.get("kind") or "")
+    phase = str(signature.get("phase") or "")
+    sdk_error_code = signature.get("sdk_error_code")
+    if kind or phase or sdk_error_code is not None:
+        lines.append(f"- 失败签名：kind=`{kind}` phase=`{phase}` sdk_error_code=`{sdk_error_code}`")
+    if reasons:
+        lines.append(f"- Triage 原因：{'、'.join(f'`{reason}`' for reason in reasons)}")
+    if validation_failures:
+        lines.append("- 主要 Oracle 失败：")
+        for failure in validation_failures:
+            lines.append(f"  - `{failure}`")
+    verdict = str(parasolid.get("verdict") or "")
+    cause_class = str(parasolid.get("cause_class") or "")
+    if verdict or cause_class:
+        lines.append(f"- Parasolid 对比（诊断线索）：verdict=`{verdict}` cause_class=`{cause_class}`")
+    label = str(domain_labels.get(fault_domain) or fault_domain)
+    lines.append(f"- 确定性预分析：**{label}**（`{fault_domain}`，置信度 `{analysis.get('confidence')}`）")
+    evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
+    for item in evidence[:4]:
+        lines.append(f"  - `{item}`")
+    hint = str(analysis.get("visual_fault_hint") or "")
+    if hint:
+        lines.append(f"- 视觉模型责任域提示（咨询性）：`{hint}`；{analysis.get('visual_notes') or ''}")
+        if analysis.get("visual_disagrees"):
+            lines.append("- ⚠ 视觉提示与确定性预分析不一致：请以确定性证据与人工核查为准。")
+    if visual_case:
+        plausibility = str(visual_case.get("plausibility") or "")
+        flags = "、".join(str(flag) for flag in visual_case.get("flags") or [])
+        lines.append(f"- 视觉复核结论（咨询性）：plausibility=`{plausibility}` flags=`{flags or '无'}`")
+    lines.append(
+        "- 复现：运行本目录 `reproduce.ps1`（固定内容：会话同一 runner + 复制的 recipe，"
+        "`--out` 为脚本旁 `repro/`）。"
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _pipeline_failure_message(result: Mapping[str, Any]) -> str:
     """Return the most specific bounded error from a pipeline batch result."""
 
@@ -1608,6 +1785,414 @@ class HarnessWorkflow:
             },
             "cases": rows,
         }
+
+    def _run_failure_showcase(
+        self,
+        session: Mapping[str, Any],
+        execution_root: Path,
+        execution_artifacts: Mapping[str, Any],
+        passed: bool,
+    ) -> dict[str, Any]:
+        """Copy failed case capsules into a durable showcase with pre-analysis.
+
+        Runs on both ``completed`` and ``execution_failed`` after the Parasolid
+        comparison and visual review.  Best-effort and never raises: every
+        failure degrades to a note so it cannot break the session state
+        machine.  All produced content is diagnostic evidence only.
+        """
+
+        try:
+            return self._failure_showcase_inner(session, execution_root, execution_artifacts, passed)
+        except Exception as exc:  # noqa: BLE001 - showcase generation must never break a session
+            return {
+                "ran": True,
+                "ok": False,
+                "root": "",
+                "cases": [],
+                "note": f"失败用例 showcase 生成失败：{exc}"[:300],
+            }
+
+    def _failure_showcase_inner(
+        self,
+        session: Mapping[str, Any],
+        execution_root: Path,
+        execution_artifacts: Mapping[str, Any],
+        passed: bool,
+    ) -> dict[str, Any]:
+        notes: list[str] = []
+        cases_root: Path | None = None
+        triage_root: Path | None = None
+        for key, label in (("cases", "执行 cases"), ("triage", "triage")):
+            ref = str(execution_artifacts.get(key) or "")
+            if not ref:
+                continue
+            try:
+                resolved = _repo_path(self.repo_root, ref, label=f"execution {key}")
+                resolved.resolve().relative_to(execution_root.resolve())
+            except (OSError, ValueError, WorkflowError):
+                notes.append(f"{label} 路径无效")
+                continue
+            if not resolved.is_dir():
+                notes.append(f"{label} 目录不存在")
+                continue
+            if key == "cases":
+                cases_root = resolved
+            else:
+                triage_root = resolved
+        if cases_root is None and triage_root is None:
+            return {
+                "ran": False,
+                "ok": False,
+                "root": "",
+                "cases": [],
+                "note": "无执行 cases/triage 产物，跳过失败用例分析",
+            }
+
+        entries = self._showcase_failed_entries(cases_root, triage_root, notes)
+        if not entries:
+            return {"ran": True, "ok": True, "root": "", "cases": [], "note": "本次执行没有失败用例"}
+
+        import analyze_failure_cases
+
+        session_id = str(session.get("session_id") or "")
+        apis = self.capabilities.get("apis") if isinstance(self.capabilities.get("apis"), Mapping) else {}
+        api = _extract_api_name(str(session.get("public_function") or ""), tuple(str(key) for key in apis))
+        session_ts = _showcase_timestamp_prefix(session_id)
+        round_number = int(session.get("approved_round") or session.get("current_round") or 0)
+        showcase_root = self.repo_root / "artifacts" / _safe_id(api) / f"round_{round_number:04d}_{session_ts}"
+        mirror_root = execution_root / "failure_analysis"
+
+        visual_rows: dict[str, Mapping[str, Any]] = {}
+        visual_review = session.get("visual_review")
+        if isinstance(visual_review, Mapping):
+            for row in visual_review.get("cases") if isinstance(visual_review.get("cases"), list) else []:
+                if isinstance(row, Mapping) and row.get("case_id"):
+                    visual_rows[str(row["case_id"])] = row
+
+        prepared: list[dict[str, Any]] = []
+        overlay_pairs: list[tuple[str, Path]] = []
+        for entry in entries[:FAILURE_SHOWCASE_MAX_CASES]:
+            case_id = entry["case_id"]
+            case_dir = entry.get("case_dir")
+            if not isinstance(case_dir, Path) or not case_dir.is_dir():
+                notes.append(f"用例 {case_id} 无可用 capsule，跳过")
+                continue
+            try:
+                case_dir.resolve().relative_to(execution_root.resolve())
+            except (OSError, ValueError):
+                notes.append(f"用例 {case_id} capsule 路径越界，跳过")
+                continue
+            safe = _safe_id(case_id)
+            dest = showcase_root / safe
+            stats = _copy_showcase_capsule(case_dir, dest)
+            if stats["skipped"]:
+                notes.append(f"用例 {case_id} 有 {stats['skipped']} 个文件因大小限制被跳过")
+            _rewrite_showcase_recipe_inputs(dest)
+            reproduce = ""
+            runner = self.runner_path or self._showcase_runner_from_state(case_dir)
+            recipe = dest / "input" / "recipe.json"
+            if runner is not None and recipe.is_file():
+                reproduce = _write_showcase_reproduce(dest, runner, recipe)
+            analysis = analyze_failure_cases.analyze_case(case_dir)
+            overlay_name = f"{safe}_analysis.png"
+            overlay = analyze_failure_cases.render_overlay(case_dir, dest / overlay_name)
+            mirror_png_rel = ""
+            if overlay:
+                mirror_png = mirror_root / overlay_name
+                mirror_png.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(overlay, mirror_png)
+                mirror_png_rel = _repo_relative(self.repo_root, mirror_png)
+                overlay_pairs.append((case_id, Path(overlay)))
+            prepared.append(
+                {
+                    "case_id": case_id,
+                    "safe": safe,
+                    "case_dir": case_dir,
+                    "dest": dest,
+                    "entry": entry,
+                    "analysis": analysis,
+                    "reproduce": reproduce,
+                    "mirror_png_rel": mirror_png_rel,
+                }
+            )
+
+        visual_hints = self._showcase_visual_hints(session, overlay_pairs, mirror_root, notes)
+        db_records: list[dict[str, Any]] = []
+        case_rows: list[dict[str, Any]] = []
+        for item in prepared:
+            case_id = item["case_id"]
+            analysis = item["analysis"]
+            hint = visual_hints.get(case_id)
+            if hint:
+                analysis = analyze_failure_cases.merge_visual_hint(
+                    analysis,
+                    str(hint.get("fault_hint") or ""),
+                    str(hint.get("notes") or ""),
+                )
+            entry = item["entry"]
+            # Additive UI/audit fields on top of the base pre-analysis shape.
+            analysis["outcome"] = entry["outcome"]
+            analysis["signature"] = entry["signature"]
+            analysis["triage_reasons"] = entry["reasons"]
+            analysis["oracle_failures"] = entry["validation_failures"]
+            analysis["parasolid"] = entry["parasolid"]
+            dest = item["dest"]
+            mirror_pre = mirror_root / f"{item['safe']}_pre_analysis.json"
+            _write_json(dest / "pre_analysis.json", analysis)
+            _write_json(mirror_pre, analysis)
+            markdown = _render_showcase_analysis_md(
+                case_id=case_id,
+                session_id=session_id,
+                api=api,
+                round_number=round_number,
+                outcome=entry["outcome"],
+                signature=entry["signature"],
+                reasons=entry["reasons"],
+                validation_failures=entry["validation_failures"],
+                parasolid=entry["parasolid"],
+                analysis=analysis,
+                domain_labels=analyze_failure_cases.DOMAIN_LABEL_ZH,
+                visual_case=visual_rows.get(case_id, {}),
+            )
+            _write_text(dest / "analysis.md", markdown)
+            reproduce_rel = (
+                _repo_relative(self.repo_root, dest / item["reproduce"]) if item["reproduce"] else ""
+            )
+            case_rows.append(
+                {
+                    "case_id": case_id,
+                    "dir": _repo_relative(self.repo_root, dest),
+                    "reproduce": reproduce_rel,
+                    "analysis": _repo_relative(self.repo_root, dest / "analysis.md"),
+                    "pre_analysis": _repo_relative(self.repo_root, mirror_pre),
+                    "analysis_png": item["mirror_png_rel"],
+                }
+            )
+            db_records.append(
+                {
+                    "recorded_at": _utc_now(),
+                    "api": api,
+                    "session_id": session_id,
+                    "round": round_number,
+                    "case_id": case_id,
+                    "outcome": entry["outcome"],
+                    "signature": {
+                        "kind": str(entry["signature"].get("kind") or ""),
+                        "phase": str(entry["signature"].get("phase") or ""),
+                        "sdk_error_code": entry["signature"].get("sdk_error_code"),
+                    },
+                    "triage_reasons": entry["reasons"],
+                    "validation_failures": entry["validation_failures"],
+                    "parasolid": {
+                        "verdict": str(entry["parasolid"].get("verdict") or ""),
+                        "cause_class": str(entry["parasolid"].get("cause_class") or ""),
+                    },
+                    "fault_domain": str(analysis.get("fault_domain") or ""),
+                    "confidence": analysis.get("confidence"),
+                    "visual_fault_hint": str(analysis.get("visual_fault_hint") or ""),
+                    "showcase_dir": _repo_relative(self.repo_root, dest),
+                    "reproduce": reproduce_rel,
+                }
+            )
+        db_rel = self._append_failure_analysis_db(db_records)
+        note = "；".join(note for note in notes if note)
+        result: dict[str, Any] = {
+            "ran": True,
+            "ok": True,
+            "root": _repo_relative(self.repo_root, showcase_root),
+            "db": db_rel,
+            "cases": case_rows,
+            "note": note,
+        }
+        if passed and case_rows:
+            result["note"] = (note + "；" if note else "") + "执行通过但存在失败用例记录（来自 triage/返回码）"
+        return result
+
+    @staticmethod
+    def _showcase_runner_from_state(case_dir: Path) -> Path | None:
+        try:
+            run_state = _read_json(case_dir / "run_state.json")
+        except (OSError, json.JSONDecodeError, WorkflowError):
+            return None
+        raw = run_state.get("runner_path")
+        if isinstance(raw, str) and raw:
+            return Path(raw)
+        return None
+
+    def _showcase_failed_entries(
+        self,
+        cases_root: Path | None,
+        triage_root: Path | None,
+        notes: list[str],
+    ) -> list[dict[str, Any]]:
+        """Collect failed-case entries from triage_summary.json (recipe_summary fallback)."""
+
+        entries: dict[str, dict[str, Any]] = {}
+
+        def ensure(case_id: str) -> dict[str, Any]:
+            return entries.setdefault(
+                case_id,
+                {
+                    "case_id": case_id,
+                    "case_dir": None,
+                    "reasons": [],
+                    "signature": {},
+                    "validation_failures": [],
+                    "parasolid": {},
+                    "outcome": "failed",
+                },
+            )
+
+        if triage_root is not None:
+            try:
+                triage = _read_json(triage_root / "triage_summary.json")
+            except (OSError, json.JSONDecodeError, WorkflowError):
+                triage = {}
+                notes.append("triage_summary.json 不可解析，退回 recipe_summary.json")
+            failures = triage.get("failures") if isinstance(triage.get("failures"), list) else []
+            for failure in failures:
+                if not isinstance(failure, Mapping):
+                    continue
+                case_id = str(failure.get("case_id") or "")
+                if not case_id:
+                    continue
+                entry = ensure(case_id)
+                raw_dir = failure.get("case_dir")
+                if isinstance(raw_dir, str) and raw_dir:
+                    entry["case_dir"] = Path(raw_dir)
+                reasons = _showcase_bounded_strings(failure.get("reasons"), FAILURE_SHOWCASE_MAX_REASONS)
+                for reason in reasons:
+                    if reason not in entry["reasons"]:
+                        entry["reasons"].append(reason)
+                signature = failure.get("failure_signature")
+                if isinstance(signature, Mapping):
+                    entry["signature"] = {
+                        "kind": str(signature.get("kind") or ""),
+                        "phase": str(signature.get("phase") or ""),
+                        "sdk_error_code": (
+                            signature.get("sdk_error_code")
+                            if isinstance(signature.get("sdk_error_code"), int)
+                            and not isinstance(signature.get("sdk_error_code"), bool)
+                            else None
+                        ),
+                    }
+                entry["validation_failures"] = _showcase_bounded_strings(
+                    failure.get("validation_failures"),
+                    FAILURE_SHOWCASE_MAX_VALIDATION_FAILURES,
+                )
+                parasolid = failure.get("parasolid")
+                if isinstance(parasolid, Mapping):
+                    entry["parasolid"] = {
+                        "verdict": str(parasolid.get("verdict") or ""),
+                        "cause_class": str(parasolid.get("cause_class") or ""),
+                    }
+
+        if cases_root is not None:
+            try:
+                recipe_summary = _read_json(cases_root / "recipe_summary.json")
+            except (OSError, json.JSONDecodeError, WorkflowError):
+                recipe_summary = {}
+                if triage_root is None:
+                    notes.append("recipe_summary.json 不可解析")
+            results = recipe_summary.get("results") if isinstance(recipe_summary.get("results"), list) else []
+            for result in results:
+                if not isinstance(result, Mapping):
+                    continue
+                returncode = result.get("returncode")
+                timed_out = bool(result.get("timed_out"))
+                failed = timed_out or (
+                    isinstance(returncode, int) and not isinstance(returncode, bool) and returncode != 0
+                )
+                if not failed:
+                    continue
+                case_id = str(result.get("case_id") or "")
+                if not case_id:
+                    continue
+                entry = ensure(case_id)
+                reason = "runner_timeout" if timed_out else "runner_nonzero_exit"
+                if reason not in entry["reasons"]:
+                    entry["reasons"].append(reason)
+                if timed_out:
+                    entry["outcome"] = "timeout"
+                if entry["case_dir"] is None:
+                    raw_dir = result.get("artifact_dir")
+                    if isinstance(raw_dir, str) and raw_dir:
+                        entry["case_dir"] = Path(raw_dir)
+        return [entries[case_id] for case_id in sorted(entries)]
+
+    def _showcase_visual_hints(
+        self,
+        session: Mapping[str, Any],
+        overlay_pairs: list[tuple[str, Path]],
+        mirror_root: Path,
+        notes: list[str],
+    ) -> dict[str, Any]:
+        """Advisory VL fault-hint lane for showcased cases; never overrides determinism."""
+
+        if not overlay_pairs:
+            return {}
+        if str(session.get("data_classification") or "") != "public_interface":
+            return {}
+        if self.profile_category != "external":
+            return {}
+        runtime_config = getattr(self.runtime, "config", None)
+        api_key = str(getattr(runtime_config, "api_key", "") or "")
+        if not api_key:
+            return {}
+        try:
+            vision_config = load_gateway_config(
+                "siliconflow_vision",
+                environ={"SILICONFLOW_API_KEY": api_key},
+            )
+        except ConfigError as exc:
+            notes.append(f"视觉 fault-hint 未配置（{exc}），仅保留确定性预分析")
+            return {}
+        try:
+            import run_visual_review
+
+            from test_harness.authoring_gateway.gateway import AuthoringGateway
+
+            gateway = AuthoringGateway(vision_config, repo_root=self.repo_root)
+            visual = run_visual_review.run_fault_hint_review(
+                overlay_pairs[:FAILURE_SHOWCASE_VISUAL_MAX_CASES],
+                mirror_root / "visual",
+                gateway=gateway,
+            )
+        except Exception as exc:  # noqa: BLE001 - advisory VL lane must never break the showcase
+            notes.append(f"视觉 fault-hint 执行失败：{exc}")
+            return {}
+        note = str(visual.get("note") or "")
+        if note:
+            notes.append(note)
+        hints = visual.get("hints")
+        return dict(hints) if isinstance(hints, Mapping) else {}
+
+    def _append_failure_analysis_db(self, records: list[dict[str, Any]]) -> str:
+        """Append showcase records to the durable failure db (atomic, capped)."""
+
+        if not records:
+            return ""
+        db_path = self.repo_root / "artifacts" / "failure_analysis_db.json"
+        existing: dict[str, Any] = {}
+        if db_path.is_file():
+            try:
+                existing = _read_json(db_path)
+            except (OSError, json.JSONDecodeError, WorkflowError):
+                existing = {}
+        old_records = existing.get("records")
+        merged = [item for item in old_records if isinstance(item, Mapping)] if isinstance(old_records, list) else []
+        merged.extend(records)
+        merged = merged[-FAILURE_ANALYSIS_DB_MAX_RECORDS:]
+        _write_json(
+            db_path,
+            {
+                "schema_version": 1,
+                "kind": "failure_analysis_db",
+                "updated_at": _utc_now(),
+                "records": merged,
+            },
+        )
+        return _repo_relative(self.repo_root, db_path)
 
     def _run_plugin_promotion(
         self,
@@ -3169,6 +3754,8 @@ class HarnessWorkflow:
         session["promotion"] = promotion
         visual_review = self._run_visual_review(session, execution_root, execution_artifacts, passed)
         session["visual_review"] = visual_review
+        showcase = self._run_failure_showcase(session, execution_root, execution_artifacts, passed)
+        session["failure_showcase"] = showcase
         report = execution_root / "final_report.zh-CN.md"
         self._write_final_report(
             report,

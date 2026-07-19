@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,6 +27,7 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+IMAGE_SUFFIXES = {".png": "image/png"}
 MAX_PREVIEW_BYTES = 4 * 1024 * 1024
 
 ARTIFACT_GROUPS = {
@@ -389,7 +391,20 @@ def read_artifact(session_root: Path | None, relative: str) -> dict[str, Any]:
     if session_root is None:
         raise FileNotFoundError("there is no active session")
     path = _inside(session_root, relative)
-    if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        if not path.is_file():
+            raise FileNotFoundError("artifact is unavailable or not previewable")
+        if path.stat().st_size > MAX_PREVIEW_BYTES:
+            raise ValueError("artifact is too large to preview")
+        return {
+            "path": path.relative_to(session_root).as_posix(),
+            "kind": "image",
+            "mime": IMAGE_SUFFIXES[suffix],
+            "content_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "bytes": path.stat().st_size,
+        }
+    if not path.is_file() or suffix not in TEXT_SUFFIXES:
         raise FileNotFoundError("artifact is unavailable or not previewable")
     if path.stat().st_size > MAX_PREVIEW_BYTES:
         raise ValueError("artifact is too large to preview")
@@ -959,6 +974,111 @@ def execution_overview(
     return overview
 
 
+FAILURE_ANALYSIS_MAX_CASES = 64
+FAILURE_ANALYSIS_MAX_REASONS = 8
+FAILURE_ANALYSIS_MAX_ORACLE_FAILURES = 4
+FAILURE_ANALYSIS_MAX_EVIDENCE = 4
+
+
+def failure_analysis(
+    repo_root: Path,
+    session_root: Path | None,
+    session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Project the failure-showcase session record for the 失败分析 UI tab.
+
+    Reads ``session["failure_showcase"]`` plus the session-scoped per-case
+    ``pre_analysis.json`` mirrors written by the workflow hook.  Never raises:
+    missing or corrupt inputs degrade to an unavailable/empty projection.
+    """
+
+    result: dict[str, Any] = {
+        "available": False,
+        "note": "",
+        "root": "",
+        "db": "",
+        "cases": [],
+    }
+    if session_root is None or not isinstance(session, Mapping):
+        return result
+    showcase = session.get("failure_showcase")
+    if not isinstance(showcase, Mapping) or showcase.get("ran") is not True:
+        return result
+    result["available"] = True
+    result["note"] = _truncate_text(showcase.get("note") or "", 400)
+    result["root"] = str(showcase.get("root") or "")
+    result["db"] = str(showcase.get("db") or "")
+    cases = showcase.get("cases") if isinstance(showcase.get("cases"), list) else []
+    for case in cases[:FAILURE_ANALYSIS_MAX_CASES]:
+        if not isinstance(case, Mapping):
+            continue
+        pre: dict[str, Any] = {}
+        pre_rel = str(case.get("pre_analysis") or "")
+        if pre_rel:
+            try:
+                pre_path = _inside(session_root, pre_rel)
+            except ValueError:
+                continue
+            if pre_path.is_file():
+                pre = _read_json_quiet(pre_path)
+        analysis_png = str(case.get("analysis_png") or "")
+        if analysis_png:
+            try:
+                png_path = _inside(session_root, analysis_png)
+                if not png_path.is_file() or png_path.stat().st_size > MAX_PREVIEW_BYTES:
+                    analysis_png = ""
+            except (ValueError, OSError):
+                analysis_png = ""
+        signature = pre.get("signature") if isinstance(pre.get("signature"), Mapping) else {}
+        parasolid = pre.get("parasolid") if isinstance(pre.get("parasolid"), Mapping) else {}
+        confidence = pre.get("confidence")
+        reproduce = str(case.get("reproduce") or "")
+        result["cases"].append(
+            {
+                "case_id": str(case.get("case_id") or pre.get("case_id") or ""),
+                "outcome": str(pre.get("outcome") or ""),
+                "signature": {
+                    "kind": str(signature.get("kind") or ""),
+                    "phase": str(signature.get("phase") or ""),
+                    "sdk_error_code": (
+                        signature.get("sdk_error_code")
+                        if isinstance(signature.get("sdk_error_code"), int)
+                        and not isinstance(signature.get("sdk_error_code"), bool)
+                        else None
+                    ),
+                },
+                "triage_reasons": _bounded_strings(pre.get("triage_reasons"), FAILURE_ANALYSIS_MAX_REASONS),
+                "oracle_failures": _bounded_strings(
+                    pre.get("oracle_failures"), FAILURE_ANALYSIS_MAX_ORACLE_FAILURES
+                ),
+                "parasolid": {
+                    "verdict": str(parasolid.get("verdict") or ""),
+                    "cause_class": str(parasolid.get("cause_class") or ""),
+                },
+                "fault_domain": str(pre.get("fault_domain") or ""),
+                "confidence": (
+                    confidence
+                    if isinstance(confidence, int | float) and not isinstance(confidence, bool)
+                    else None
+                ),
+                "visual_fault_hint": str(pre.get("visual_fault_hint") or ""),
+                "visual_disagrees": bool(pre.get("visual_disagrees")),
+                "evidence": _bounded_strings(pre.get("evidence"), FAILURE_ANALYSIS_MAX_EVIDENCE),
+                "notes": _truncate_text(pre.get("notes") or "", 300),
+                "analysis_png": analysis_png,
+                "showcase_dir": str(case.get("dir") or ""),
+                "reproduce": reproduce,
+                "analysis_md": str(case.get("analysis") or ""),
+                "reproduction_note": (
+                    "在 showcase 目录运行 reproduce.ps1 即可复现（固定内容：会话同一 runner 与复制的 recipe）。"
+                    if reproduce
+                    else ""
+                ),
+            }
+        )
+    return result
+
+
 def session_snapshot(repo_root: Path) -> dict[str, Any]:
     root = active_session_root(repo_root)
     session: dict[str, Any] | None = None
@@ -986,7 +1106,15 @@ def session_snapshot(repo_root: Path) -> dict[str, Any]:
         "artifact_summary": _artifact_summary(repo_root, root, session, artifacts),
         "round_overview": round_overview(repo_root, root, session),
         "execution_overview": execution_overview(repo_root, root, session),
+        "failure_analysis": failure_analysis(repo_root, root, session),
     }
 
 
-__all__ = ["active_session_root", "read_artifact", "session_snapshot", "round_overview", "execution_overview"]
+__all__ = [
+    "active_session_root",
+    "failure_analysis",
+    "read_artifact",
+    "session_snapshot",
+    "round_overview",
+    "execution_overview",
+]

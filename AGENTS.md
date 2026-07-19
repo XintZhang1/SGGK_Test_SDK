@@ -118,13 +118,13 @@ Pop-Location
 Run everything from the repo root with the offline runtime:
 
 ```bash
-.offline_runtime/python/python.exe -m pytest -q          # 488 tests, ~35 s, no SDK needed
+.offline_runtime/python/python.exe -m pytest -q          # 658 tests, ~45 s, no SDK needed
 .offline_runtime/python/python.exe -m ruff check .       # global gate: F rules only
 .offline_runtime/python/python.exe -m compileall -q test_harness
 .offline_runtime/python/python.exe test_harness/tools/validate_recipe.py test_harness/recipes
 ```
 
-Verified on this machine (2026-07): pytest 488 passed; `validate_recipe.py`
+Verified on this machine (2026-07): pytest 658 passed; `validate_recipe.py`
 reports OK for all checked-in recipes. `ruff check .` currently reports **one
 pre-existing F401** (`pytest` imported but unused in
 `test_harness/tests/test_nx_sggk_boolean_comparison.py`) — do not let your
@@ -178,7 +178,20 @@ change add new findings.
 
 - `test_harness/orchestration/` — immutable review-session workflow
   (`workflow.py`): `start`/`comment`/`status`/`show`/`retry`, approval
-  attestation, execution gating. `sggk_harness.py` and `harness.ps1` forward
+  attestation, execution gating. Post-execution (both `completed` and
+  `execution_failed`) it also runs the Parasolid comparison, the advisory
+  visual review, and a best-effort **failure showcase** hook
+  (`_run_failure_showcase`): every case with triage reasons or a nonzero
+  runner return code gets its capsule copied to
+  `artifacts/<api>/round_<NNNN>_<sessionts>/<case_id>/` (input recipe+`.sgt`,
+  output `.sgt`, report JSON, run_state/manifest, comparison evidence; files
+  > 32 MiB skipped, **STEP is never copied** — it is NX-only transport) plus
+  a fixed-content `reproduce.ps1`, a Chinese `analysis.md`, a deterministic
+  `pre_analysis.json`, and an annotated `<case>_analysis.png` overlay.
+  Showcased cases are appended (atomic, capped at 500 records) to the durable
+  失败用例数据库 `artifacts/failure_analysis_db.json`. All of this is
+  diagnostic evidence only and never confirms an SDK defect.
+  `sggk_harness.py` and `harness.ps1` forward
   here. Unknown APIs route through fixed-archetype adaptation
   (`_api_adaptation_binding`: host-local header parse → archetype mapping →
   host-issued adaptation contract → `api_adaptation` task → GLM
@@ -200,7 +213,13 @@ change add new findings.
   `ui/static/`. `ui/state.py` projects parsed summaries so users do not read
   raw JSON: `round_overview` (candidate card), `execution_overview`
   (per-case pass/fail, failure groups, Parasolid attention cases, advisory
-  visual-review summary) rendered as frontend cards.
+  visual-review summary), and `failure_analysis` (失败分析 tab: per failed
+  case signature chips, triage reasons, oracle failures, Parasolid
+  verdict/cause, deterministic `fault_domain` + confidence, advisory
+  `visual_fault_hint` with a disagreement badge, the annotated analysis PNG,
+  and the showcase/reproduce paths). `/api/artifact` additionally serves
+  session-scoped PNGs (≤ 4 MiB) as base64 image payloads; CSP stays
+  `default-src 'self'` with only `img-src 'self' data:` for those previews.
 - `test_harness/nx/` — optional Siemens NX Python API integration (static
   detection, runtime probe, allowlisted journal runner). Comparator
   conventions: boolean operation is api-aware (`api_combine_bodies`→unite;
@@ -214,7 +233,9 @@ change add new findings.
   (`run_recipes.py`, `run_corpus.py`, `run_campaign.py`,
   `plan_large_campaign.py`), failure pipeline (`triage_artifacts.py`,
   `qualify_failures.py`, `replay_regression_seeds.py`,
-  `reduce_failure_recipe.py`, `export_failure_bundles.py`), Parasolid
+  `reduce_failure_recipe.py`, `export_failure_bundles.py`,
+  `analyze_failure_cases.py` — deterministic per-case fault-domain
+  pre-analysis + annotated overlay + advisory VL fault hints), Parasolid
   divergence analysis (`classify_parasolid_divergence.py`; verdicts flow into
   triage/bundles/investigation/final report), bug registries
   (`record_bug_cases.py`, `check_bug_registry_regression.py`), plugin pipeline
@@ -258,6 +279,11 @@ change add new findings.
   clash, distance, and plane-extreme oracles; the runner exits nonzero when
   validation fails even if the SDK reports success. SDK `CalcBndBox` output is
   a conservative diagnostic, never a hard oracle.
+- Case capsules use **`.sgt` (RapidTopoJsonSerializer) for every internal
+  body exchange** (inputs, outputs, debug geometry, handoffs). STEP is used
+  ONLY as the Siemens NX comparison transport and must never newly circulate
+  inside the harness — showcase copies, bundles, and previews copy `.sgt`
+  files and skip `*.step`/`*.stp`.
 - A nonzero SDK/test result is **not automatically a bug**:
   `qualify_failures.py` applies deterministic contradiction rules first; only
   groups whose 3 replay attempts all match the immutable signature

@@ -88,6 +88,58 @@
           }
         }
       ]
+    },
+    {
+      "case_id": "example_radial_rect_revolve",
+      "hypothesis": "A closed-profile revolved solid is attacked by a cylindrical cutter near exact outer-side contact.",
+      "target": {
+        "chain": [
+          {
+            "id": "target_radial_rect_profile",
+            "op": "radial_rect_profile",
+            "inner_radius": 60.0,
+            "outer_radius": 90.0,
+            "height": 120.0,
+            "operation_tol": "topo_tol"
+          },
+          {
+            "id": "target_solid_revolve",
+            "op": "revolve",
+            "angle": "tau",
+            "operation_tol": "topo_tol"
+          },
+          {
+            "id": "target_origin",
+            "op": "transform",
+            "translate": [0.0, 0.0, 0.0]
+          }
+        ]
+      },
+      "tool": {
+        "kind": "solid_cylinder",
+        "radius": 15.0,
+        "height": 160.0,
+        "angle": "tau",
+        "translate": [105.0, 0.0, -80.0]
+      },
+      "variants": [
+        {
+          "suffix": "sub_exact",
+          "set": {
+            "options.boolean_type": "SUBTRACTION",
+            "tool.translate_x": 105.0,
+            "expectations.result_bodies.min": 1
+          }
+        },
+        {
+          "suffix": "int_gap_geom",
+          "set": {
+            "options.boolean_type": "INTERSECTION",
+            "tool.translate_x": "105.0 + geom_tol",
+            "expectations.result_bodies.min": 0
+          }
+        }
+      ]
     }
   ]
 }
